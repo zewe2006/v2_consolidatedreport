@@ -1,0 +1,1360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Consolidated Report — Multi-Company Reporting for QuickBooks</title>
+<link rel="stylesheet" href="./base.css">
+<link rel="stylesheet" href="./style.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+<!-- ============ LOGIN PAGE ============ -->
+<div id="login-page" class="login-page">
+  <div class="login-card">
+    <div class="login-logo">
+      <svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-label="Consolidated Report">
+        <rect width="36" height="36" rx="8" fill="#0a1e3d"/>
+        <rect x="8" y="18" width="5.5" height="10" rx="1" fill="#1a56db"/>
+        <rect x="15.25" y="12" width="5.5" height="16" rx="1" fill="#3B82F6"/>
+        <rect x="22.5" y="8" width="5.5" height="20" rx="1" fill="#60a5fa"/>
+      </svg>
+      <span class="login-logo-text">Consolidated Report</span>
+    </div>
+    <div id="auth-error" class="login-error"></div>
+
+    <!-- Login Form -->
+    <div id="login-form">
+      <div class="form-group">
+        <label class="form-label" for="login-email">Email</label>
+        <input class="form-input" type="email" id="login-email" placeholder="Enter your email">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="login-password">Password</label>
+        <input class="form-input" type="password" id="login-password" placeholder="Enter your password">
+      </div>
+      <button class="btn btn-primary" style="width:100%; justify-content:center; margin-top:var(--space-2);" onclick="doLogin()">
+        Sign In
+      </button>
+      <p class="auth-switch text-center">
+        Don't have an account? <a href="#" onclick="showSignUp(); return false;">Sign Up</a>
+      </p>
+    </div>
+
+    <!-- Sign Up Form -->
+    <div id="signup-form" style="display:none;">
+      <div class="form-group">
+        <label class="form-label" for="signup-org-name">Organization / Business Name</label>
+        <input class="form-input" type="text" id="signup-org-name" placeholder="e.g. ABC Restaurant Group">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="signup-name">Your Full Name</label>
+        <input class="form-input" type="text" id="signup-name" placeholder="Enter your full name">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="signup-email">Email</label>
+        <input class="form-input" type="email" id="signup-email" placeholder="Enter your email">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="signup-password">Password</label>
+        <input class="form-input" type="password" id="signup-password" placeholder="Create a password (min 6 characters)">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="signup-confirm">Confirm Password</label>
+        <input class="form-input" type="password" id="signup-confirm" placeholder="Confirm your password">
+      </div>
+      <button class="btn btn-primary" style="width:100%; justify-content:center; margin-top:var(--space-2);" onclick="doSignUp()">
+        Create Account
+      </button>
+      <p class="auth-switch text-center">
+        Already have an account? <a href="#" onclick="showLogin(); return false;">Sign In</a>
+      </p>
+    </div>
+
+    <p class="text-center" style="margin-top:var(--space-3);font-size:var(--text-xs);color:var(--color-text-muted);">
+      Need help? <a href="mailto:support@sweethut.com" style="color:var(--color-primary);">Contact Support</a>
+    </p>
+  </div>
+</div>
+
+<!-- ============ APP SHELL ============ -->
+<div id="app-shell" class="app hidden">
+
+  <!-- Sidebar -->
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <svg width="28" height="28" viewBox="0 0 36 36" fill="none" aria-label="Consolidated Report">
+        <rect width="36" height="36" rx="8" fill="#0a1e3d"/>
+        <rect x="8" y="18" width="5.5" height="10" rx="1" fill="#1a56db"/>
+        <rect x="15.25" y="12" width="5.5" height="16" rx="1" fill="#3B82F6"/>
+        <rect x="22.5" y="8" width="5.5" height="20" rx="1" fill="#60a5fa"/>
+      </svg>
+      <div>
+        <div class="sidebar-brand-text">Consolidated Report</div>
+        <div class="sidebar-brand-sub">Consolidated Reporting</div>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-label">Overview</div>
+      <ul class="sidebar-nav">
+        <li><a href="#dashboard" data-page="dashboard" class="active">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          <span>Dashboard</span>
+        </a></li>
+      </ul>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-label">Reports</div>
+      <ul class="sidebar-nav">
+        <li><a href="#profit-loss" data-page="profit-loss">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10M18 20V4M6 20v-4"/></svg>
+          <span>Profit & Loss</span>
+        </a></li>
+        <li><a href="#balance-sheet" data-page="balance-sheet">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h16"/><circle cx="8" cy="7" r="1" fill="currentColor"/><circle cx="8" cy="12" r="1" fill="currentColor"/><circle cx="8" cy="17" r="1" fill="currentColor"/></svg>
+          <span>Balance Sheet</span>
+        </a></li>
+        <li><a href="#cash-flow" data-page="cash-flow">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/><path d="M7 7l5-5 5 5M17 17l-5 5-5-5"/></svg>
+          <span>Cash Flow</span>
+        </a></li>
+      </ul>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-label">Intercompany</div>
+      <ul class="sidebar-nav">
+        <li class="business-only"><a href="#intercompany" data-page="intercompany">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5M4 20L21 3M8 21H3v-5M20 4L3 21"/></svg>
+          <span>Journal Entries</span>
+        </a></li>
+      </ul>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-label">Import</div>
+      <ul class="sidebar-nav">
+        <li class="business-only"><a href="#delivery-import" data-page="delivery-import">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+          <span>UberEats / DoorDash</span>
+        </a></li>
+        <li><a href="#receipts" data-page="receipts">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6"/><path d="M9 13h7M9 17h5"/></svg>
+          <span>Receipts (OCR)</span>
+        </a></li>
+      </ul>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-label">Settings</div>
+      <ul class="sidebar-nav">
+        <li><a href="#companies" data-page="companies">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M3 7v14M21 7v14M7 7V3h10v4M7 11h2M7 15h2M15 11h2M15 15h2M11 21v-4h2v4"/></svg>
+          <span>Companies</span>
+        </a></li>
+        <li class="business-only"><a href="#account-mapping" data-page="account-mapping">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="6" r="3"/><circle cx="19" cy="6" r="3"/><circle cx="5" cy="18" r="3"/><circle cx="19" cy="18" r="3"/><path d="M8 6h8M8 18h8M5 9v6M19 9v6"/></svg>
+          <span>Account Mapping</span>
+        </a></li>
+        <li id="nav-users" style="display:none;"><a href="#users" data-page="users">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <span>Users</span>
+        </a></li>
+        <li id="nav-billing" style="display:none;"><a href="#billing" data-page="billing">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+          <span>Billing</span>
+        </a></li>
+        <li id="nav-knowledge-base" style="display:none;"><a href="#knowledge-base" data-page="knowledge-base">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+          <span>Knowledge Base</span>
+        </a></li>
+      </ul>
+    </div>
+
+    <div class="sidebar-spacer"></div>
+
+    <div class="sidebar-section">
+      <ul class="sidebar-nav">
+        <li><button onclick="toggleTheme()" data-theme-toggle aria-label="Toggle theme">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+          <span>Toggle Theme</span>
+        </button></li>
+        <li><button onclick="doLogout()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+          <span>Sign Out</span>
+        </button></li>
+      </ul>
+    </div>
+
+    <div class="app-footer">
+      <a href="mailto:support@sweethut.com" class="support-link">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>Support
+      </a>
+    </div>
+  </nav>
+
+  <!-- Mobile Sidebar Backdrop -->
+  <div class="sidebar-backdrop" id="sidebar-backdrop" onclick="closeMobileSidebar()"></div>
+
+  <!-- Header -->
+  <header class="header">
+    <button class="hamburger-btn" id="hamburger-btn" onclick="toggleMobileSidebar()" aria-label="Open menu">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
+    <h1 class="header-title" id="page-title">Dashboard</h1>
+    <div class="header-actions">
+      <span id="user-display" class="text-muted" style="font-size:var(--text-xs);"></span>
+      <span id="company-badge" class="badge badge-success" style="display:none;"></span>
+    </div>
+  </header>
+
+  <!-- Main Content Area -->
+  <main class="main" id="main-content">
+
+    <!-- ======== TRIAL BANNER ======== -->
+    <div id="trial-banner" style="display:none;background:linear-gradient(135deg,#1a56db,#2563eb);color:white;padding:12px 20px;border-radius:10px;margin:0 0 16px 0;display:none;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:14px;">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="font-size:18px;">&#9200;</span>
+        <span id="trial-banner-text"><strong>14 days left</strong> in your free Business trial</span>
+      </div>
+      <button onclick="navigateTo('billing')" style="background:white;color:#1a56db;border:none;padding:6px 16px;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;">Upgrade Now</button>
+    </div>
+    <div id="trial-expired-banner" style="display:none;background:#fef2f2;border:1px solid #fecaca;color:#991b1b;padding:12px 20px;border-radius:10px;margin:0 0 16px 0;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:14px;">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="font-size:18px;">&#9888;</span>
+        <span>Your free trial has ended. Upgrade to Business to unlock all features.</span>
+      </div>
+      <button onclick="navigateTo('billing')" style="background:#1a56db;color:white;border:none;padding:6px 16px;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;">Upgrade Now</button>
+    </div>
+
+    <!-- ======== DASHBOARD PAGE ======== -->
+    <section id="page-dashboard" class="page-content active">
+      <div class="dashboard-period-bar">
+        <div class="filter-row" style="display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;">
+          <div class="filter-group" style="margin:0;">
+            <label style="font-weight:600;font-size:var(--text-xs);color:var(--color-text-secondary);margin-bottom:2px;display:block;">Companies</label>
+            <div class="multi-company-select" id="dash-company-wrap">
+              <button type="button" class="multi-select-btn" onclick="toggleMultiSelect('dash')" id="dash-company-btn">All Companies</button>
+              <div class="multi-select-dropdown hidden" id="dash-company-dropdown">
+                <label class="multi-opt"><input type="checkbox" value="all" checked onchange="handleAllToggle('dash', this)"> <span>All Companies (Consolidated)</span></label>
+                <div id="dash-company-options"></div>
+              </div>
+            </div>
+          </div>
+          <div class="filter-group" style="margin:0;">
+            <label style="font-weight:600;font-size:var(--text-xs);color:var(--color-text-secondary);margin-bottom:2px;display:block;">Period</label>
+            <select id="dash-period" onchange="onDashPeriodChange()" style="min-width:200px;">
+              <option value="last_month" selected>Last Month</option>
+              <option value="ytd_last_month">Year to End of Last Month</option>
+              <option value="custom">Custom Date Range</option>
+            </select>
+          </div>
+          <div id="dash-custom-dates" style="display:none;align-items:center;gap:var(--space-2);">
+            <input type="date" id="dash-start-date" style="width:150px;">
+            <span style="color:var(--color-text-secondary);">to</span>
+            <input type="date" id="dash-end-date" style="width:150px;">
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="loadDashboard()" style="padding:6px 16px;align-self:flex-end;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+            Refresh
+          </button>
+          <span id="dash-period-label" style="font-size:var(--text-sm);color:var(--color-text-secondary);margin-left:auto;align-self:flex-end;"></span>
+        </div>
+      </div>
+
+      <div class="kpi-grid" id="kpi-grid">
+        <div class="kpi-card"><div class="kpi-label" id="kpi-revenue-label">Revenue</div><div class="kpi-value" id="kpi-revenue">--</div><div class="kpi-delta neutral" id="kpi-revenue-delta">Loading...</div></div>
+        <div class="kpi-card"><div class="kpi-label" id="kpi-expenses-label">Expenses</div><div class="kpi-value" id="kpi-expenses">--</div><div class="kpi-delta neutral" id="kpi-expenses-delta">Loading...</div></div>
+        <div class="kpi-card"><div class="kpi-label" id="kpi-net-income-label">Net Income</div><div class="kpi-value" id="kpi-net-income">--</div><div class="kpi-delta neutral" id="kpi-net-delta">Loading...</div></div>
+        <div class="kpi-card"><div class="kpi-label">Total Assets</div><div class="kpi-value" id="kpi-assets">--</div><div class="kpi-delta neutral" id="kpi-assets-delta">&nbsp;</div></div>
+        <div class="kpi-card"><div class="kpi-label">Connected Companies</div><div class="kpi-value" id="kpi-companies">0</div><div class="kpi-delta neutral" id="kpi-companies-total">&nbsp;</div></div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-header"><span class="card-title">Revenue Trend</span></div>
+          <div class="chart-container"><canvas id="chart-revenue"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><span class="card-title">Expense Breakdown</span></div>
+          <div class="chart-container"><canvas id="chart-expenses"></canvas></div>
+        </div>
+      </div>
+
+      <div class="card mt-6">
+        <div class="card-header">
+          <span class="card-title">Recent Activity</span>
+        </div>
+        <div id="recent-activity" class="text-muted" style="font-size:var(--text-sm);padding:var(--space-4);">
+          Connect and sync your QBO companies to see activity here.
+        </div>
+      </div>
+    </section>
+
+    <!-- ======== PROFIT & LOSS PAGE ======== -->
+    <section id="page-profit-loss" class="page-content">
+      <div class="filter-bar">
+        <div class="filter-group filter-group-company">
+          <label>Company</label>
+          <div class="multi-company-select" id="pl-company-wrap">
+            <button type="button" class="multi-select-btn" onclick="toggleMultiSelect('pl')" id="pl-company-btn">All Companies</button>
+            <div class="multi-select-dropdown hidden" id="pl-company-dropdown">
+              <label class="multi-opt"><input type="checkbox" value="all" checked onchange="handleAllToggle('pl', this)"> <span>All Companies (Consolidated)</span></label>
+              <div id="pl-company-options"></div>
+            </div>
+          </div>
+        </div>
+        <div class="filter-group">
+          <label>Start Date</label>
+          <input type="date" id="pl-start-date">
+        </div>
+        <div class="filter-group">
+          <label>End Date</label>
+          <input type="date" id="pl-end-date">
+        </div>
+        <div class="filter-group">
+          <label>Quick Range</label>
+          <select id="pl-date-macro" onchange="applyDateMacro('pl')">
+            <option value="">Custom</option>
+            <option value="This Month" selected>This Month</option>
+            <option value="Last Month">Last Month</option>
+            <option value="This Month-to-date">Month to Date</option>
+            <option value="This Fiscal Quarter">This Quarter</option>
+            <option value="Last Fiscal Quarter">Last Quarter</option>
+            <option value="This Fiscal Quarter-to-date">Quarter to Date</option>
+            <option value="This Fiscal Year">This Year</option>
+            <option value="Last Fiscal Year">Last Year</option>
+            <option value="This Fiscal Year-to-date">Year to Date</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>Method</label>
+          <select id="pl-method">
+            <option value="Accrual">Accrual</option>
+            <option value="Cash">Cash</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>Compare</label>
+          <select id="pl-compare">
+            <option value="">No Comparison</option>
+            <option value="prior_year">vs. Prior Year</option>
+            <option value="prior_month">vs. Prior Month</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>View</label>
+          <select id="pl-view-mode">
+            <option value="consolidated">Consolidated</option>
+            <option value="by_company">By Company</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" onclick="loadPL()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+          Run Report
+        </button>
+        <button class="btn btn-secondary" onclick="exportReport('pl')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+          Export CSV
+        </button>
+      </div>
+      <div class="card">
+        <div id="pl-loading" class="text-center text-muted" style="padding:var(--space-8);">
+          Select a company and date range, then click "Run Report"
+        </div>
+        <div id="pl-table-wrapper" class="hidden" style="overflow-x:auto;"></div>
+      </div>
+    </section>
+
+    <!-- ======== BALANCE SHEET PAGE ======== -->
+    <section id="page-balance-sheet" class="page-content">
+      <div class="filter-bar">
+        <div class="filter-group">
+          <label>Company</label>
+          <div class="multi-company-select" id="bs-company-wrap">
+            <button type="button" class="multi-select-btn" onclick="toggleMultiSelect('bs')" id="bs-company-btn">All Companies</button>
+            <div class="multi-select-dropdown hidden" id="bs-company-dropdown">
+              <label class="multi-opt"><input type="checkbox" value="all" checked onchange="handleAllToggle('bs', this)"> <span>All Companies (Consolidated)</span></label>
+              <div id="bs-company-options"></div>
+            </div>
+          </div>
+        </div>
+        <div class="filter-group">
+          <label>As of Date</label>
+          <input type="date" id="bs-end-date">
+        </div>
+        <div class="filter-group">
+          <label>Quick Range</label>
+          <select id="bs-date-macro" onchange="applyDateMacro('bs')">
+            <option value="">Custom</option>
+            <option value="Today" selected>Today</option>
+            <option value="Last Month">End of Last Month</option>
+            <option value="Last Fiscal Quarter">End of Last Quarter</option>
+            <option value="Last Fiscal Year">End of Last Year</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>Method</label>
+          <select id="bs-method">
+            <option value="Accrual">Accrual</option>
+            <option value="Cash">Cash</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>Compare</label>
+          <select id="bs-compare">
+            <option value="">No Comparison</option>
+            <option value="prior_year">vs. Prior Year</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>View</label>
+          <select id="bs-view-mode">
+            <option value="consolidated">Consolidated</option>
+            <option value="by_company">By Company</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" onclick="loadBS()">Run Report</button>
+        <button class="btn btn-secondary" onclick="exportReport('bs')">Export CSV</button>
+      </div>
+      <div class="card">
+        <div id="bs-loading" class="text-center text-muted" style="padding:var(--space-8);">
+          Select a company and date, then click "Run Report"
+        </div>
+        <div id="bs-table-wrapper" class="hidden" style="overflow-x:auto;"></div>
+      </div>
+    </section>
+
+    <!-- ======== CASH FLOW PAGE ======== -->
+    <section id="page-cash-flow" class="page-content">
+      <div class="filter-bar">
+        <div class="filter-group">
+          <label>Company</label>
+          <div class="multi-company-select" id="cf-company-wrap">
+            <button type="button" class="multi-select-btn" onclick="toggleMultiSelect('cf')" id="cf-company-btn">All Companies</button>
+            <div class="multi-select-dropdown hidden" id="cf-company-dropdown">
+              <label class="multi-opt"><input type="checkbox" value="all" checked onchange="handleAllToggle('cf', this)"> <span>All Companies (Consolidated)</span></label>
+              <div id="cf-company-options"></div>
+            </div>
+          </div>
+        </div>
+        <div class="filter-group">
+          <label>Start Date</label>
+          <input type="date" id="cf-start-date">
+        </div>
+        <div class="filter-group">
+          <label>End Date</label>
+          <input type="date" id="cf-end-date">
+        </div>
+        <div class="filter-group">
+          <label>Quick Range</label>
+          <select id="cf-date-macro" onchange="applyDateMacro('cf')">
+            <option value="">Custom</option>
+            <option value="This Month" selected>This Month</option>
+            <option value="Last Month">Last Month</option>
+            <option value="This Fiscal Quarter">This Quarter</option>
+            <option value="This Fiscal Year">This Year</option>
+            <option value="This Fiscal Year-to-date">Year to Date</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>Compare</label>
+          <select id="cf-compare">
+            <option value="">No Comparison</option>
+            <option value="prior_year">vs. Prior Year</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>View</label>
+          <select id="cf-view-mode">
+            <option value="consolidated">Consolidated</option>
+            <option value="by_company">By Company</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" onclick="loadCF()">Run Report</button>
+        <button class="btn btn-secondary" onclick="exportReport('cf')">Export CSV</button>
+      </div>
+      <div class="card">
+        <div id="cf-loading" class="text-center text-muted" style="padding:var(--space-8);">
+          Select a company and date range, then click "Run Report"
+        </div>
+        <div id="cf-table-wrapper" class="hidden" style="overflow-x:auto;"></div>
+      </div>
+    </section>
+
+    <!-- ======== INTERCOMPANY PAGE ======== -->
+    <section id="page-intercompany" class="page-content">
+      <div class="tab-bar">
+        <button class="tab-btn active" onclick="switchTab('ic', 'new')">New Entry</button>
+        <button class="tab-btn" onclick="switchTab('ic', 'history')">History</button>
+        <button class="tab-btn" onclick="switchTab('ic', 'templates')">Templates</button>
+      </div>
+
+      <div id="ic-tab-new" class="tab-content active">
+        <div class="card">
+          <div class="card-header"><span class="card-title">Create Intercompany Journal Entry</span></div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Source Company</label>
+              <select class="form-select" id="ic-source-company" onchange="loadICAccountsFor('source')"></select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Destination Company</label>
+              <select class="form-select" id="ic-dest-company" onchange="loadICAccountsFor('dest')"></select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Entry Type</label>
+              <select class="form-select" id="ic-type">
+                <option value="fund_transfer">Fund Transfer</option>
+                <option value="expense_allocation">Expense Allocation</option>
+                <option value="revenue_sharing">Revenue Sharing</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Date</label>
+              <input class="form-input" type="date" id="ic-date">
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Description</label>
+            <input class="form-input" type="text" id="ic-description" placeholder="e.g., Rent allocation for March 2026">
+          </div>
+
+          <!-- Source Company JE Table -->
+          <div class="ic-je-section">
+            <div class="ic-je-section-header">
+              <span class="ic-je-section-title">Source Company Journal Entry</span>
+              <button class="btn btn-sm btn-secondary" onclick="addICLine('source')">+ Add Line</button>
+            </div>
+            <table class="ic-je-table">
+              <thead>
+                <tr>
+                  <th class="ic-je-col-num">#</th>
+                  <th class="ic-je-col-account">ACCOUNT</th>
+                  <th class="ic-je-col-amount">DEBITS</th>
+                  <th class="ic-je-col-amount">CREDITS</th>
+                  <th class="ic-je-col-desc">DESCRIPTION</th>
+                  <th class="ic-je-col-action"></th>
+                </tr>
+              </thead>
+              <tbody id="ic-source-lines"></tbody>
+              <tfoot>
+                <tr class="ic-je-totals">
+                  <td></td>
+                  <td style="text-align:right;font-weight:600;font-size:var(--text-sm);">Total</td>
+                  <td class="ic-je-col-amount" id="ic-source-total-debit">$0.00</td>
+                  <td class="ic-je-col-amount" id="ic-source-total-credit">$0.00</td>
+                  <td colspan="2">
+                    <span class="ic-balance-diff balanced" id="ic-source-balance-badge">Balanced</span>
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+
+          <!-- Dest Company JE Table -->
+          <div class="ic-je-section">
+            <div class="ic-je-section-header">
+              <span class="ic-je-section-title">Destination Company Journal Entry</span>
+              <button class="btn btn-sm btn-secondary" onclick="addICLine('dest')">+ Add Line</button>
+            </div>
+            <table class="ic-je-table">
+              <thead>
+                <tr>
+                  <th class="ic-je-col-num">#</th>
+                  <th class="ic-je-col-account">ACCOUNT</th>
+                  <th class="ic-je-col-amount">DEBITS</th>
+                  <th class="ic-je-col-amount">CREDITS</th>
+                  <th class="ic-je-col-desc">DESCRIPTION</th>
+                  <th class="ic-je-col-action"></th>
+                </tr>
+              </thead>
+              <tbody id="ic-dest-lines"></tbody>
+              <tfoot>
+                <tr class="ic-je-totals">
+                  <td></td>
+                  <td style="text-align:right;font-weight:600;font-size:var(--text-sm);">Total</td>
+                  <td class="ic-je-col-amount" id="ic-dest-total-debit">$0.00</td>
+                  <td class="ic-je-col-amount" id="ic-dest-total-credit">$0.00</td>
+                  <td colspan="2">
+                    <span class="ic-balance-diff balanced" id="ic-dest-balance-badge">Balanced</span>
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+
+          <div style="margin-top:var(--space-4);display:flex;gap:var(--space-3);">
+            <button class="btn btn-primary" id="ic-submit-btn" onclick="createICEntry()">Create Entry</button>
+            <button class="btn btn-secondary" onclick="saveAsTemplate()">Save as Template</button>
+            <button class="btn btn-ghost" id="ic-cancel-edit-btn" onclick="cancelICEdit()" style="display:none;">Cancel Edit</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="ic-tab-history" class="tab-content">
+        <div class="card">
+          <div class="card-header"><span class="card-title">Entry History</span></div>
+          <div id="ic-history-table" style="overflow-x:auto;"></div>
+        </div>
+      </div>
+
+      <div id="ic-tab-templates" class="tab-content">
+        <div class="card">
+          <div class="card-header"><span class="card-title">Saved Templates</span></div>
+          <div id="ic-templates-list" class="text-muted" style="padding:var(--space-4);font-size:var(--text-sm);">
+            No templates saved yet. Create an intercompany entry and click "Save as Template".
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======== COMPANIES PAGE ======== -->
+    <section id="page-companies" class="page-content">
+
+      <!-- Connect New Company Wizard -->
+      <div class="card mb-6 connect-wizard-card">
+        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;">
+          <span class="card-title">Connect a QBO Company</span>
+          <span id="wizard-company-count" class="badge badge-neutral" style="font-size:var(--text-xs);"></span>
+        </div>
+        <div style="padding:0 var(--space-1);">
+
+          <!-- Wizard Steps Indicator -->
+          <div class="wizard-steps">
+            <div class="wizard-step active" data-step="1">
+              <div class="wizard-step-num">1</div>
+              <div class="wizard-step-label">Authenticate</div>
+            </div>
+            <div class="wizard-step-line"></div>
+            <div class="wizard-step" data-step="2">
+              <div class="wizard-step-num">2</div>
+              <div class="wizard-step-label">Select Company</div>
+            </div>
+            <div class="wizard-step-line"></div>
+            <div class="wizard-step" data-step="3">
+              <div class="wizard-step-num">3</div>
+              <div class="wizard-step-label">Sync Data</div>
+            </div>
+          </div>
+
+          <!-- Step 1: Start Connection -->
+          <div id="wizard-step-1" class="wizard-panel active">
+            <p style="font-size:var(--text-sm);color:var(--color-text-secondary);margin-bottom:var(--space-4);">
+              Click the button below to sign in to QuickBooks. You'll be redirected to Intuit where you can 
+              choose which company to connect. A new window will open.
+            </p>
+            <button id="connect-btn" class="btn btn-primary" onclick="startQBOConnect()">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3"/></svg>
+              Connect QuickBooks Company
+            </button>
+            <div id="connect-status" style="display:none;margin-top:var(--space-3);font-size:var(--text-sm);"></div>
+          </div>
+
+          <!-- Step 2: Waiting for OAuth -->
+          <div id="wizard-step-2" class="wizard-panel">
+            <div style="background:var(--color-bg-elevated);border-radius:var(--radius-md);padding:var(--space-4);margin-bottom:var(--space-4);border:1px solid var(--color-border);">
+              <div style="display:flex;align-items:center;gap:var(--space-3);margin-bottom:var(--space-3);">
+                <div class="loading-spinner" style="width:20px;height:20px;border-width:2px;"></div>
+                <strong style="font-size:var(--text-sm);">Waiting for QuickBooks authentication...</strong>
+              </div>
+              <p style="font-size:var(--text-xs);color:var(--color-text-secondary);margin:0;">
+                A popup window should have opened. Sign in to your Intuit account and select the company 
+                you want to add. Once you authorize, this page will automatically detect the connection and begin syncing.
+              </p>
+            </div>
+            <div style="display:flex;gap:var(--space-3);">
+              <button class="btn btn-secondary" onclick="openAuthWindow()">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>
+                Re-open Auth Window
+              </button>
+              <button class="btn btn-ghost" onclick="resetWizard()">
+                Cancel
+              </button>
+            </div>
+          </div>
+
+          <!-- Step 3: Syncing -->
+          <div id="wizard-step-3" class="wizard-panel">
+            <div id="sync-progress" style="margin-bottom:var(--space-4);">
+              <div style="display:flex;align-items:center;gap:var(--space-3);">
+                <div class="loading-spinner" style="width:20px;height:20px;border-width:2px;"></div>
+                <strong style="font-size:var(--text-sm);">Syncing company data...</strong>
+              </div>
+              <p id="sync-detail" style="font-size:var(--text-xs);color:var(--color-text-secondary);margin-top:var(--space-2);">Pulling P&L, Balance Sheet, Cash Flow, and Chart of Accounts...</p>
+            </div>
+            <div id="sync-result" style="display:none;"></div>
+            <div id="sync-actions" style="display:none;margin-top:var(--space-3);">
+              <button class="btn btn-primary" onclick="resetWizard()">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+                Add Another Company
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- All Companies -->
+      <div class="card">
+        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;">
+          <span class="card-title">All Connected Companies</span>
+        </div>
+        <p class="text-muted mb-4" style="font-size:var(--text-sm);">
+          Each company has its own OAuth connection and tokens. Use the Sync button to refresh a company's data.
+          All companies stay connected simultaneously.
+        </p>
+        <div id="companies-list" style="overflow-x:auto;"></div>
+      </div>
+    </section>
+
+    <!-- ======== USER MANAGEMENT PAGE (Admin Only) ======== -->
+    <section id="page-users" class="page-content">
+      <div class="card mb-6">
+        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;">
+          <span class="card-title">Create New User</span>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Name</label>
+            <input class="form-input" type="text" id="new-user-name" placeholder="John Doe">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Email</label>
+            <input class="form-input" type="email" id="new-user-email" placeholder="john@company.com">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Password</label>
+            <input class="form-input" type="password" id="new-user-password" placeholder="Enter password">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Role</label>
+            <select class="form-select" id="new-user-role">
+              <option value="viewer">Viewer (Read Only)</option>
+              <option value="admin">Admin (Full Access)</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Company Access</label>
+          <div id="new-user-companies" class="user-company-checkboxes"></div>
+        </div>
+        <button class="btn btn-primary" onclick="createNewUser()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+          Create User
+        </button>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">All Users</span></div>
+        <div id="users-list" style="overflow-x:auto;"></div>
+      </div>
+    </section>
+
+    <!-- ======== ACCOUNT MAPPING PAGE ======== -->
+    <section id="page-account-mapping" class="page-content">
+      <div class="card mb-6">
+        <div class="card-header">
+          <span class="card-title">Account Mapping for Consolidation</span>
+        </div>
+        <p class="text-muted mb-4" style="font-size:var(--text-sm);">
+          Map each company's accounts to unified consolidation categories. 
+          Since your Charts of Accounts vary across companies, this mapping ensures 
+          the consolidated reports align correctly.
+        </p>
+        <div class="filter-bar" style="padding:0;">
+          <div class="filter-group">
+            <label>Company</label>
+            <select id="mapping-company-filter" class="company-selector"></select>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="loadQBOAccounts()">Load Accounts</button>
+        </div>
+      </div>
+
+      <div class="card mb-6">
+        <div class="card-header"><span class="card-title">Accounts</span></div>
+        <div id="qbo-accounts-list" class="text-muted" style="font-size:var(--text-sm);padding:var(--space-2);">
+          Select a company and click "Load Accounts" to see its Chart of Accounts.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">Saved Mappings</span></div>
+        <div id="account-mappings-list" style="overflow-x:auto;"></div>
+      </div>
+    </section>
+
+    <!-- ============ BILLING PAGE ============ -->
+    <section id="page-billing" class="page-content">
+      <div class="card mb-6">
+        <div class="card-header">
+          <span class="card-title">Billing & Subscription</span>
+        </div>
+        <div id="billing-content" style="padding: 8px 0;">
+          <div id="billing-current-plan" style="display:flex; gap:24px; flex-wrap:wrap; margin-bottom:24px;">
+            <div style="flex:1; min-width:260px; border:1.5px solid var(--color-border); border-radius:var(--radius-lg); padding:24px;">
+              <div style="font-size:var(--text-xs); color:var(--color-text-muted); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:8px;">Current Plan</div>
+              <div id="billing-plan-name" style="font-size:var(--text-xl); font-weight:700;">Loading...</div>
+              <div id="billing-plan-price" style="font-size:var(--text-sm); color:var(--color-text-muted); margin-top:4px;"></div>
+              <div id="billing-plan-status" style="margin-top:12px;"></div>
+            </div>
+            <div style="flex:1; min-width:260px; border:1.5px solid var(--color-border); border-radius:var(--radius-lg); padding:24px;">
+              <div style="font-size:var(--text-xs); color:var(--color-text-muted); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:8px;">Company Limit</div>
+              <div id="billing-company-limit" style="font-size:var(--text-xl); font-weight:700;">—</div>
+              <div id="billing-company-usage" style="font-size:var(--text-sm); color:var(--color-text-muted); margin-top:4px;"></div>
+            </div>
+          </div>
+
+          <!-- Upgrade Card (shown on free plan) -->
+          <div id="billing-upgrade-card" style="display:none; border:2px solid #3b82f6; border-radius:var(--radius-lg); padding:32px; background:linear-gradient(135deg, #eff6ff 0%, #fff 100%); margin-bottom:24px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px;">
+              <div>
+                <h3 style="font-size:var(--text-lg); font-weight:700; margin-bottom:4px;">Upgrade to Business</h3>
+                <p style="font-size:var(--text-sm); color:var(--color-text-muted); max-width:400px;">Up to 50 companies, period comparison, intercompany journals, account mapping, and unlimited team members.</p>
+                <div style="font-size:var(--text-xl); font-weight:700; color:#1d4ed8; margin-top:12px;">$49<span style="font-size:var(--text-sm); font-weight:400; color:var(--color-text-muted);">/month</span></div>
+                <div style="font-size:var(--text-xs); color:var(--color-text-muted);">14-day free trial included</div>
+              </div>
+              <button class="btn btn-primary" onclick="startCheckout()" id="btn-upgrade" style="padding:12px 32px; font-size:var(--text-base);">Upgrade Now</button>
+            </div>
+          </div>
+
+          <!-- Manage Subscription (shown on paid plan) -->
+          <div id="billing-manage-card" style="display:none; margin-bottom:24px;">
+            <button class="btn btn-outline" onclick="openBillingPortal()" style="padding:10px 24px;">Manage Subscription & Payment Method</button>
+          </div>
+
+          <!-- Plan Comparison -->
+          <div class="card">
+            <div class="card-header"><span class="card-title">Plan Comparison</span></div>
+            <div style="overflow-x:auto;">
+              <table class="data-table" style="min-width:500px;">
+                <thead>
+                  <tr><th>Feature</th><th>Starter (Free)</th><th>Business ($49/mo)</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>Companies</td><td>Up to 3</td><td>Up to 50</td></tr>
+                  <tr><td>P&L, Balance Sheet, Cash Flow</td><td>&#10003;</td><td>&#10003;</td></tr>
+                  <tr><td>Transaction Drill-Down</td><td>&#10003;</td><td>&#10003;</td></tr>
+                  <tr><td>Period Comparison</td><td>—</td><td>&#10003;</td></tr>
+                  <tr><td>Intercompany Journals</td><td>—</td><td>&#10003;</td></tr>
+                  <tr><td>Account Mapping</td><td>—</td><td>&#10003;</td></tr>
+                  <tr><td>Team Members</td><td>1 admin</td><td>Unlimited</td></tr>
+                  <tr><td>Support</td><td>Email</td><td>Priority Email</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="page-knowledge-base" class="page-content">
+      <div class="card mb-6">
+        <div class="card-header" style="display:flex; align-items:center; justify-content:space-between;">
+          <span class="card-title">AI Knowledge Base</span>
+          <button class="btn btn-primary btn-sm" onclick="openKBModal()">+ Add Entry</button>
+        </div>
+        <p style="font-size:var(--text-sm); color:var(--color-text-muted); margin-bottom:16px;">Manage the knowledge the AI chat assistant uses to answer questions. Add accounting rules, how-to guides, and any custom information.</p>
+        
+        <!-- Category filter -->
+        <div style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
+          <button class="btn btn-sm kb-filter active" data-cat="all" onclick="filterKB('all')">All</button>
+          <button class="btn btn-sm kb-filter" data-cat="accounting_rules" onclick="filterKB('accounting_rules')">Accounting Rules</button>
+          <button class="btn btn-sm kb-filter" data-cat="app_guide" onclick="filterKB('app_guide')">App Guides</button>
+          <button class="btn btn-sm kb-filter" data-cat="general" onclick="filterKB('general')">General</button>
+        </div>
+
+        <div id="kb-entries-list">
+          <div class="loading-placeholder" style="padding:40px; text-align:center; color:var(--color-text-muted);">Loading knowledge base...</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======== DELIVERY IMPORT PAGE ======== -->
+    <section id="page-delivery-import" class="page-content">
+      <div class="card mb-6">
+        <div class="card-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+          <span class="card-title">Import Delivery Platform Statements</span>
+        </div>
+        <p style="font-size:var(--text-sm); color:var(--color-text-muted); margin-bottom:20px;">Upload Uber Eats or DoorDash monthly statement PDFs to generate QBO-compatible journal entries for import into QuickBooks.</p>
+
+        <!-- Step 1: Upload -->
+        <div id="di-step-upload" class="di-step">
+          <div style="display:flex; gap:16px; align-items:flex-end; flex-wrap:wrap; margin-bottom:16px;">
+            <div class="form-group" style="flex:1; min-width:200px;">
+              <label style="font-weight:600; font-size:var(--text-sm); display:block; margin-bottom:4px;">Company</label>
+              <select id="di-company" style="width:100%; padding:8px 12px; border:1.5px solid var(--color-border); border-radius:var(--radius-md); font-size:var(--text-sm);"></select>
+            </div>
+          </div>
+          <div id="di-dropzone" style="border:2px dashed var(--color-border); border-radius:var(--radius-lg); padding:48px 24px; text-align:center; cursor:pointer; transition:all 0.2s;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" stroke-width="1.5" style="width:48px; height:48px; margin:0 auto 12px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+            <p style="font-size:var(--text-base); font-weight:600; margin-bottom:4px;">Drop your statement PDF here</p>
+            <p style="font-size:var(--text-sm); color:var(--color-text-muted);">Supports Uber Eats and DoorDash monthly statements</p>
+            <input type="file" id="di-file-input" accept=".pdf" style="display:none;">
+          </div>
+          <div id="di-upload-status" style="display:none; margin-top:16px; padding:12px 16px; border-radius:var(--radius-md); font-size:var(--text-sm);"></div>
+        </div>
+
+        <!-- Step 2: Account Mapping -->
+        <div id="di-step-mapping" class="di-step" style="display:none;">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; flex-wrap:wrap; gap:8px;">
+            <div>
+              <h3 style="font-size:var(--text-base); font-weight:700; margin:0;" id="di-platform-label">Uber Eats Statement</h3>
+              <p style="font-size:var(--text-sm); color:var(--color-text-muted); margin:2px 0 0;" id="di-store-info"></p>
+            </div>
+            <button class="btn btn-ghost btn-sm" onclick="diResetUpload()">Upload Different File</button>
+          </div>
+
+          <div style="margin-bottom:20px;">
+            <h4 style="font-size:var(--text-sm); font-weight:700; margin-bottom:12px;">QBO Account Mapping</h4>
+            <p style="font-size:var(--text-xs); color:var(--color-text-muted); margin-bottom:12px;">Map each category to the correct QuickBooks account name. These will be saved per company.</p>
+            <div id="di-mapping-fields" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:12px;"></div>
+          </div>
+
+          <div style="margin-bottom:16px;">
+            <label style="font-weight:600; font-size:var(--text-sm); display:block; margin-bottom:4px;">Journal Number Prefix</label>
+            <input type="text" id="di-prefix" value="UBER" style="width:160px; padding:8px 12px; border:1.5px solid var(--color-border); border-radius:var(--radius-md); font-size:var(--text-sm);">
+          </div>
+
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            <button class="btn btn-primary" onclick="diGeneratePreview()" id="di-generate-btn">Generate Journal Entries</button>
+            <button class="btn btn-outline btn-sm" onclick="diSaveMapping()" id="di-save-mapping-btn">Save Mapping</button>
+          </div>
+        </div>
+
+        <!-- Step 3: Preview & Download -->
+        <div id="di-step-preview" class="di-step" style="display:none;">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; flex-wrap:wrap; gap:8px;">
+            <div>
+              <h3 style="font-size:var(--text-base); font-weight:700; margin:0;">Journal Entry Preview</h3>
+              <p style="font-size:var(--text-sm); color:var(--color-text-muted); margin:2px 0 0;" id="di-preview-info"></p>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <button class="btn btn-ghost btn-sm" onclick="diBackToMapping()">Back to Mapping</button>
+              <button class="btn btn-outline btn-sm" onclick="diDownloadCSV()">Download CSV</button>
+              <button class="btn btn-primary btn-sm" onclick="diExportToQBO()" id="di-export-qbo-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;margin-right:4px;vertical-align:middle;"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+                Export into QuickBooks
+              </button>
+            </div>
+          </div>
+          <div id="di-export-status" style="display:none; margin-bottom:16px; padding:12px 16px; border-radius:var(--radius-md); font-size:var(--text-sm);"></div>
+          <div style="overflow-x:auto;">
+            <table class="data-table" id="di-preview-table">
+              <thead>
+                <tr><th>Journal No</th><th>Date</th><th>Account</th><th style="text-align:right;">Debit</th><th style="text-align:right;">Credit</th><th>Description</th></tr>
+              </thead>
+              <tbody id="di-preview-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- History Preview Modal -->
+      <div class="modal-backdrop" id="di-history-preview-modal" style="display:none;">
+        <div class="modal" style="max-width:900px;width:95%;max-height:85vh;display:flex;flex-direction:column;">
+          <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;flex-shrink:0;">
+            <div>
+              <h3 style="font-size:var(--text-base);font-weight:700;margin:0;">Journal Entry Preview</h3>
+              <p style="font-size:var(--text-sm);color:var(--color-text-muted);margin:2px 0 0;" id="di-history-preview-info"></p>
+            </div>
+            <button class="btn btn-ghost btn-sm" onclick="diCloseHistoryPreview()" style="padding:4px 8px;">&times;</button>
+          </div>
+          <div style="overflow:auto;flex:1;padding:0 24px 24px;">
+            <table class="data-table" style="width:100%;">
+              <thead style="position:sticky;top:0;background:var(--color-surface);z-index:1;">
+                <tr><th>Journal No</th><th>Date</th><th>Account</th><th style="text-align:right;">Debit</th><th style="text-align:right;">Credit</th><th>Description</th></tr>
+              </thead>
+              <tbody id="di-history-preview-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Import History Section -->
+      <div class="card" id="di-history-card">
+        <div class="card-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+          <span class="card-title">Import History</span>
+          <button class="btn btn-ghost btn-sm" onclick="diLoadHistory()">Refresh</button>
+        </div>
+        <div id="di-history-loading" style="padding:24px; text-align:center; display:none;">
+          <div class="loading-spinner" style="margin:0 auto;"></div>
+        </div>
+        <div id="di-history-empty" style="padding:24px; text-align:center; color:var(--color-text-muted); font-size:var(--text-sm); display:none;">
+          No imports yet. Upload a statement above to get started.
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="data-table" id="di-history-table" style="display:none;">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Platform</th>
+                <th>Store</th>
+                <th>Period</th>
+                <th>Payouts</th>
+                <th>Entries</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="di-history-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======== RECEIPTS (OCR) PAGE ======== -->
+    <section id="page-receipts" class="page-content">
+      <div class="card mb-6">
+        <div class="card-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+          <span class="card-title">Receipts — OCR & Transaction Matching</span>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <select id="rcpt-company" style="padding:6px 10px; border:1.5px solid var(--color-border); border-radius:var(--radius-md); font-size:var(--text-sm); min-width:180px;"></select>
+            <select id="rcpt-filter-status" onchange="loadReceipts()" style="padding:6px 10px; border:1.5px solid var(--color-border); border-radius:var(--radius-md); font-size:var(--text-sm);">
+              <option value="">All statuses</option>
+              <option value="done">Processed</option>
+              <option value="processing">Processing</option>
+              <option value="failed">Failed</option>
+            </select>
+            <select id="rcpt-filter-matched" onchange="loadReceipts()" style="padding:6px 10px; border:1.5px solid var(--color-border); border-radius:var(--radius-md); font-size:var(--text-sm);">
+              <option value="">Matched + unmatched</option>
+              <option value="true">Matched only</option>
+              <option value="false">Unmatched only</option>
+            </select>
+          </div>
+        </div>
+        <p style="font-size:var(--text-sm); color:var(--color-text-muted); margin-bottom:20px;">Drop a receipt image (JPG/PNG/HEIC) or PDF. Claude Vision extracts merchant, date, total, and line items, then finds matching transactions from QuickBooks and Plaid within ±3 days.</p>
+
+        <div id="rcpt-dropzone" style="border:2px dashed var(--color-border); border-radius:var(--radius-lg); padding:40px 24px; text-align:center; cursor:pointer; transition:all 0.2s;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" stroke-width="1.5" style="width:44px; height:44px; margin:0 auto 10px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+          <p style="font-size:var(--text-base); font-weight:600; margin-bottom:4px;">Drop receipt(s) here or click to upload</p>
+          <p style="font-size:var(--text-sm); color:var(--color-text-muted);">Images or PDF — up to 15 MB each</p>
+          <input type="file" id="rcpt-file-input" accept="image/*,application/pdf" multiple style="display:none;">
+        </div>
+        <div id="rcpt-upload-status" style="display:none; margin-top:16px; padding:12px 16px; border-radius:var(--radius-md); font-size:var(--text-sm);"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">Your receipts</span></div>
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="width:100%; min-width:800px;">
+            <thead><tr>
+              <th style="text-align:left;">Date</th>
+              <th style="text-align:left;">Merchant</th>
+              <th style="text-align:right;">Total</th>
+              <th style="text-align:left;">Status</th>
+              <th style="text-align:left;">Match</th>
+              <th style="text-align:right;">Actions</th>
+            </tr></thead>
+            <tbody id="rcpt-list-body">
+              <tr><td colspan="6" style="text-align:center; padding:24px; color:var(--color-text-muted);">No receipts yet. Upload one above.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ======== MODAL: Receipt Review ======== -->
+<div id="rcpt-modal" class="modal-overlay">
+  <div class="modal-content" style="max-width:960px;">
+    <div class="modal-header">
+      <h3 style="margin:0; font-size:var(--text-lg);">Review receipt</h3>
+      <button class="modal-close" onclick="closeReceiptModal()" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body" style="padding:16px 20px;">
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px;">
+        <div>
+          <div id="rcpt-preview" style="border:1px solid var(--color-border); border-radius:var(--radius-md); height:420px; background:#f8fafc; display:flex; align-items:center; justify-content:center; overflow:hidden;">
+            <span style="color:var(--color-text-muted); font-size:var(--text-sm);">Loading preview…</span>
+          </div>
+          <div id="rcpt-extracted" style="margin-top:12px; font-size:var(--text-sm);"></div>
+        </div>
+        <div>
+          <h4 style="margin:0 0 8px 0; font-size:var(--text-sm); font-weight:700; color:var(--color-text-secondary);">Candidate transactions</h4>
+          <div id="rcpt-candidates" style="display:flex; flex-direction:column; gap:8px;"></div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer" style="padding:12px 20px; border-top:1px solid var(--color-border); display:flex; justify-content:space-between; gap:8px;">
+      <button class="btn btn-danger btn-sm" onclick="deleteReceiptFromModal()">Delete</button>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-secondary btn-sm" onclick="reprocessReceiptFromModal()">Re-run OCR</button>
+        <button class="btn btn-secondary btn-sm" onclick="closeReceiptModal()">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: Knowledge Base Entry ======== -->
+<div id="kb-modal" class="modal-overlay">
+  <div class="modal-content" style="max-width:640px;">
+    <div class="modal-header">
+      <h3 id="kb-modal-title">Add Knowledge Entry</h3>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('kb-modal')" style="font-size:var(--text-lg);">&times;</button>
+    </div>
+    <div class="modal-body" style="padding:var(--space-4);">
+      <input type="hidden" id="kb-entry-id">
+      <div class="form-group" style="margin-bottom:16px;">
+        <label style="font-weight:600; font-size:var(--text-sm); display:block; margin-bottom:4px;">Category</label>
+        <select id="kb-category" style="width:100%; padding:8px 12px; border:1.5px solid var(--color-border); border-radius:var(--radius-md); font-size:var(--text-sm); background:white;">
+          <option value="accounting_rules">Accounting Rules</option>
+          <option value="app_guide">App Guide</option>
+          <option value="general">General</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin-bottom:16px;">
+        <label style="font-weight:600; font-size:var(--text-sm); display:block; margin-bottom:4px;">Title</label>
+        <input type="text" id="kb-title" placeholder="e.g., How to process management fees" style="width:100%; padding:8px 12px; border:1.5px solid var(--color-border); border-radius:var(--radius-md); font-size:var(--text-sm);">
+      </div>
+      <div class="form-group" style="margin-bottom:16px;">
+        <label style="font-weight:600; font-size:var(--text-sm); display:block; margin-bottom:4px;">Content</label>
+        <textarea id="kb-content" rows="10" placeholder="Enter the knowledge content the AI should know about..." style="width:100%; padding:8px 12px; border:1.5px solid var(--color-border); border-radius:var(--radius-md); font-size:var(--text-sm); resize:vertical; font-family:inherit;"></textarea>
+      </div>
+      <div class="form-group" style="display:flex; align-items:center; gap:8px; margin-bottom:16px;">
+        <input type="checkbox" id="kb-enabled" checked>
+        <label for="kb-enabled" style="font-size:var(--text-sm);">Enabled (included in AI context)</label>
+      </div>
+    </div>
+    <div class="modal-footer" style="display:flex; justify-content:flex-end; gap:8px; padding:var(--space-4); border-top:1px solid var(--color-border);">
+      <button class="btn btn-outline btn-sm" onclick="closeModal('kb-modal')">Cancel</button>
+      <button class="btn btn-primary btn-sm" onclick="saveKBEntry()">Save Entry</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: Edit User ======== -->
+<div id="edit-user-modal" class="modal-overlay">
+  <div class="modal-content" style="max-width:520px;">
+    <div class="modal-header">
+      <h3>Edit User</h3>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('edit-user-modal')" style="font-size:var(--text-lg);">&times;</button>
+    </div>
+    <div class="modal-body" style="padding:var(--space-4);">
+      <input type="hidden" id="edit-user-id">
+      <div class="form-group">
+        <label class="form-label">Name</label>
+        <input class="form-input" type="text" id="edit-user-name">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Email</label>
+        <input class="form-input" type="email" id="edit-user-email">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Role</label>
+        <select class="form-select" id="edit-user-role">
+          <option value="viewer">Viewer (Read Only)</option>
+          <option value="admin">Admin (Full Access)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">New Password <span style="color:var(--color-text-tertiary);font-weight:400;">(leave blank to keep current)</span></label>
+        <input class="form-input" type="password" id="edit-user-password" placeholder="Enter new password">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Company Access</label>
+        <div id="edit-user-companies" class="user-company-checkboxes"></div>
+      </div>
+      <div style="display:flex;gap:var(--space-3);margin-top:var(--space-4);">
+        <button class="btn btn-primary" onclick="saveUserEdit()">Save Changes</button>
+        <button class="btn btn-ghost" onclick="closeModal('edit-user-modal')">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: API Token ======== -->
+<div id="api-token-modal" class="modal-overlay">
+  <div class="modal-content" style="max-width:620px;">
+    <div class="modal-header">
+      <h3>API Token</h3>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('api-token-modal')" style="font-size:var(--text-lg);">&times;</button>
+    </div>
+    <div class="modal-body" style="padding:var(--space-4);">
+      <div id="api-token-user-info" style="margin-bottom:var(--space-4);font-size:var(--text-sm);color:var(--color-text-secondary);"></div>
+
+      <div id="api-token-new-container" style="display:none;">
+        <div style="background:#fffbeb;border:1px solid #fbbf24;color:#92400e;padding:12px;border-radius:var(--radius-md);margin-bottom:var(--space-3);font-size:var(--text-sm);">
+          <strong>&#9888; Copy this token now.</strong> For security, the full token will not be shown again after you close this dialog.
+        </div>
+        <label class="form-label">Bearer Token</label>
+        <div style="display:flex;gap:8px;align-items:stretch;">
+          <input id="api-token-value" class="form-input" type="text" readonly style="font-family:monospace;font-size:var(--text-xs);">
+          <button class="btn btn-primary" onclick="copyApiToken()" id="api-token-copy-btn">Copy</button>
+        </div>
+        <div style="margin-top:var(--space-3);font-size:var(--text-xs);color:var(--color-text-secondary);">
+          Use as: <code>Authorization: Bearer &lt;token&gt;</code>
+        </div>
+      </div>
+
+      <div style="margin-top:var(--space-4);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-2);">
+          <label class="form-label" style="margin:0;">Active Tokens</label>
+          <button class="btn btn-sm btn-secondary" onclick="generateApiToken()">+ Generate New Token</button>
+        </div>
+        <div id="api-token-sessions-list" style="font-size:var(--text-sm);color:var(--color-text-secondary);"></div>
+      </div>
+
+      <div style="display:flex;gap:var(--space-3);margin-top:var(--space-4);justify-content:space-between;">
+        <button class="btn btn-ghost" style="color:var(--color-error);" onclick="revokeAllApiTokens()">Revoke All Tokens</button>
+        <button class="btn btn-ghost" onclick="closeModal('api-token-modal')">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: Transaction Detail Drill-Down ======== -->
+<div id="txn-detail-modal" class="modal-overlay">
+  <div class="modal-content" style="max-width:95vw;width:1200px;">
+    <div class="modal-header">
+      <h3 id="txn-detail-title">Transaction Detail</h3>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('txn-detail-modal')" style="font-size:var(--text-lg);">&times;</button>
+    </div>
+    <div class="modal-body" style="max-height:75vh;overflow:auto;padding:0;">
+      <div id="txn-detail-filters" style="padding:12px 16px;border-bottom:1px solid var(--color-border);display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;">
+        <span id="txn-detail-badge" class="badge badge-success" style="font-size:var(--text-xs);"></span>
+        <span id="txn-detail-date-range" class="text-muted" style="font-size:var(--text-xs);"></span>
+        <div style="margin-left:auto;">
+          <button class="btn btn-sm btn-secondary" onclick="exportTransactionDetail()">Export CSV</button>
+        </div>
+      </div>
+      <div id="txn-detail-loading" class="text-center" style="padding:var(--space-8);">
+        <div class="loading-spinner" style="margin:0 auto;"></div>
+        <p class="mt-4 text-muted">Loading transactions...</p>
+      </div>
+      <div id="txn-detail-table" style="overflow-x:auto;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: Edit Template ======== -->
+<div id="edit-template-modal" class="modal-overlay">
+  <div class="modal-content" style="max-width:620px;">
+    <div class="modal-header">
+      <h3>Edit Template</h3>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('edit-template-modal')" style="font-size:var(--text-lg);">&times;</button>
+    </div>
+    <div class="modal-body" style="padding:var(--space-4);">
+      <input type="hidden" id="edit-tpl-id">
+      <div class="form-group">
+        <label class="form-label">Template Name</label>
+        <input class="form-input" type="text" id="edit-tpl-name">
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Source Company</label>
+          <select class="form-select" id="edit-tpl-source-company" onchange="loadEditTplAccounts('source')"></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Destination Company</label>
+          <select class="form-select" id="edit-tpl-dest-company" onchange="loadEditTplAccounts('dest')"></select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Entry Type</label>
+        <select class="form-select" id="edit-tpl-type">
+          <option value="">-- Select --</option>
+          <option value="expense_reimbursement">Expense Reimbursement</option>
+          <option value="revenue_share">Revenue Share</option>
+          <option value="loan">Loan / Advance</option>
+          <option value="management_fee">Management Fee</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Source Debit Account</label>
+          <select class="form-select" id="edit-tpl-source-debit"><option value="">-- Select company first --</option></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Source Credit Account</label>
+          <select class="form-select" id="edit-tpl-source-credit"><option value="">-- Select company first --</option></select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Dest Debit Account</label>
+          <select class="form-select" id="edit-tpl-dest-debit"><option value="">-- Select company first --</option></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Dest Credit Account</label>
+          <select class="form-select" id="edit-tpl-dest-credit"><option value="">-- Select company first --</option></select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Description</label>
+        <input class="form-input" type="text" id="edit-tpl-description">
+      </div>
+      <div style="display:flex;gap:var(--space-3);margin-top:var(--space-4);">
+        <button class="btn btn-primary" onclick="saveTemplateEdit()">Save Changes</button>
+        <button class="btn btn-ghost" onclick="closeModal('edit-template-modal')">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: Company Accounts ======== -->
+<div id="company-accounts-modal" class="modal-overlay">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 id="company-accounts-title">Chart of Accounts</h3>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('company-accounts-modal')" style="font-size:var(--text-lg);">&times;</button>
+    </div>
+    <div id="company-accounts-body" class="modal-body" style="max-height:70vh;overflow-y:auto;"></div>
+  </div>
+</div>
+
+<!-- ======== AI CHAT WIDGET ======== -->
+<div id="chat-widget" style="position:fixed;bottom:20px;right:20px;z-index:1000;">
+  <!-- Chat Bubble -->
+  <button id="chat-bubble" onclick="toggleChat()" style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#1a56db,#2563eb);color:white;border:none;cursor:pointer;box-shadow:0 4px 20px rgba(26,86,219,0.4);display:flex;align-items:center;justify-content:center;transition:transform 0.2s,box-shadow 0.2s;" onmouseover="this.style.transform='scale(1.1)'" onmouseout="this.style.transform='scale(1)'">
+    <svg id="chat-icon-open" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+    <svg id="chat-icon-close" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+  </button>
+
+  <!-- Chat Window -->
+  <div id="chat-window" style="display:none;position:absolute;bottom:70px;right:0;width:400px;max-width:calc(100vw - 40px);height:520px;max-height:calc(100vh - 120px);background:var(--color-surface);border:1px solid var(--color-border);border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,0.15);flex-direction:column;overflow:hidden;">
+    <!-- Header -->
+    <div style="padding:16px 20px;background:linear-gradient(135deg,#1a56db,#2563eb);color:white;display:flex;align-items:center;gap:12px;flex-shrink:0;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 0 1 7 7c0 2.38-1.19 4.47-3 5.74V17a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 0 1 7-7z"/><line x1="9" y1="21" x2="15" y2="21"/></svg>
+      <div>
+        <div style="font-weight:600;font-size:14px;">AI Assistant</div>
+        <div style="font-size:11px;opacity:0.8;">Ask about reports, journal entries, or data</div>
+      </div>
+      <button onclick="clearChat()" style="margin-left:auto;background:rgba(255,255,255,0.2);border:none;color:white;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer;">Clear</button>
+    </div>
+
+    <!-- Messages -->
+    <div id="chat-messages" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;">
+      <div class="chat-msg assistant">
+        <div style="background:var(--color-bg-muted);padding:10px 14px;border-radius:12px 12px 12px 4px;font-size:13px;line-height:1.5;max-width:85%;color:var(--color-text-primary);">
+          Hi! I can help you with:<br>
+          <strong>&#8226;</strong> Create intercompany journal entries<br>
+          <strong>&#8226;</strong> Pull P&L, Balance Sheet, or Cash Flow reports<br>
+          <strong>&#8226;</strong> Analyze financial data across companies<br>
+          <strong>&#8226;</strong> Navigate the app<br><br>
+          What would you like to do?
+        </div>
+      </div>
+    </div>
+
+    <!-- Input -->
+    <div style="padding:12px 16px;border-top:1px solid var(--color-border);display:flex;gap:8px;flex-shrink:0;background:var(--color-surface);">
+      <input id="chat-input" type="text" placeholder="Type a message..." onkeydown="if(event.key==='Enter')sendChat()" style="flex:1;padding:10px 14px;border:1px solid var(--color-border);border-radius:10px;font-size:13px;background:var(--color-bg-muted);color:var(--color-text-primary);outline:none;" />
+      <button id="chat-send-btn" onclick="sendChat()" style="padding:10px 14px;background:#1a56db;color:white;border:none;border-radius:10px;cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap;">Send</button>
+    </div>
+  </div>
+</div>
+
+<script src="./app.js"></script>
+</body>
+</html>

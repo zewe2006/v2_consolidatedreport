@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Policy — QBO Enterprise Dashboard</title>
+    <style>
+        *, *::before, *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: #0a0a0a;
+            color: #e5e5e5;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.7;
+            font-size: 16px;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .container {
+            max-width: 780px;
+            margin: 0 auto;
+            padding: 60px 24px 80px;
+        }
+
+        header {
+            margin-bottom: 48px;
+            padding-bottom: 32px;
+            border-bottom: 1px solid #1f1f1f;
+        }
+
+        header h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #ffffff;
+            letter-spacing: -0.02em;
+            margin-bottom: 8px;
+        }
+
+        header .app-name {
+            color: #2dd4bf;
+            font-size: 0.9rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            margin-bottom: 16px;
+            display: block;
+        }
+
+        header .effective-date {
+            color: #737373;
+            font-size: 0.875rem;
+        }
+
+        h2 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: #ffffff;
+            margin-top: 40px;
+            margin-bottom: 12px;
+            letter-spacing: -0.01em;
+        }
+
+        h2 .section-number {
+            color: #2dd4bf;
+            margin-right: 6px;
+        }
+
+        p {
+            margin-bottom: 14px;
+            color: #d4d4d4;
+        }
+
+        ul {
+            margin: 10px 0 16px 24px;
+            color: #d4d4d4;
+        }
+
+        ul li {
+            margin-bottom: 6px;
+        }
+
+        a {
+            color: #2dd4bf;
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        .highlight {
+            background-color: #1a1a1a;
+            border-left: 3px solid #2dd4bf;
+            padding: 16px 20px;
+            margin: 16px 0;
+            border-radius: 0 6px 6px 0;
+        }
+
+        .highlight p {
+            margin-bottom: 0;
+            color: #e5e5e5;
+        }
+
+        .contact-block {
+            background-color: #111111;
+            border: 1px solid #1f1f1f;
+            border-radius: 8px;
+            padding: 24px;
+            margin-top: 16px;
+        }
+
+        .contact-block p {
+            margin-bottom: 6px;
+        }
+
+        footer {
+            margin-top: 56px;
+            padding-top: 24px;
+            border-top: 1px solid #1f1f1f;
+            text-align: center;
+            color: #525252;
+            font-size: 0.8rem;
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                padding: 40px 16px 60px;
+            }
+            header h1 {
+                font-size: 1.5rem;
+            }
+            h2 {
+                font-size: 1.1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+
+        <header>
+            <span class="app-name">QBO Enterprise Dashboard</span>
+            <h1>Privacy Policy</h1>
+            <p class="effective-date">Effective Date: March 10, 2026</p>
+        </header>
+
+        <div class="highlight">
+            <p>Your privacy is important to us. This Privacy Policy explains how QBO Enterprise Dashboard collects, uses, stores, and protects your information when you use our Service.</p>
+        </div>
+
+        <!-- 1. Introduction -->
+        <h2><span class="section-number">1.</span> Introduction</h2>
+        <p>QBO Enterprise Dashboard ("Service," "we," "us," or "our") is a multi-company consolidated reporting dashboard available at <a href="https://consolidatedreport.app">consolidatedreport.app</a>, with backend services hosted at <a href="https://overflowing-ambition-production-4b7e.up.railway.app">overflowing-ambition-production-4b7e.up.railway.app</a>. The Service connects to QuickBooks Online ("QBO") via Intuit's OAuth 2.0 API to retrieve and consolidate financial reports across multiple QBO companies.</p>
+        <p>By using the Service, you consent to the data practices described in this Privacy Policy. If you do not agree with this policy, please do not use the Service.</p>
+
+        <!-- 2. Information We Collect -->
+        <h2><span class="section-number">2.</span> Information We Collect</h2>
+        <p>We collect the following categories of information:</p>
+
+        <p><strong>Account Information</strong></p>
+        <ul>
+            <li>Email address — used for login and account identification</li>
+            <li>Password — stored as a one-way SHA-256 hash; we never store your plaintext password</li>
+        </ul>
+
+        <p><strong>QuickBooks Online Data</strong></p>
+        <ul>
+            <li>OAuth 2.0 tokens (access token and refresh token) — used to authenticate with the Intuit API on your behalf</li>
+            <li>Company identifiers (Realm IDs) for your connected QBO companies</li>
+            <li>Financial report data — Profit &amp; Loss statements, Balance Sheets, and Cash Flow statements retrieved from your connected QBO companies</li>
+        </ul>
+
+        <p><strong>Technical Information</strong></p>
+        <ul>
+            <li>Session tokens — used to maintain your authenticated session</li>
+            <li>Server logs — standard request logs (IP address, timestamp, request path) generated automatically by our hosting infrastructure</li>
+        </ul>
+
+        <!-- 3. How We Use Your Information -->
+        <h2><span class="section-number">3.</span> How We Use Your Information</h2>
+        <p>We use the information we collect solely to provide and operate the Service:</p>
+        <ul>
+            <li><strong>Authentication</strong> — to verify your identity and manage access to your account</li>
+            <li><strong>QBO API Access</strong> — to connect to your QuickBooks Online companies, retrieve financial report data, and refresh OAuth tokens as needed</li>
+            <li><strong>Report Consolidation</strong> — to aggregate and display financial data from multiple QBO companies in a unified dashboard</li>
+            <li><strong>Performance</strong> — to cache report data locally, reducing redundant API calls and improving load times</li>
+            <li><strong>Security</strong> — to detect and prevent unauthorized access, fraud, or abuse</li>
+        </ul>
+        <p>We do <strong>not</strong> use your information for advertising, marketing, profiling, or any purpose unrelated to delivering the Service.</p>
+
+        <!-- 4. QuickBooks Online Data -->
+        <h2><span class="section-number">4.</span> QuickBooks Online Data</h2>
+        <p>We take the handling of your QuickBooks data seriously and adhere to Intuit's developer requirements:</p>
+        <ul>
+            <li>We access only the financial report data necessary to provide consolidated reporting (Profit &amp; Loss, Balance Sheet, Cash Flow)</li>
+            <li>We do <strong>not</strong> modify, create, or delete any records in your QuickBooks Online accounts — our access is read-only</li>
+            <li>We do <strong>not</strong> sell, rent, lease, or share your QuickBooks financial data with any third party</li>
+            <li>We do <strong>not</strong> use your QuickBooks data for any purpose other than displaying it to you within the Service</li>
+            <li>You may revoke the Service's access to your QBO companies at any time through your <a href="https://accounts.intuit.com">Intuit account settings</a> or by disconnecting the company within the Service</li>
+        </ul>
+        <p>Upon disconnection or revocation, we will delete the associated OAuth tokens and cease accessing data from that company.</p>
+
+        <!-- 5. Data Storage and Retention -->
+        <h2><span class="section-number">5.</span> Data Storage &amp; Retention</h2>
+        <p>Your data is stored as follows:</p>
+        <ul>
+            <li><strong>OAuth tokens</strong> — stored in a SQLite database on our backend server and retained only as long as your QBO company connection is active</li>
+            <li><strong>Cached report data</strong> — financial report data is cached in SQLite to improve performance; cached data is refreshed periodically and deleted when you disconnect a company or delete your account</li>
+            <li><strong>Account credentials</strong> — your email and hashed password are stored in SQLite and retained until you request account deletion</li>
+        </ul>
+        <p>Upon account deletion or termination, all associated data — including OAuth tokens, cached reports, and account information — will be permanently deleted within 30 days.</p>
+
+        <!-- 6. Data Security -->
+        <h2><span class="section-number">6.</span> Data Security</h2>
+        <p>We implement commercially reasonable security measures to protect your data:</p>
+        <ul>
+            <li>All communication between your browser and our servers is encrypted via HTTPS/TLS</li>
+            <li>Passwords are stored as one-way SHA-256 hashes and cannot be reversed</li>
+            <li>OAuth tokens are stored server-side and never exposed to the client browser</li>
+            <li>Access to the backend server and database is restricted to authorized personnel only</li>
+        </ul>
+        <p>While we strive to protect your information, no method of electronic transmission or storage is 100% secure. We cannot guarantee absolute security, but we are committed to promptly addressing any security incidents that may arise.</p>
+
+        <!-- 7. Cookies and Tracking -->
+        <h2><span class="section-number">7.</span> Cookies &amp; Tracking</h2>
+        <p>We do <strong>not</strong> use cookies for advertising, analytics, or tracking purposes. The Service uses only session tokens to maintain your authenticated login state. No third-party tracking scripts, pixels, or analytics tools are embedded in the Service.</p>
+
+        <!-- 8. Third-Party Services -->
+        <h2><span class="section-number">8.</span> Third-Party Services</h2>
+        <p>The Service integrates with the following third-party services:</p>
+        <ul>
+            <li><strong>Intuit / QuickBooks Online API</strong> — We connect to QBO through Intuit's official OAuth 2.0 API to retrieve your financial data. Your use of QuickBooks Online is governed by <a href="https://www.intuit.com/privacy/">Intuit's Privacy Statement</a> and <a href="https://accounts.intuit.com/terms-of-service">Intuit's Terms of Service</a>.</li>
+            <li><strong>Railway (Hosting)</strong> — Our backend is hosted on Railway's infrastructure. Railway processes data on our behalf in accordance with their security practices.</li>
+            <li><strong>Netlify (Hosting)</strong> — Our frontend is hosted on Netlify. Netlify may collect standard web server logs.</li>
+        </ul>
+        <p>We do not share your personal data or QuickBooks financial data with any other third parties, except as required by law.</p>
+
+        <!-- 9. Data Sharing and Disclosure -->
+        <h2><span class="section-number">9.</span> Data Sharing &amp; Disclosure</h2>
+        <p>We do <strong>not</strong> sell, trade, or rent your personal information or financial data to anyone. We may disclose your information only in the following circumstances:</p>
+        <ul>
+            <li><strong>Legal compliance</strong> — if required by law, regulation, legal process, or governmental request</li>
+            <li><strong>Safety and rights</strong> — to protect the rights, property, or safety of our users, the public, or ourselves</li>
+            <li><strong>Service providers</strong> — to infrastructure hosting providers (Railway, Netlify) who process data on our behalf and are bound by confidentiality obligations</li>
+        </ul>
+
+        <!-- 10. Your Rights -->
+        <h2><span class="section-number">10.</span> Your Rights</h2>
+        <p>You have the following rights regarding your data:</p>
+        <ul>
+            <li><strong>Access</strong> — You may request a summary of the personal data we hold about you</li>
+            <li><strong>Correction</strong> — You may request correction of inaccurate information</li>
+            <li><strong>Deletion</strong> — You may request deletion of your account and all associated data by contacting us at the email below</li>
+            <li><strong>Revocation</strong> — You may revoke the Service's access to your QuickBooks data at any time through your Intuit account or through the Service</li>
+            <li><strong>Portability</strong> — Your financial data originates from QuickBooks Online and remains accessible through your Intuit account at all times</li>
+        </ul>
+        <p>To exercise any of these rights, please contact us at <a href="mailto:zewe2006@gmail.com">zewe2006@gmail.com</a>. We will respond to your request within 30 days.</p>
+
+        <!-- 11. Children's Privacy -->
+        <h2><span class="section-number">11.</span> Children's Privacy</h2>
+        <p>The Service is not intended for use by individuals under the age of 18. We do not knowingly collect personal information from children. If we become aware that we have collected data from a child under 18, we will take steps to delete that information promptly. If you believe a child has provided us with personal data, please contact us at <a href="mailto:zewe2006@gmail.com">zewe2006@gmail.com</a>.</p>
+
+        <!-- 12. Changes to This Policy -->
+        <h2><span class="section-number">12.</span> Changes to This Privacy Policy</h2>
+        <p>We may update this Privacy Policy from time to time. When we make changes, we will revise the "Effective Date" at the top of this page and, where practicable, notify you via the Service or email. Your continued use of the Service after changes become effective constitutes your acceptance of the revised policy.</p>
+        <p>We encourage you to review this Privacy Policy periodically to stay informed about how we protect your data.</p>
+
+        <!-- 13. Contact Information -->
+        <h2><span class="section-number">13.</span> Contact Information</h2>
+        <p>If you have any questions, concerns, or requests regarding this Privacy Policy or our data practices, please contact us:</p>
+        <div class="contact-block">
+            <p><strong>QBO Enterprise Dashboard</strong></p>
+            <p>Email: <a href="mailto:zewe2006@gmail.com">zewe2006@gmail.com</a></p>
+            <p>Application: <a href="https://consolidatedreport.app">https://consolidatedreport.app</a></p>
+        </div>
+
+        <footer>
+            <p>&copy; 2026 QBO Enterprise Dashboard. All rights reserved.</p>
+        </footer>
+
+    </div>
+</body>
+</html>
