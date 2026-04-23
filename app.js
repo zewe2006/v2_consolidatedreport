@@ -5499,8 +5499,10 @@ function _baRender() {
         </div>
       </div>
       <table class="data-table" style="width:100%;font-size:var(--text-sm);">
-        <thead><tr><th>Account</th><th>Type</th><th style="text-align:right;">Balance</th><th>Maps to CoA</th></tr></thead>
-        <tbody>${accts.map((a) => `<tr>
+        <thead><tr><th>Account</th><th>Type</th><th style="text-align:right;">Balance</th><th>Maps to CoA</th><th style="width:32px;"></th></tr></thead>
+        <tbody>${accts.map((a) => {
+          const safeAcctLabel = `${a.name}${a.mask ? " ···" + a.mask : ""}`.replace(/'/g, "\\'");
+          return `<tr>
           <td><strong>${_escapeHtml(a.name)}</strong>${a.mask ? ` <span style="color:var(--color-text-secondary);">···${a.mask}</span>` : ""}</td>
           <td style="font-size:var(--text-xs);">${a.type || ""}${a.subtype ? " · " + a.subtype : ""}</td>
           <td style="text-align:right;font-variant-numeric:tabular-nums;">${parseFloat(a.current_balance || 0).toFixed(2)}</td>
@@ -5510,7 +5512,11 @@ function _baRender() {
               ${coaAssets.map((c) => `<option value="${c.id}" ${a.coa_account_id === c.id ? "selected" : ""}>${_escapeHtml(c.code)} ${_escapeHtml(c.name)}</option>`).join("")}
             </select>
           </td>
-        </tr>`).join("")}</tbody>
+          <td style="text-align:right;">
+            <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" title="Remove this account from this company (deletes its transactions)" onclick="baDeleteAccount('${a.id}','${safeAcctLabel}')">&times;</button>
+          </td>
+        </tr>`;
+        }).join("")}</tbody>
       </table>
     </div>`;
   }).join("");
@@ -5554,6 +5560,21 @@ async function baDeleteBank(itemId, institutionName, accountCount) {
 async function baUpdateCoaMapping(accountId, coaId) {
   try { await apiPatch(`/api/accounts/${accountId}`, { coa_account_id: coaId || null }); showToast("Mapping updated", "success"); }
   catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+
+async function baDeleteAccount(accountId, label) {
+  const msg = `Remove ${label} from this company?\n\nAll of its transactions will be deleted. The underlying bank at Plaid is NOT affected — the account still exists there and can be re-linked later.\n\nType REMOVE to confirm.`;
+  const answer = prompt(msg);
+  if (answer !== "REMOVE") {
+    if (answer !== null) showToast("Canceled — didn't match.", "info");
+    return;
+  }
+  try {
+    await apiDelete(`/api/accounts/${accountId}`);
+    showToast(`${label} removed`, "success");
+    await baReload();
+    if (typeof loadCompanyList === "function") await loadCompanyList();
+  } catch (e) { showToast("Failed: " + (e.message || "unknown"), "error"); }
 }
 
 async function baLinkAnother() {
