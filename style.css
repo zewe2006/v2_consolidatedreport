@@ -1343,6 +1343,26 @@ html, body {
   }
 }
 
+/* --- Plaid import-date choice rows --- */
+.plaid-date-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1.5px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.plaid-date-choice:hover {
+  border-color: var(--color-accent);
+  background: var(--color-bg-muted);
+}
+.plaid-date-choice input[type="radio"] {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
 /* --- Company-row source badge --- */
 .source-badge {
   display: inline-flex;

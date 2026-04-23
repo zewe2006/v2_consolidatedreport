@@ -4097,6 +4097,9 @@ async function openPlaidLinkForPending() {
   await connectPlaidBank(_pendingPlaidCompany.id, _pendingPlaidCompany.name);
 }
 
+// Pending exchange data, held between Plaid Link onSuccess and the user's import-date choice
+let _pendingExchange = null; // { company_id, company_name, public_token, institution_id, institution_name }
+
 async function connectPlaidBank(companyId, companyName) {
   if (typeof Plaid === "undefined" || !Plaid.create) {
     alert("Plaid Link is still loading — try again in a moment.");
@@ -4124,22 +4127,16 @@ async function connectPlaidBank(companyId, companyName) {
 
   const handler = Plaid.create({
     token: linkToken,
-    onSuccess: async (public_token, metadata) => {
-      try {
-        const r = await apiPost("/api/plaid/exchange-token", {
-          public_token,
-          company_id: companyId,
-          institution_id:   metadata && metadata.institution ? metadata.institution.institution_id   : null,
-          institution_name: metadata && metadata.institution ? metadata.institution.name              : null,
-        });
-        const accountCount = (r.accounts || []).length;
-        showToast(`${companyName}: ${accountCount} account${accountCount === 1 ? "" : "s"} linked. Syncing transactions...`, "success");
-        await loadCompanyList();
-        renderCompaniesTable();
-        resetAddCompany();
-      } catch (e) {
-        alert("Exchange failed: " + (e.message || "unknown error"));
-      }
+    onSuccess: (public_token, metadata) => {
+      // Stash and prompt the user for an import start date before calling exchange.
+      _pendingExchange = {
+        company_id: companyId,
+        company_name: companyName,
+        public_token,
+        institution_id:   metadata && metadata.institution ? metadata.institution.institution_id   : null,
+        institution_name: metadata && metadata.institution ? metadata.institution.name              : null,
+      };
+      _openPlaidImportDateModal(companyId, _pendingExchange.institution_name || companyName);
     },
     onExit: (err, metadata) => {
       if (openBtn) { openBtn.disabled = false; openBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/></svg> Connect Bank with Plaid'; }
@@ -4151,6 +4148,126 @@ async function connectPlaidBank(companyId, companyName) {
     },
   });
   handler.open();
+}
+
+
+// --- Import-date modal ---
+
+function _openPlaidImportDateModal(companyId, instName) {
+  const modal = document.getElementById("plaid-import-date-modal");
+  const nameEl = document.getElementById("plaid-import-inst-name");
+  const errEl  = document.getElementById("plaid-import-error");
+  if (errEl) errEl.style.display = "none";
+  if (nameEl) nameEl.textContent = instName || "Your bank";
+
+  // Resolve the company for fiscal year start / preview dates.
+  const company = allCompanies.find((c) => c.id === companyId) || {};
+  const fyStartMonth = parseInt(company.fiscal_year_start || 1, 10);
+  const today = new Date();
+  const year = today.getFullYear();
+  // Current fiscal year start: if current month >= fyStart, use this year; else prior year.
+  const fyStart = new Date(
+    today.getMonth() + 1 >= fyStartMonth ? year : year - 1,
+    fyStartMonth - 1,
+    1,
+  );
+  const priorYearStart = new Date(year - 1, today.getMonth(), today.getDate());
+
+  const fmt = (d) => d.toISOString().slice(0, 10);
+  const fyPreview = document.getElementById("plaid-import-fy-preview");
+  const pyPreview = document.getElementById("plaid-import-py-preview");
+  if (fyPreview) fyPreview.textContent = `From ${fmt(fyStart)}`;
+  if (pyPreview) pyPreview.textContent = `From ${fmt(priorYearStart)}`;
+
+  // Store computed dates on the modal for the confirm handler.
+  modal.dataset.fyStart = fmt(fyStart);
+  modal.dataset.priorYearStart = fmt(priorYearStart);
+  modal.dataset.companyId = companyId;
+
+  // Reset to default choice
+  const defaultRadio = modal.querySelector('input[name="plaid-import-choice"][value="everything"]');
+  if (defaultRadio) defaultRadio.checked = true;
+  const customInput = document.getElementById("plaid-import-custom-date");
+  if (customInput) customInput.value = fmt(priorYearStart);
+
+  modal.classList.add("active");
+  modal.style.display = "flex";
+}
+
+function _closePlaidImportDateModal() {
+  const modal = document.getElementById("plaid-import-date-modal");
+  if (modal) {
+    modal.classList.remove("active");
+    modal.style.display = "none";
+  }
+}
+
+function cancelPlaidImport() {
+  _pendingExchange = null;
+  _closePlaidImportDateModal();
+  const openBtn = document.getElementById("plaid-open-btn");
+  if (openBtn) { openBtn.disabled = false; openBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/></svg> Connect Bank with Plaid'; }
+  showToast("Bank linked but import canceled. Connect again to pull transactions.", "info");
+}
+
+async function confirmPlaidImport() {
+  if (!_pendingExchange) return;
+  const modal = document.getElementById("plaid-import-date-modal");
+  const errEl = document.getElementById("plaid-import-error");
+  const confirmBtn = document.getElementById("plaid-import-confirm-btn");
+
+  const choice = (modal.querySelector('input[name="plaid-import-choice"]:checked') || {}).value;
+  let importStartDate = null;
+  if (choice === "fy") {
+    importStartDate = modal.dataset.fyStart;
+  } else if (choice === "prior-year") {
+    importStartDate = modal.dataset.priorYearStart;
+  } else if (choice === "custom") {
+    const customInput = document.getElementById("plaid-import-custom-date");
+    importStartDate = customInput ? customInput.value : null;
+    if (!importStartDate) {
+      if (errEl) { errEl.textContent = "Pick a valid date."; errEl.style.display = "block"; }
+      return;
+    }
+    // Cap at today and 730 days ago (Plaid's limit for /transactions/get is typically 24 months)
+    const today = new Date().toISOString().slice(0, 10);
+    if (importStartDate > today) {
+      if (errEl) { errEl.textContent = "Start date can't be in the future."; errEl.style.display = "block"; }
+      return;
+    }
+  }
+  // choice === "everything" → importStartDate stays null (default 730-day window)
+
+  if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = "Starting import..."; }
+
+  try {
+    const body = {
+      public_token: _pendingExchange.public_token,
+      company_id:   _pendingExchange.company_id,
+      institution_id:   _pendingExchange.institution_id,
+      institution_name: _pendingExchange.institution_name,
+    };
+    if (importStartDate) body.import_start_date = importStartDate;
+    const r = await apiPost("/api/plaid/exchange-token", body);
+    const accountCount = (r.accounts || []).length;
+    const sinceLabel = importStartDate ? ` since ${importStartDate}` : "";
+    showToast(
+      `${_pendingExchange.company_name}: ${accountCount} account${accountCount === 1 ? "" : "s"} linked. Importing transactions${sinceLabel}...`,
+      "success",
+    );
+    _pendingExchange = null;
+    _closePlaidImportDateModal();
+    await loadCompanyList();
+    renderCompaniesTable();
+    resetAddCompany();
+  } catch (e) {
+    if (errEl) {
+      errEl.textContent = "Exchange failed: " + (e.message || "unknown error");
+      errEl.style.display = "block";
+    }
+  } finally {
+    if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Start Import'; }
+  }
 }
 
 async function syncPlaidCompany(companyId, companyName) {

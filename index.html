@@ -1476,6 +1476,58 @@
   </div>
 </div>
 
+<!-- ======== MODAL: Plaid Import Start Date ======== -->
+<div id="plaid-import-date-modal" class="modal-overlay">
+  <div class="modal" style="max-width:520px;">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:var(--text-lg);">How much history should we import?</h3>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:var(--text-sm);color:var(--color-text-secondary);margin-bottom:var(--space-4);">
+        <strong id="plaid-import-inst-name"></strong> is linked. Pick how far back to pull transactions. Plaid's maximum is 24 months; older options may return fewer results depending on your bank.
+      </p>
+      <div style="display:flex;flex-direction:column;gap:var(--space-3);">
+        <label class="plaid-date-choice">
+          <input type="radio" name="plaid-import-choice" value="everything" checked>
+          <div>
+            <div style="font-weight:600;font-size:var(--text-sm);">Import everything available</div>
+            <div style="font-size:var(--text-xs);color:var(--color-text-secondary);">Default — up to 730 days.</div>
+          </div>
+        </label>
+        <label class="plaid-date-choice">
+          <input type="radio" name="plaid-import-choice" value="fy">
+          <div>
+            <div style="font-weight:600;font-size:var(--text-sm);">Start of current fiscal year</div>
+            <div id="plaid-import-fy-preview" style="font-size:var(--text-xs);color:var(--color-text-secondary);"></div>
+          </div>
+        </label>
+        <label class="plaid-date-choice">
+          <input type="radio" name="plaid-import-choice" value="prior-year">
+          <div>
+            <div style="font-weight:600;font-size:var(--text-sm);">Prior year (1 year ago to today)</div>
+            <div id="plaid-import-py-preview" style="font-size:var(--text-xs);color:var(--color-text-secondary);"></div>
+          </div>
+        </label>
+        <label class="plaid-date-choice">
+          <input type="radio" name="plaid-import-choice" value="custom">
+          <div style="width:100%;">
+            <div style="font-weight:600;font-size:var(--text-sm);">Custom start date</div>
+            <input class="form-input" type="date" id="plaid-import-custom-date" style="margin-top:var(--space-2);max-width:240px;">
+          </div>
+        </label>
+      </div>
+      <div id="plaid-import-error" style="display:none;color:var(--color-error);font-size:var(--text-sm);margin-top:var(--space-3);"></div>
+      <div style="display:flex;gap:var(--space-3);margin-top:var(--space-5);">
+        <button class="btn btn-primary" id="plaid-import-confirm-btn" onclick="confirmPlaidImport()" type="button">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          Start Import
+        </button>
+        <button class="btn btn-secondary" onclick="cancelPlaidImport()" type="button">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ======== MODAL: Plaid Transactions ======== -->
 <div id="plaid-tx-modal" class="modal-overlay">
   <div class="modal-content" style="max-width:1100px;">
