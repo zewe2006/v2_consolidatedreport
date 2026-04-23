@@ -5766,22 +5766,22 @@ async function runQboImport() {
       accounting_method: method,
     });
     progEl.style.display = "none";
-    const unmappedList = (r.unmapped || []).slice(0, 10);
-    const unmappedHtml = unmappedList.length
-      ? `<div style="margin-top:8px;"><strong>${r.unmapped_count} QBO account${r.unmapped_count === 1 ? "" : "s"}</strong> had no exact match and were routed to a fallback:
+    const createdList = (r.created_accounts || []).slice(0, 12);
+    const createdHtml = createdList.length
+      ? `<div style="margin-top:8px;"><strong>${r.created_accounts_count} new CoA account${r.created_accounts_count === 1 ? "" : "s"}</strong> created to match QBO:
            <ul style="margin:4px 0 0 16px;font-size:var(--text-xs);">
-             ${unmappedList.map((u) => `<li>${_escapeHtml(u.qbo_name)} <span style="color:var(--color-text-secondary);">(${_escapeHtml(u.qbo_type || "?")} → ${_escapeHtml(u.mapped_fallback || "Uncategorized")})</span></li>`).join("")}
-             ${r.unmapped_count > unmappedList.length ? `<li>… and ${r.unmapped_count - unmappedList.length} more</li>` : ""}
+             ${createdList.map((u) => `<li><code>${_escapeHtml(u.coa_code || "")}</code> ${_escapeHtml(u.qbo_name)} <span style="color:var(--color-text-secondary);">(${_escapeHtml(u.coa_type)})</span></li>`).join("")}
+             ${r.created_accounts_count > createdList.length ? `<li>… and ${r.created_accounts_count - createdList.length} more</li>` : ""}
            </ul>
          </div>`
-      : '<div style="margin-top:8px;color:var(--color-success);">All QBO accounts matched exactly. 🎉</div>';
+      : '<div style="margin-top:8px;color:var(--color-success);">All QBO accounts already existed — no new CoA rows needed. 🎉</div>';
 
     resultEl.innerHTML = `
       <div><strong>${r.imported.toLocaleString()}</strong> transactions imported from
         <strong>${_escapeHtml(r.source_company)}</strong> into
         <strong>${_escapeHtml(r.dest_company)}</strong> across ${r.months_processed} month${r.months_processed === 1 ? "" : "s"}.</div>
       <div style="font-size:var(--text-xs);color:var(--color-text-secondary);margin-top:2px;">Skipped ${r.skipped.toLocaleString()} rows (no account / no amount / no date).</div>
-      ${unmappedHtml}
+      ${createdHtml}
       <div style="margin-top:10px;">
         <button class="btn btn-sm btn-primary" onclick="setSelectedCompany('${dest}');navigateTo('transactions');closeQboImportModal();" type="button">Open Transactions</button>
         <button class="btn btn-sm btn-secondary" onclick="setSelectedCompany('${dest}');navigateTo('coa');closeQboImportModal();" type="button">Review Chart of Accounts</button>
