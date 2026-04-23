@@ -1379,28 +1379,52 @@ async function loadCompanies() {
 function renderCompaniesTable() {
   const el = document.getElementById("companies-list");
   if (!allCompanies.length) {
-    el.innerHTML = '<p class="text-muted" style="padding:var(--space-4);font-size:var(--text-sm);">No companies yet. Click "Connect QuickBooks Company" to start.</p>';
+    el.innerHTML = '<p class="text-muted" style="padding:var(--space-4);font-size:var(--text-sm);">No companies yet. Use the chooser above to add your first one.</p>';
     return;
   }
-  let html = '<table class="data-table"><thead><tr><th>Company</th><th>Legal Name</th><th>Industry</th><th>QBO Plan</th><th>Status</th><th>Last Synced</th><th>Actions</th></tr></thead><tbody>';
+  let html = '<table class="data-table"><thead><tr><th>Company</th><th>Source</th><th>Legal Name</th><th>Status</th><th>Last Synced</th><th>Actions</th></tr></thead><tbody>';
   for (const c of allCompanies) {
-    const badge = c.status === "connected" ? "badge-success" : c.status === "syncing" ? "badge-warning" : "badge-neutral";
-    const label = c.status === "connected" ? "Connected" : c.status === "syncing" ? "Syncing" : "Disconnected";
+    const isManual = (c.source || "qbo") === "manual";
+    const srcBadge = isManual
+      ? `<span class="source-badge manual">Manual + Plaid</span>`
+      : `<span class="source-badge qbo">QuickBooks</span>`;
+
+    let statusBadge, statusLabel;
+    if (isManual) {
+      statusBadge = "badge-success";
+      statusLabel = "Active";
+    } else {
+      statusBadge = c.status === "connected" ? "badge-success" : c.status === "syncing" ? "badge-warning" : "badge-neutral";
+      statusLabel = c.status === "connected" ? "Connected" : c.status === "syncing" ? "Syncing" : "Disconnected";
+    }
     const synced = c.last_synced ? new Date(c.last_synced + "Z").toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "Never";
-    const syncBtn = c.status === "connected"
-      ? `<button class="btn btn-sm btn-primary" onclick="syncSingleCompany('${c.id}','${c.name.replace(/'/g, "\\'")}')">Sync</button>`
-      : `<button class="btn btn-sm btn-secondary" onclick="reconnectCompany('${c.id}')">Reconnect</button>`;
+    const safeName = c.name.replace(/'/g, "\\'");
+
+    let actionBtns = "";
+    if (isManual) {
+      actionBtns = `
+        <button class="btn btn-sm btn-primary" onclick="connectPlaidBank('${c.id}','${safeName}')">Connect Bank</button>
+        <button class="btn btn-sm btn-secondary" onclick="showPlaidTransactions('${c.id}','${safeName}')">Transactions</button>
+        <button class="btn btn-sm btn-secondary" onclick="syncPlaidCompany('${c.id}','${safeName}')">Sync</button>
+        <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="removeCompany('${c.id}','${safeName}')">&times;</button>`;
+    } else {
+      const syncBtn = c.status === "connected"
+        ? `<button class="btn btn-sm btn-primary" onclick="syncSingleCompany('${c.id}','${safeName}')">Sync</button>`
+        : `<button class="btn btn-sm btn-secondary" onclick="reconnectCompany('${c.id}')">Reconnect</button>`;
+      actionBtns = `
+        ${syncBtn}
+        <button class="btn btn-sm btn-secondary" onclick="viewCompanyAccounts('${c.id}','${safeName}')">Accounts</button>
+        <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="removeCompany('${c.id}','${safeName}')">&times;</button>`;
+    }
+
     html += `<tr>
       <td><strong>${c.name}</strong></td>
+      <td>${srcBadge}</td>
       <td>${c.legal_name || "-"}</td>
-      <td style="font-size:var(--text-xs);">${c.industry || "-"}</td>
-      <td style="font-size:var(--text-xs);">${c.qbo_plan || "-"}</td>
-      <td><span class="badge ${badge}">${label}</span></td>
+      <td><span class="badge ${statusBadge}">${statusLabel}</span></td>
       <td class="text-muted" style="font-size:var(--text-xs);">${synced}</td>
-      <td style="display:flex;gap:var(--space-2);">
-        ${syncBtn}
-        <button class="btn btn-sm btn-secondary" onclick="viewCompanyAccounts('${c.id}','${c.name.replace(/'/g, "\\'")}')">Accounts</button>
-        <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="removeCompany('${c.id}','${c.name.replace(/'/g, "\\'")}')">&times;</button>
+      <td style="display:flex;gap:var(--space-2);flex-wrap:wrap;">
+        ${actionBtns}
       </td>
     </tr>`;
   }
@@ -3974,4 +3998,269 @@ function closeReceiptModal() {
   modal.classList.remove("active");
   modal.style.display = "none";
   rcptCurrentId = null;
+}
+
+
+// =====================================================================
+//  ADD COMPANY — Source Chooser + Manual Flow + Plaid Link
+// =====================================================================
+
+let _pendingPlaidCompany = null; // { id, name } — holds the company awaiting bank link
+
+function chooseAddSource(src) {
+  const chooser   = document.getElementById("add-company-chooser");
+  const qbo       = document.getElementById("qbo-wizard-card");
+  const manual    = document.getElementById("manual-company-form-card");
+  const plaidLink = document.getElementById("plaid-link-card");
+  if (!chooser || !qbo || !manual) return;
+
+  chooser.style.display = "none";
+  plaidLink.style.display = "none";
+  if (src === "qbo") {
+    manual.style.display = "none";
+    qbo.style.display = "block";
+  } else if (src === "manual") {
+    qbo.style.display = "none";
+    manual.style.display = "block";
+    const errEl = document.getElementById("mc-form-error");
+    if (errEl) errEl.style.display = "none";
+  }
+}
+
+function resetAddCompany() {
+  const chooser   = document.getElementById("add-company-chooser");
+  const qbo       = document.getElementById("qbo-wizard-card");
+  const manual    = document.getElementById("manual-company-form-card");
+  const plaidLink = document.getElementById("plaid-link-card");
+  if (chooser)   chooser.style.display   = "block";
+  if (qbo)       qbo.style.display       = "none";
+  if (manual)    manual.style.display    = "none";
+  if (plaidLink) plaidLink.style.display = "none";
+  // Reset QBO wizard back to step 1
+  if (typeof setWizardStep === "function") setWizardStep(1);
+  _pendingPlaidCompany = null;
+  // Clear manual form fields
+  ["mc-name", "mc-legal", "mc-ein", "mc-industry"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.value = "";
+  });
+}
+
+async function createManualCompany() {
+  const btn = document.getElementById("mc-submit-btn");
+  const errEl = document.getElementById("mc-form-error");
+  if (errEl) errEl.style.display = "none";
+
+  const name = (document.getElementById("mc-name").value || "").trim();
+  if (!name) {
+    if (errEl) { errEl.textContent = "Company name is required."; errEl.style.display = "block"; }
+    return;
+  }
+
+  const body = {
+    name,
+    legal_name: (document.getElementById("mc-legal").value || "").trim() || null,
+    ein: (document.getElementById("mc-ein").value || "").trim() || null,
+    industry: (document.getElementById("mc-industry").value || "").trim() || null,
+    fiscal_year_start: parseInt(document.getElementById("mc-fy-start").value || "1", 10),
+    base_currency: document.getElementById("mc-currency").value || "USD",
+  };
+
+  if (btn) { btn.disabled = true; btn.textContent = "Creating..."; }
+  try {
+    const resp = await apiPost("/api/companies/manual", body);
+    const newCompany = resp.company;
+    if (!newCompany || !newCompany.id) throw new Error("Server did not return the new company");
+    showToast(`${newCompany.name} created`, "success");
+    await loadCompanyList();
+    renderCompaniesTable();
+    // Transition to Plaid link card
+    document.getElementById("manual-company-form-card").style.display = "none";
+    document.getElementById("add-company-chooser").style.display = "none";
+    document.getElementById("plaid-link-company-name").textContent = newCompany.name;
+    document.getElementById("plaid-link-card").style.display = "block";
+    _pendingPlaidCompany = { id: newCompany.id, name: newCompany.name };
+  } catch (e) {
+    if (errEl) {
+      errEl.textContent = e.message || "Failed to create company";
+      errEl.style.display = "block";
+    } else {
+      alert("Failed: " + (e.message || "Unknown error"));
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg> Create Company'; }
+  }
+}
+
+async function openPlaidLinkForPending() {
+  if (!_pendingPlaidCompany) return;
+  await connectPlaidBank(_pendingPlaidCompany.id, _pendingPlaidCompany.name);
+}
+
+async function connectPlaidBank(companyId, companyName) {
+  if (typeof Plaid === "undefined" || !Plaid.create) {
+    alert("Plaid Link is still loading — try again in a moment.");
+    return;
+  }
+  const statusEl = document.getElementById("plaid-link-status");
+  const openBtn  = document.getElementById("plaid-open-btn");
+  if (openBtn)  { openBtn.disabled = true; openBtn.textContent = "Opening Plaid..."; }
+  if (statusEl) { statusEl.style.display = "none"; }
+
+  let linkToken;
+  try {
+    const resp = await apiPost("/api/plaid/link-token", { company_id: companyId });
+    linkToken = resp.link_token;
+    if (!linkToken) throw new Error("No link token returned");
+  } catch (e) {
+    if (statusEl) {
+      statusEl.style.display = "block";
+      statusEl.style.color = "var(--color-error)";
+      statusEl.textContent = "Could not create Plaid link token: " + (e.message || "unknown error");
+    }
+    if (openBtn) { openBtn.disabled = false; openBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/></svg> Connect Bank with Plaid';}
+    return;
+  }
+
+  const handler = Plaid.create({
+    token: linkToken,
+    onSuccess: async (public_token, metadata) => {
+      try {
+        const r = await apiPost("/api/plaid/exchange-token", {
+          public_token,
+          company_id: companyId,
+          institution_id:   metadata && metadata.institution ? metadata.institution.institution_id   : null,
+          institution_name: metadata && metadata.institution ? metadata.institution.name              : null,
+        });
+        const accountCount = (r.accounts || []).length;
+        showToast(`${companyName}: ${accountCount} account${accountCount === 1 ? "" : "s"} linked. Syncing transactions...`, "success");
+        await loadCompanyList();
+        renderCompaniesTable();
+        resetAddCompany();
+      } catch (e) {
+        alert("Exchange failed: " + (e.message || "unknown error"));
+      }
+    },
+    onExit: (err, metadata) => {
+      if (openBtn) { openBtn.disabled = false; openBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/></svg> Connect Bank with Plaid'; }
+      if (err && statusEl) {
+        statusEl.style.display = "block";
+        statusEl.style.color = "var(--color-error)";
+        statusEl.textContent = "Plaid Link closed: " + (err.display_message || err.error_message || err.error_code || "unknown error");
+      }
+    },
+  });
+  handler.open();
+}
+
+async function syncPlaidCompany(companyId, companyName) {
+  try {
+    showToast(`Syncing ${companyName || "company"}...`, "info");
+    const res = await apiPost(`/api/plaid/sync/${companyId}`, {});
+    const t = res.totals || {};
+    showToast(`${companyName || "Company"} synced — added ${t.added || 0}, modified ${t.modified || 0}`, "success");
+    await loadCompanyList();
+    renderCompaniesTable();
+  } catch (e) {
+    showToast("Sync failed: " + (e.message || "unknown error"), "error");
+  }
+}
+
+
+// =====================================================================
+//  PLAID TRANSACTIONS MODAL
+// =====================================================================
+
+let _plaidTxState = { company_id: null, company_name: "", limit: 100, offset: 0, last_count: 0 };
+
+async function showPlaidTransactions(companyId, companyName) {
+  _plaidTxState = { company_id: companyId, company_name: companyName, limit: 100, offset: 0, last_count: 0 };
+  const modal = document.getElementById("plaid-tx-modal");
+  const title = document.getElementById("plaid-tx-title");
+  if (title) title.textContent = `Transactions — ${companyName || ""}`;
+  if (modal) {
+    modal.classList.add("active");
+    modal.style.display = "flex";
+  }
+  await _loadPlaidTransactions();
+}
+
+function closePlaidTxModal() {
+  const modal = document.getElementById("plaid-tx-modal");
+  if (modal) {
+    modal.classList.remove("active");
+    modal.style.display = "none";
+  }
+}
+
+async function plaidTxPage(delta) {
+  const next = _plaidTxState.offset + (delta * _plaidTxState.limit);
+  if (next < 0) return;
+  if (delta > 0 && _plaidTxState.last_count < _plaidTxState.limit) return; // no more pages
+  _plaidTxState.offset = next;
+  await _loadPlaidTransactions();
+}
+
+async function plaidSyncFromModal() {
+  if (!_plaidTxState.company_id) return;
+  await syncPlaidCompany(_plaidTxState.company_id, _plaidTxState.company_name);
+  await _loadPlaidTransactions();
+}
+
+async function _loadPlaidTransactions() {
+  const body = document.getElementById("plaid-tx-body");
+  const summary = document.getElementById("plaid-tx-summary");
+  const pag = document.getElementById("plaid-tx-pagination");
+  if (!body) return;
+  body.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--color-text-muted);">Loading...</td></tr>';
+
+  try {
+    const qs = new URLSearchParams({
+      limit: String(_plaidTxState.limit),
+      offset: String(_plaidTxState.offset),
+    }).toString();
+    const resp = await apiGet(`/api/plaid/transactions/${_plaidTxState.company_id}?${qs}`);
+    const txs = resp.transactions || [];
+    _plaidTxState.last_count = txs.length;
+
+    if (!txs.length) {
+      body.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--color-text-muted);">No transactions yet. Click "Sync Now" to pull from Plaid.</td></tr>';
+    } else {
+      body.innerHTML = txs.map((t) => {
+        const amount = Number(t.amount || 0);
+        // Plaid: positive = outflow (spend). Display with sign.
+        const displayAmt = amount;
+        const color = displayAmt > 0 ? "var(--color-text-primary)" : "var(--color-success)";
+        const cat = (t.category && t.category.name) || (t.plaid_pfc ? t.plaid_pfc.replace(/_/g, " ").toLowerCase() : "—");
+        const acct = t.account ? (t.account.name + (t.account.mask ? ` ···${t.account.mask}` : "")) : "—";
+        const merch = t.merchant_name || t.description || "—";
+        return `<tr>
+          <td style="font-size:var(--text-xs);">${t.date || ""}</td>
+          <td style="font-size:var(--text-xs);">${_escapeHtml(acct)}</td>
+          <td>${_escapeHtml(merch)}</td>
+          <td style="font-size:var(--text-xs);">${_escapeHtml(cat)}${t.is_transfer ? ' <span class="badge badge-neutral" style="font-size:10px;">transfer</span>' : ""}</td>
+          <td style="text-align:right;color:${color};font-variant-numeric:tabular-nums;">${displayAmt.toFixed(2)}</td>
+        </tr>`;
+      }).join("");
+    }
+    if (summary) summary.textContent = `Showing ${txs.length} transaction${txs.length === 1 ? "" : "s"} starting at offset ${_plaidTxState.offset}.`;
+    if (pag) pag.textContent = `Page ${(Math.floor(_plaidTxState.offset / _plaidTxState.limit) + 1)}`;
+
+    const prevBtn = document.getElementById("plaid-tx-prev");
+    const nextBtn = document.getElementById("plaid-tx-next");
+    if (prevBtn) prevBtn.disabled = _plaidTxState.offset <= 0;
+    if (nextBtn) nextBtn.disabled = txs.length < _plaidTxState.limit;
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--color-error);">Failed to load: ${_escapeHtml(e.message || "unknown error")}</td></tr>`;
+  }
+}
+
+function _escapeHtml(s) {
+  if (s == null) return "";
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
