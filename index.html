@@ -658,16 +658,22 @@
     <!-- ======== COMPANIES PAGE ======== -->
     <section id="page-companies" class="page-content">
 
-      <!-- Primary action: Add Company -->
-      <div class="card mb-4" style="padding:var(--space-3) var(--space-4);display:flex;justify-content:space-between;align-items:center;">
+      <!-- Primary action: Add Company + QBO import -->
+      <div class="card mb-4" style="padding:var(--space-3) var(--space-4);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
         <div>
           <strong style="font-size:var(--text-md);">Company Management</strong>
           <div class="text-muted" style="font-size:var(--text-xs);margin-top:2px;">Connect QuickBooks or set up a manual company with bank feeds.</div>
         </div>
-        <button class="btn btn-primary" id="companies-add-btn" onclick="openAddCompany()" type="button">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
-          Add Company
-        </button>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-secondary" onclick="openQboImportModal()" type="button" title="Import historical QuickBooks data into a manual company">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+            Import QBO → Manual
+          </button>
+          <button class="btn btn-primary" id="companies-add-btn" onclick="openAddCompany()" type="button">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            Add Company
+          </button>
+        </div>
       </div>
 
       <!-- Add Company: Source Chooser (hidden by default) -->
@@ -1972,6 +1978,61 @@
     <div style="display:flex;gap:8px;">
       <button class="btn btn-primary" id="journal-save-btn" onclick="journalSave()" type="button">Save Entry</button>
       <button class="btn btn-secondary" onclick="closeJournalEditModal()" type="button">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: Import QBO → Manual ======== -->
+<div id="qbo-import-modal" class="modal-overlay">
+  <div class="modal-content" style="max-width:620px;">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:var(--text-lg);">Import QBO history → Manual company</h3>
+      <button class="modal-close" onclick="closeQboImportModal()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--color-text-secondary);">&times;</button>
+    </div>
+    <div id="qbo-import-info" style="background:var(--color-bg-muted);padding:12px;border-radius:var(--radius-md);font-size:var(--text-sm);margin-bottom:16px;">
+      Pulls every transaction from a QBO company's general ledger and writes
+      them into a manual company under a synthetic <strong>QBO Import</strong> account.
+      Safe to rerun — rows with the same import id are merged, not duplicated.
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Source (QuickBooks company)</label>
+        <select class="form-select" id="qbo-import-src"><option value="">Select...</option></select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Destination (Manual company)</label>
+        <select class="form-select" id="qbo-import-dest"><option value="">Select...</option></select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Start date</label>
+        <input class="form-input" type="date" id="qbo-import-start" value="2025-01-01">
+      </div>
+      <div class="form-group">
+        <label class="form-label">End date</label>
+        <input class="form-input" type="date" id="qbo-import-end">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Accounting method</label>
+      <select class="form-select" id="qbo-import-method">
+        <option value="Accrual" selected>Accrual (captures AR/AP)</option>
+        <option value="Cash">Cash</option>
+      </select>
+    </div>
+    <div id="qbo-import-error" style="display:none;color:var(--color-error);font-size:var(--text-sm);margin-bottom:12px;"></div>
+    <div id="qbo-import-progress" style="display:none;font-size:var(--text-sm);margin-bottom:12px;color:var(--color-text-secondary);">
+      <div class="loading-spinner" style="display:inline-block;width:14px;height:14px;border-width:2px;vertical-align:-3px;margin-right:6px;"></div>
+      Importing... this can take 30–90 seconds depending on date range.
+    </div>
+    <div id="qbo-import-result" style="display:none;padding:12px;border-radius:var(--radius-md);background:oklch(0.95 0.06 140);font-size:var(--text-sm);margin-bottom:12px;"></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-primary" id="qbo-import-run-btn" onclick="runQboImport()" type="button">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        Start Import
+      </button>
+      <button class="btn btn-secondary" onclick="closeQboImportModal()" type="button">Close</button>
     </div>
   </div>
 </div>

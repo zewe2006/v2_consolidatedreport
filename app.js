@@ -5688,6 +5688,119 @@ function _kpiCard(label, value, color) {
 
 
 // =====================================================================
+//  QBO → MANUAL IMPORT MODAL
+// =====================================================================
+
+function openQboImportModal() {
+  // Populate source (QBO) + dest (manual) dropdowns
+  const srcSel = document.getElementById("qbo-import-src");
+  const destSel = document.getElementById("qbo-import-dest");
+  const qboCompanies = (allCompanies || []).filter((c) => (c.source || "qbo") === "qbo");
+  const manualCompanies = (allCompanies || []).filter((c) => c.source === "manual");
+  if (!qboCompanies.length) {
+    showToast("No QuickBooks companies connected to import from.", "error");
+    return;
+  }
+  if (!manualCompanies.length) {
+    showToast("No manual companies to import into. Create one first.", "error");
+    return;
+  }
+  srcSel.innerHTML = '<option value="">Select...</option>' +
+    qboCompanies.map((c) => `<option value="${c.id}">${_escapeHtml(c.name)}</option>`).join("");
+  destSel.innerHTML = '<option value="">Select...</option>' +
+    manualCompanies.map((c) => `<option value="${c.id}">${_escapeHtml(c.name)}</option>`).join("");
+  // Default end date = today
+  const end = document.getElementById("qbo-import-end");
+  if (end && !end.value) end.value = new Date().toISOString().slice(0, 10);
+
+  document.getElementById("qbo-import-error").style.display = "none";
+  document.getElementById("qbo-import-result").style.display = "none";
+  document.getElementById("qbo-import-progress").style.display = "none";
+  const btn = document.getElementById("qbo-import-run-btn");
+  if (btn) btn.disabled = false;
+
+  const modal = document.getElementById("qbo-import-modal");
+  modal.classList.add("active");
+  modal.style.display = "flex";
+}
+
+function closeQboImportModal() {
+  const modal = document.getElementById("qbo-import-modal");
+  modal.classList.remove("active");
+  modal.style.display = "none";
+}
+
+async function runQboImport() {
+  const errEl = document.getElementById("qbo-import-error");
+  const progEl = document.getElementById("qbo-import-progress");
+  const resultEl = document.getElementById("qbo-import-result");
+  const btn = document.getElementById("qbo-import-run-btn");
+  errEl.style.display = "none";
+  resultEl.style.display = "none";
+
+  const src = document.getElementById("qbo-import-src").value;
+  const dest = document.getElementById("qbo-import-dest").value;
+  const start = document.getElementById("qbo-import-start").value;
+  const end = document.getElementById("qbo-import-end").value;
+  const method = document.getElementById("qbo-import-method").value;
+
+  if (!src || !dest || !start || !end) {
+    errEl.textContent = "All fields are required.";
+    errEl.style.display = "block";
+    return;
+  }
+  if (src === dest) {
+    errEl.textContent = "Source and destination can't be the same company.";
+    errEl.style.display = "block";
+    return;
+  }
+
+  if (btn) btn.disabled = true;
+  progEl.style.display = "block";
+  try {
+    const r = await apiPost("/api/import/qbo-to-manual", {
+      source_qbo_company_id: src,
+      dest_manual_company_id: dest,
+      start_date: start,
+      end_date: end,
+      accounting_method: method,
+    });
+    progEl.style.display = "none";
+    const unmappedList = (r.unmapped || []).slice(0, 10);
+    const unmappedHtml = unmappedList.length
+      ? `<div style="margin-top:8px;"><strong>${r.unmapped_count} QBO account${r.unmapped_count === 1 ? "" : "s"}</strong> had no exact match and were routed to a fallback:
+           <ul style="margin:4px 0 0 16px;font-size:var(--text-xs);">
+             ${unmappedList.map((u) => `<li>${_escapeHtml(u.qbo_name)} <span style="color:var(--color-text-secondary);">(${_escapeHtml(u.qbo_type || "?")} → ${_escapeHtml(u.mapped_fallback || "Uncategorized")})</span></li>`).join("")}
+             ${r.unmapped_count > unmappedList.length ? `<li>… and ${r.unmapped_count - unmappedList.length} more</li>` : ""}
+           </ul>
+         </div>`
+      : '<div style="margin-top:8px;color:var(--color-success);">All QBO accounts matched exactly. 🎉</div>';
+
+    resultEl.innerHTML = `
+      <div><strong>${r.imported.toLocaleString()}</strong> transactions imported from
+        <strong>${_escapeHtml(r.source_company)}</strong> into
+        <strong>${_escapeHtml(r.dest_company)}</strong> across ${r.months_processed} month${r.months_processed === 1 ? "" : "s"}.</div>
+      <div style="font-size:var(--text-xs);color:var(--color-text-secondary);margin-top:2px;">Skipped ${r.skipped.toLocaleString()} rows (no account / no amount / no date).</div>
+      ${unmappedHtml}
+      <div style="margin-top:10px;">
+        <button class="btn btn-sm btn-primary" onclick="setSelectedCompany('${dest}');navigateTo('transactions');closeQboImportModal();" type="button">Open Transactions</button>
+        <button class="btn btn-sm btn-secondary" onclick="setSelectedCompany('${dest}');navigateTo('coa');closeQboImportModal();" type="button">Review Chart of Accounts</button>
+      </div>`;
+    resultEl.style.display = "block";
+    showToast(`Imported ${r.imported.toLocaleString()} transactions`, "success");
+    // Refresh company list so the destination row shows fresh data
+    if (typeof loadCompanyList === "function") await loadCompanyList();
+  } catch (e) {
+    progEl.style.display = "none";
+    errEl.textContent = "Import failed: " + (e.message || "unknown error");
+    errEl.style.display = "block";
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+
+// =====================================================================
 //  apiPatch helper (may not exist in older app.js)
 // =====================================================================
 
