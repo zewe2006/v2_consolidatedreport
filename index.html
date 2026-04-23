@@ -97,12 +97,51 @@
       </div>
     </div>
 
+    <!-- Company Switcher -->
+    <div class="sidebar-company-switcher" id="sidebar-company-switcher">
+      <button type="button" class="company-switcher-btn" onclick="toggleCompanySwitcher()" aria-haspopup="listbox">
+        <div class="company-switcher-main">
+          <div class="company-switcher-name" id="company-switcher-name">All Companies</div>
+          <div class="company-switcher-sub" id="company-switcher-sub">Consolidated view</div>
+        </div>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="company-switcher-menu" id="company-switcher-menu" role="listbox"></div>
+    </div>
+
     <div class="sidebar-section">
       <div class="sidebar-label">Overview</div>
       <ul class="sidebar-nav">
         <li><a href="#dashboard" data-page="dashboard" class="active">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
           <span>Dashboard</span>
+        </a></li>
+      </ul>
+    </div>
+
+    <!-- Per-company nav (shown only when a company is selected in the switcher) -->
+    <div class="sidebar-section needs-company" id="sidebar-section-company">
+      <div class="sidebar-label">This Company</div>
+      <ul class="sidebar-nav">
+        <li><a href="#transactions" data-page="transactions">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+          <span>Transactions</span>
+        </a></li>
+        <li><a href="#coa" data-page="coa">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
+          <span>Chart of Accounts</span>
+        </a></li>
+        <li><a href="#rules" data-page="rules">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg>
+          <span>Categorization Rules</span>
+        </a></li>
+        <li><a href="#manual-journal" data-page="manual-journal">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          <span>Journal</span>
+        </a></li>
+        <li><a href="#bank-accounts" data-page="bank-accounts">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M6 15h4"/></svg>
+          <span>Bank Accounts</span>
         </a></li>
       </ul>
     </div>
@@ -619,11 +658,23 @@
     <!-- ======== COMPANIES PAGE ======== -->
     <section id="page-companies" class="page-content">
 
-      <!-- Add Company: Source Chooser -->
-      <div id="add-company-chooser" class="card mb-6">
+      <!-- Primary action: Add Company -->
+      <div class="card mb-4" style="padding:var(--space-3) var(--space-4);display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <strong style="font-size:var(--text-md);">Company Management</strong>
+          <div class="text-muted" style="font-size:var(--text-xs);margin-top:2px;">Connect QuickBooks or set up a manual company with bank feeds.</div>
+        </div>
+        <button class="btn btn-primary" id="companies-add-btn" onclick="openAddCompany()" type="button">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          Add Company
+        </button>
+      </div>
+
+      <!-- Add Company: Source Chooser (hidden by default) -->
+      <div id="add-company-chooser" class="card mb-6" style="display:none;">
         <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;">
           <span class="card-title">Add a Company</span>
-          <span id="wizard-company-count" class="badge badge-neutral" style="font-size:var(--text-xs);"></span>
+          <button class="btn btn-ghost btn-sm" onclick="resetAddCompany()" type="button">&times; Cancel</button>
         </div>
         <p class="text-muted" style="font-size:var(--text-sm);padding:0 var(--space-1) var(--space-4);">
           Pick how you'd like to add the company. You can mix QuickBooks companies and manual+Plaid companies in the same dashboard.
@@ -1182,6 +1233,210 @@
       </div>
     </section>
 
+    <!-- ======== TRANSACTIONS PAGE ======== -->
+    <section id="page-transactions" class="page-content">
+      <div class="card mb-4">
+        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+          <span class="card-title" id="tx-page-title">Transactions</span>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn btn-secondary btn-sm" onclick="txRecategorize()" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+              Re-run Rules
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="txSync()" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 4v6h6M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
+              Sync Now
+            </button>
+            <button class="btn btn-ghost btn-sm" onclick="txExportCsv()" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+              Export CSV
+            </button>
+          </div>
+        </div>
+
+        <!-- Filters -->
+        <div style="padding:0 var(--space-1);display:grid;grid-template-columns:1fr 140px 140px 180px 180px auto;gap:8px;align-items:end;margin-bottom:var(--space-3);">
+          <div>
+            <label class="form-label" style="font-size:var(--text-xs);">Search merchant or description</label>
+            <input class="form-input" type="search" id="tx-filter-search" placeholder="e.g. Starbucks" oninput="txDebouncedReload()">
+          </div>
+          <div>
+            <label class="form-label" style="font-size:var(--text-xs);">From</label>
+            <input class="form-input" type="date" id="tx-filter-date-from" onchange="txReload()">
+          </div>
+          <div>
+            <label class="form-label" style="font-size:var(--text-xs);">To</label>
+            <input class="form-input" type="date" id="tx-filter-date-to" onchange="txReload()">
+          </div>
+          <div>
+            <label class="form-label" style="font-size:var(--text-xs);">Account</label>
+            <select class="form-select" id="tx-filter-account" onchange="txReload()">
+              <option value="">All accounts</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label" style="font-size:var(--text-xs);">Category</label>
+            <select class="form-select" id="tx-filter-category" onchange="txReload()">
+              <option value="">All categories</option>
+            </select>
+          </div>
+          <div>
+            <button class="btn btn-ghost btn-sm" onclick="txResetFilters()" type="button">Clear</button>
+          </div>
+        </div>
+        <div style="display:flex;gap:16px;align-items:center;padding:0 var(--space-1);margin-bottom:var(--space-3);font-size:var(--text-sm);">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="checkbox" id="tx-filter-uncat" onchange="txReload()"> Uncategorized only
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="checkbox" id="tx-filter-transfers" onchange="txReload()"> Transfers only
+          </label>
+          <span id="tx-summary" style="color:var(--color-text-secondary);margin-left:auto;"></span>
+        </div>
+
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="width:100%;min-width:960px;">
+            <thead>
+              <tr>
+                <th style="width:28px;"><input type="checkbox" id="tx-select-all" onchange="txToggleAll(this.checked)"></th>
+                <th style="text-align:left;">Date</th>
+                <th style="text-align:left;">Merchant / Description</th>
+                <th style="text-align:left;">Account</th>
+                <th style="text-align:left;">Category</th>
+                <th style="text-align:right;">Amount</th>
+                <th style="text-align:right;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="tx-body">
+              <tr><td colspan="7" style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company in the sidebar to see transactions.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">
+          <div id="tx-pagination-info" style="font-size:var(--text-xs);color:var(--color-text-muted);"></div>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-sm btn-ghost" id="tx-prev" onclick="txPage(-1)" type="button">Previous</button>
+            <button class="btn btn-sm btn-ghost" id="tx-next" onclick="txPage(1)" type="button">Next</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======== CHART OF ACCOUNTS PAGE ======== -->
+    <section id="page-coa" class="page-content">
+      <div class="card mb-4">
+        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+          <span class="card-title" id="coa-page-title">Chart of Accounts</span>
+          <div style="display:flex;gap:8px;">
+            <select class="form-select form-select-sm" id="coa-filter-type" onchange="coaReload()" style="width:160px;">
+              <option value="">All types</option>
+              <option value="asset">Asset</option>
+              <option value="liability">Liability</option>
+              <option value="equity">Equity</option>
+              <option value="income">Income</option>
+              <option value="expense">Expense</option>
+            </select>
+            <input class="form-input form-input-sm" type="search" id="coa-filter-search" placeholder="Search code or name" oninput="coaDebouncedReload()" style="width:220px;">
+            <button class="btn btn-primary btn-sm" onclick="openCoaEditModal(null)" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              Add Account
+            </button>
+          </div>
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="width:100%;">
+            <thead>
+              <tr>
+                <th style="text-align:left;">Code</th>
+                <th style="text-align:left;">Name</th>
+                <th style="text-align:left;">Type</th>
+                <th style="text-align:right;">YTD Activity</th>
+                <th style="text-align:right;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="coa-body">
+              <tr><td colspan="5" style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company in the sidebar.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======== RULES PAGE ======== -->
+    <section id="page-rules" class="page-content">
+      <div class="card mb-4">
+        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+          <span class="card-title" id="rules-page-title">Categorization Rules</span>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-secondary btn-sm" onclick="rulesRecategorize()" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+              Re-run on Uncategorized
+            </button>
+            <button class="btn btn-primary btn-sm" onclick="openRuleEditModal(null)" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              New Rule
+            </button>
+          </div>
+        </div>
+        <p class="text-muted" style="font-size:var(--text-sm);padding:0 var(--space-1) var(--space-3);">
+          Rules run first when a transaction lands. Higher-priority rules run before lower ones. Once a rule matches, later rules are skipped for that transaction.
+        </p>
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="width:100%;">
+            <thead>
+              <tr>
+                <th style="text-align:left;">Name</th>
+                <th style="text-align:left;">Match</th>
+                <th style="text-align:left;">Action</th>
+                <th style="text-align:center;">Priority</th>
+                <th style="text-align:center;">Enabled</th>
+                <th style="text-align:right;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="rules-body">
+              <tr><td colspan="6" style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company in the sidebar.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======== MANUAL JOURNAL PAGE ======== -->
+    <section id="page-manual-journal" class="page-content">
+      <div class="card mb-4">
+        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+          <span class="card-title" id="journal-page-title">Journal Entries</span>
+          <button class="btn btn-primary btn-sm" onclick="openJournalEditModal()" type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            New Entry
+          </button>
+        </div>
+        <p class="text-muted" style="font-size:var(--text-sm);padding:0 var(--space-1) var(--space-3);">
+          Manual journal entries (opening balances, adjustments, non-bank transactions). Must balance: debits = credits.
+        </p>
+        <div id="journal-list" style="padding:0 var(--space-1) var(--space-4);">
+          <div style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company in the sidebar.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======== BANK ACCOUNTS PAGE ======== -->
+    <section id="page-bank-accounts" class="page-content">
+      <div class="card mb-4">
+        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+          <span class="card-title" id="ba-page-title">Bank Accounts</span>
+          <button class="btn btn-primary btn-sm" onclick="baLinkAnother()" type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            Link Another Bank
+          </button>
+        </div>
+        <div id="ba-list" style="padding:0 var(--space-1) var(--space-4);">
+          <div style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company in the sidebar.</div>
+        </div>
+      </div>
+    </section>
+
   </main>
 </div>
 
@@ -1566,6 +1821,199 @@
           <button class="btn btn-sm btn-ghost" id="plaid-tx-next" onclick="plaidTxPage(1)" type="button">Next</button>
         </div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: Category Picker ======== -->
+<div id="category-picker-modal" class="modal-overlay">
+  <div class="modal" style="max-width:520px;max-height:80vh;display:flex;flex-direction:column;">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:var(--text-lg);">Pick a category</h3>
+      <button class="modal-close" onclick="closeCategoryPicker()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--color-text-secondary);">&times;</button>
+    </div>
+    <input class="form-input" type="search" id="cat-picker-search" placeholder="Search categories..." oninput="renderCategoryPickerList()" style="margin-bottom:12px;">
+    <div id="cat-picker-list" style="overflow-y:auto;flex:1;"></div>
+    <div style="display:flex;gap:8px;margin-top:12px;">
+      <button class="btn btn-ghost btn-sm" onclick="categoryPickerClear()" type="button">Clear category</button>
+      <button class="btn btn-ghost btn-sm" style="margin-left:auto;" onclick="closeCategoryPicker()" type="button">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: Split Transaction ======== -->
+<div id="split-modal" class="modal-overlay">
+  <div class="modal-content" style="max-width:720px;">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:var(--text-lg);">Split Transaction</h3>
+      <button class="modal-close" onclick="closeSplitModal()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--color-text-secondary);">&times;</button>
+    </div>
+    <div id="split-parent-info" style="background:var(--color-bg-muted);padding:12px;border-radius:var(--radius-md);font-size:var(--text-sm);margin-bottom:16px;"></div>
+    <div id="split-lines" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <button class="btn btn-ghost btn-sm" onclick="splitAddLine()" type="button">+ Add line</button>
+      <div id="split-balance" style="font-size:var(--text-sm);"></div>
+    </div>
+    <div id="split-error" style="display:none;color:var(--color-error);font-size:var(--text-sm);margin-bottom:12px;"></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-primary" id="split-save-btn" onclick="splitSave()" type="button">Save Split</button>
+      <button class="btn btn-secondary" onclick="closeSplitModal()" type="button">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: Rule Editor ======== -->
+<div id="rule-edit-modal" class="modal-overlay">
+  <div class="modal" style="max-width:560px;">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:var(--text-lg);" id="rule-edit-title">New Rule</h3>
+      <button class="modal-close" onclick="closeRuleEditModal()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--color-text-secondary);">&times;</button>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Name</label>
+      <input class="form-input" type="text" id="rule-name" placeholder="e.g. Starbucks &rarr; Meals">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Merchant contains</label>
+        <input class="form-input" type="text" id="rule-merchant" placeholder="(optional)" oninput="rulePreview()">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Description regex</label>
+        <input class="form-input" type="text" id="rule-desc-regex" placeholder="(optional)" oninput="rulePreview()">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Amount min</label>
+        <input class="form-input" type="number" step="0.01" id="rule-amt-min" oninput="rulePreview()">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Amount max</label>
+        <input class="form-input" type="number" step="0.01" id="rule-amt-max" oninput="rulePreview()">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Account (optional)</label>
+        <select class="form-select" id="rule-account" onchange="rulePreview()">
+          <option value="">Any account</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Priority</label>
+        <input class="form-input" type="number" id="rule-priority" value="100">
+      </div>
+    </div>
+    <hr style="border:none;border-top:1px solid var(--color-border);margin:12px 0;">
+    <div class="form-group">
+      <label class="form-label">Then &rarr; Set category</label>
+      <select class="form-select" id="rule-set-category">
+        <option value="">(don't set a category)</option>
+      </select>
+    </div>
+    <div style="display:flex;gap:16px;align-items:center;margin-bottom:12px;font-size:var(--text-sm);">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+        <input type="checkbox" id="rule-mark-transfer"> Mark as transfer
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+        <input type="checkbox" id="rule-enabled" checked> Enabled
+      </label>
+      <div id="rule-preview-count" style="margin-left:auto;color:var(--color-text-secondary);"></div>
+    </div>
+    <div id="rule-error" style="display:none;color:var(--color-error);font-size:var(--text-sm);margin-bottom:12px;"></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-primary" id="rule-save-btn" onclick="ruleSave()" type="button">Save Rule</button>
+      <button class="btn btn-secondary" onclick="closeRuleEditModal()" type="button">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: Journal Entry Form ======== -->
+<div id="journal-edit-modal" class="modal-overlay">
+  <div class="modal-content" style="max-width:800px;">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:var(--text-lg);">New Journal Entry</h3>
+      <button class="modal-close" onclick="closeJournalEditModal()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--color-text-secondary);">&times;</button>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Date</label>
+        <input class="form-input" type="date" id="journal-date">
+      </div>
+      <div class="form-group" style="flex:2;">
+        <label class="form-label">Memo</label>
+        <input class="form-input" type="text" id="journal-memo" placeholder="e.g. Opening balances">
+      </div>
+    </div>
+    <div style="overflow-x:auto;margin-bottom:8px;">
+      <table class="data-table" style="width:100%;min-width:640px;">
+        <thead><tr>
+          <th style="text-align:left;">Account</th>
+          <th style="text-align:left;">Description</th>
+          <th style="text-align:right;">Debit</th>
+          <th style="text-align:right;">Credit</th>
+          <th style="width:32px;"></th>
+        </tr></thead>
+        <tbody id="journal-lines-body"></tbody>
+      </table>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <button class="btn btn-ghost btn-sm" onclick="journalAddLine()" type="button">+ Add line</button>
+      <div id="journal-balance" style="font-size:var(--text-sm);"></div>
+    </div>
+    <div id="journal-error" style="display:none;color:var(--color-error);font-size:var(--text-sm);margin-bottom:12px;"></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-primary" id="journal-save-btn" onclick="journalSave()" type="button">Save Entry</button>
+      <button class="btn btn-secondary" onclick="closeJournalEditModal()" type="button">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: CoA Editor ======== -->
+<div id="coa-edit-modal" class="modal-overlay">
+  <div class="modal" style="max-width:460px;">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:var(--text-lg);" id="coa-edit-title">New Account</h3>
+      <button class="modal-close" onclick="closeCoaEditModal()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--color-text-secondary);">&times;</button>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Code</label>
+        <input class="form-input" type="text" id="coa-code" placeholder="e.g. 6400">
+      </div>
+      <div class="form-group" style="flex:2;">
+        <label class="form-label">Name</label>
+        <input class="form-input" type="text" id="coa-name" placeholder="e.g. Meals & Entertainment">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Type</label>
+        <select class="form-select" id="coa-type">
+          <option value="asset">Asset</option>
+          <option value="liability">Liability</option>
+          <option value="equity">Equity</option>
+          <option value="income">Income</option>
+          <option value="expense">Expense</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Parent (optional)</label>
+        <select class="form-select" id="coa-parent">
+          <option value="">(no parent)</option>
+        </select>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px;font-size:var(--text-sm);">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+        <input type="checkbox" id="coa-active" checked> Active
+      </label>
+    </div>
+    <div id="coa-error" style="display:none;color:var(--color-error);font-size:var(--text-sm);margin-bottom:12px;"></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-primary" id="coa-save-btn" onclick="coaSave()" type="button">Save</button>
+      <button class="btn btn-secondary" onclick="closeCoaEditModal()" type="button">Cancel</button>
     </div>
   </div>
 </div>

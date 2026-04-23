@@ -432,7 +432,14 @@ function navigateTo(page) {
   if (page === "users" && currentUser && currentUser.role !== "admin") {
     page = "dashboard";
   }
-  document.getElementById("page-title").textContent = titles[page] || "Dashboard";
+  const allTitles = Object.assign({}, titles, {
+    transactions: "Transactions",
+    coa: "Chart of Accounts",
+    rules: "Categorization Rules",
+    "manual-journal": "Journal Entries",
+    "bank-accounts": "Bank Accounts",
+  });
+  document.getElementById("page-title").textContent = allTitles[page] || "Dashboard";
   location.hash = page;
   if (page === "companies") loadCompanies();
   if (page === "intercompany") loadICHistory();
@@ -442,6 +449,13 @@ function navigateTo(page) {
   if (page === "knowledge-base") loadKnowledgeBase();
   if (page === "delivery-import") diInit();
   if (page === "receipts") rcptInit();
+  // Per-company pages
+  if (page === "transactions") txInit();
+  if (page === "coa") coaInit();
+  if (page === "rules") rulesInit();
+  if (page === "manual-journal") journalInit();
+  if (page === "bank-accounts") baInit();
+  if (page === "dashboard") dashInit();
 }
 
 window.addEventListener("hashchange", () => {
@@ -1379,34 +1393,64 @@ async function loadCompanies() {
 function renderCompaniesTable() {
   const el = document.getElementById("companies-list");
   if (!allCompanies.length) {
-    el.innerHTML = '<p class="text-muted" style="padding:var(--space-4);font-size:var(--text-sm);">No companies yet. Use the chooser above to add your first one.</p>';
+    el.innerHTML = '<p class="text-muted" style="padding:var(--space-4);font-size:var(--text-sm);">No companies yet. Click "Add Company" above to add your first one.</p>';
     return;
   }
-  let html = '<table class="data-table"><thead><tr><th>Company</th><th>Source</th><th>Legal Name</th><th>Status</th><th>Last Synced</th><th>Actions</th></tr></thead><tbody>';
+  let html = '<table class="data-table"><thead><tr><th>Company</th><th>Source</th><th>Status</th><th>Last Synced</th><th>Actions</th></tr></thead><tbody>';
   for (const c of allCompanies) {
     const isManual = (c.source || "qbo") === "manual";
     const srcBadge = isManual
       ? `<span class="source-badge manual">Manual + Plaid</span>`
       : `<span class="source-badge qbo">QuickBooks</span>`;
+    const safeName = c.name.replace(/'/g, "\\'");
 
+    // Build main cell (name + sub-line for manual bank status)
+    let mainCell = `<strong>${_escapeHtml(c.name)}</strong>`;
+    if (isManual) {
+      const items = c.plaid_items || [];
+      if (items.length === 0) {
+        mainCell += `<div style="font-size:var(--text-xs);color:var(--color-error);margin-top:2px;">⚠ No bank linked — reports will be empty</div>`;
+      } else {
+        const totalAccts = items.reduce((s, it) => s + (it.accounts_count || 0), 0);
+        const bankNames = items.map((it) => it.institution_name || "Bank").join(", ");
+        const lastSync = items.map((it) => it.last_synced_at).filter(Boolean).sort().reverse()[0];
+        const syncedAgo = lastSync ? _timeAgo(new Date(lastSync)) : "never";
+        mainCell += `<div style="font-size:var(--text-xs);color:var(--color-text-secondary);margin-top:2px;">🏦 ${_escapeHtml(bankNames)} · ${totalAccts} account${totalAccts === 1 ? "" : "s"} · synced ${syncedAgo}</div>`;
+      }
+    } else if (c.legal_name) {
+      mainCell += `<div style="font-size:var(--text-xs);color:var(--color-text-secondary);margin-top:2px;">${_escapeHtml(c.legal_name)}</div>`;
+    }
+
+    // Status
     let statusBadge, statusLabel;
     if (isManual) {
-      statusBadge = "badge-success";
-      statusLabel = "Active";
+      if (!c.plaid_items || c.plaid_items.length === 0) {
+        statusBadge = "badge-warning"; statusLabel = "No bank";
+      } else if (c.plaid_items.some((it) => it.status && it.status !== "good")) {
+        statusBadge = "badge-warning"; statusLabel = "Needs attention";
+      } else {
+        statusBadge = "badge-success"; statusLabel = "Active";
+      }
     } else {
       statusBadge = c.status === "connected" ? "badge-success" : c.status === "syncing" ? "badge-warning" : "badge-neutral";
       statusLabel = c.status === "connected" ? "Connected" : c.status === "syncing" ? "Syncing" : "Disconnected";
     }
-    const synced = c.last_synced ? new Date(c.last_synced + "Z").toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "Never";
-    const safeName = c.name.replace(/'/g, "\\'");
+    const synced = c.last_synced ? new Date(c.last_synced + "Z").toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "—";
 
+    // Actions — contextual
     let actionBtns = "";
     if (isManual) {
-      actionBtns = `
-        <button class="btn btn-sm btn-primary" onclick="connectPlaidBank('${c.id}','${safeName}')">Connect Bank</button>
-        <button class="btn btn-sm btn-secondary" onclick="showPlaidTransactions('${c.id}','${safeName}')">Transactions</button>
-        <button class="btn btn-sm btn-secondary" onclick="syncPlaidCompany('${c.id}','${safeName}')">Sync</button>
-        <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="removeCompany('${c.id}','${safeName}')">&times;</button>`;
+      const hasBank = (c.plaid_items || []).length > 0;
+      if (!hasBank) {
+        actionBtns = `
+          <button class="btn btn-sm btn-primary" onclick="connectPlaidBank('${c.id}','${safeName}')">Connect Bank →</button>
+          <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="removeCompany('${c.id}','${safeName}')">&times;</button>`;
+      } else {
+        actionBtns = `
+          <button class="btn btn-sm btn-secondary" onclick="setSelectedCompany('${c.id}');navigateTo('transactions');">View</button>
+          <button class="btn btn-sm btn-secondary" onclick="syncPlaidCompany('${c.id}','${safeName}')">Sync</button>
+          <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="removeCompany('${c.id}','${safeName}')">&times;</button>`;
+      }
     } else {
       const syncBtn = c.status === "connected"
         ? `<button class="btn btn-sm btn-primary" onclick="syncSingleCompany('${c.id}','${safeName}')">Sync</button>`
@@ -1418,9 +1462,8 @@ function renderCompaniesTable() {
     }
 
     html += `<tr>
-      <td><strong>${c.name}</strong></td>
+      <td>${mainCell}</td>
       <td>${srcBadge}</td>
-      <td>${c.legal_name || "-"}</td>
       <td><span class="badge ${statusBadge}">${statusLabel}</span></td>
       <td class="text-muted" style="font-size:var(--text-xs);">${synced}</td>
       <td style="display:flex;gap:var(--space-2);flex-wrap:wrap;">
@@ -1430,6 +1473,14 @@ function renderCompaniesTable() {
   }
   html += "</tbody></table>";
   el.innerHTML = html;
+}
+
+function _timeAgo(date) {
+  const s = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
 }
 
 // =====================================================================
@@ -4007,6 +4058,21 @@ function closeReceiptModal() {
 
 let _pendingPlaidCompany = null; // { id, name } — holds the company awaiting bank link
 
+function openAddCompany() {
+  // Show the chooser; hide everything else
+  const chooser   = document.getElementById("add-company-chooser");
+  const qbo       = document.getElementById("qbo-wizard-card");
+  const manual    = document.getElementById("manual-company-form-card");
+  const plaidLink = document.getElementById("plaid-link-card");
+  const addBtn    = document.getElementById("companies-add-btn");
+  if (chooser)   chooser.style.display   = "block";
+  if (qbo)       qbo.style.display       = "none";
+  if (manual)    manual.style.display    = "none";
+  if (plaidLink) plaidLink.style.display = "none";
+  if (addBtn)    addBtn.style.display    = "none";
+  chooser?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function chooseAddSource(src) {
   const chooser   = document.getElementById("add-company-chooser");
   const qbo       = document.getElementById("qbo-wizard-card");
@@ -4032,10 +4098,12 @@ function resetAddCompany() {
   const qbo       = document.getElementById("qbo-wizard-card");
   const manual    = document.getElementById("manual-company-form-card");
   const plaidLink = document.getElementById("plaid-link-card");
-  if (chooser)   chooser.style.display   = "block";
+  const addBtn    = document.getElementById("companies-add-btn");
+  if (chooser)   chooser.style.display   = "none";
   if (qbo)       qbo.style.display       = "none";
   if (manual)    manual.style.display    = "none";
   if (plaidLink) plaidLink.style.display = "none";
+  if (addBtn)    addBtn.style.display    = "inline-flex";
   // Reset QBO wizard back to step 1
   if (typeof setWizardStep === "function") setWizardStep(1);
   _pendingPlaidCompany = null;
@@ -4380,4 +4448,1202 @@ function _escapeHtml(s) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+
+// =====================================================================
+//  COMPANY SWITCHER (sidebar)
+// =====================================================================
+
+let selectedCompanyId = null; // null = "All Companies"
+
+function _getSelectedCompany() {
+  if (!selectedCompanyId) return null;
+  return (allCompanies || []).find((c) => c.id === selectedCompanyId) || null;
+}
+
+function _loadPersistedSelection() {
+  try {
+    const saved = localStorage.getItem("v2_selected_company_id");
+    if (saved && saved !== "null") selectedCompanyId = saved;
+  } catch (e) { /* ignore */ }
+}
+
+function _persistSelection() {
+  try { localStorage.setItem("v2_selected_company_id", selectedCompanyId || "null"); }
+  catch (e) { /* ignore */ }
+}
+
+function renderCompanySwitcher() {
+  const nameEl = document.getElementById("company-switcher-name");
+  const subEl = document.getElementById("company-switcher-sub");
+  const menuEl = document.getElementById("company-switcher-menu");
+  if (!menuEl) return;
+
+  const current = _getSelectedCompany();
+  if (current) {
+    nameEl.textContent = current.name;
+    const isManual = (current.source || "qbo") === "manual";
+    subEl.textContent = isManual ? "Manual + Plaid" : "QuickBooks";
+  } else {
+    nameEl.textContent = "All Companies";
+    subEl.textContent = "Consolidated view";
+  }
+
+  const items = [
+    `<div class="company-switcher-option ${!selectedCompanyId ? "active" : ""}" onclick="setSelectedCompany(null)">
+       <div class="company-switcher-option-name">All Companies</div>
+       <div class="company-switcher-option-sub">Consolidated view</div>
+     </div>`,
+    ...(allCompanies || []).map((c) => {
+      const isManual = (c.source || "qbo") === "manual";
+      const sub = isManual
+        ? (c.plaid_items && c.plaid_items.length
+            ? `${c.plaid_items[0].institution_name || "Bank"} · ${c.plaid_items.reduce((a, it) => a + (it.accounts_count || 0), 0)} accounts`
+            : "Manual + Plaid · No bank linked")
+        : "QuickBooks";
+      return `<div class="company-switcher-option ${selectedCompanyId === c.id ? "active" : ""}" onclick="setSelectedCompany('${c.id}')">
+        <div class="company-switcher-option-name">${_escapeHtml(c.name)}</div>
+        <div class="company-switcher-option-sub">${_escapeHtml(sub)}</div>
+      </div>`;
+    }),
+  ];
+  menuEl.innerHTML = items.join("");
+
+  // Toggle per-company nav visibility
+  const perCompanySection = document.getElementById("sidebar-section-company");
+  if (perCompanySection) {
+    perCompanySection.classList.toggle("hidden", !current || current.source !== "manual");
+  }
+}
+
+function toggleCompanySwitcher() {
+  const menu = document.getElementById("company-switcher-menu");
+  if (!menu) return;
+  menu.classList.toggle("open");
+}
+
+function setSelectedCompany(id) {
+  selectedCompanyId = id;
+  _persistSelection();
+  document.getElementById("company-switcher-menu").classList.remove("open");
+  renderCompanySwitcher();
+  // If on a per-company page and switched to All, go to dashboard
+  const currentPage = (location.hash || "#dashboard").slice(1);
+  const perCompanyPages = ["transactions", "coa", "rules", "manual-journal", "bank-accounts"];
+  if (!id && perCompanyPages.includes(currentPage)) {
+    navigateTo("dashboard");
+    return;
+  }
+  // Re-init current page with new company context
+  if (perCompanyPages.includes(currentPage)) {
+    navigateTo(currentPage);
+  } else if (currentPage === "dashboard") {
+    dashInit();
+  }
+}
+
+// Close switcher on outside click
+document.addEventListener("click", (e) => {
+  const sw = document.getElementById("sidebar-company-switcher");
+  if (sw && !sw.contains(e.target)) {
+    document.getElementById("company-switcher-menu")?.classList.remove("open");
+  }
+});
+
+
+// =====================================================================
+//  TRANSACTIONS PAGE
+// =====================================================================
+
+let _txState = {
+  limit: 50, offset: 0, has_more: false,
+  categories: [], accounts: [],
+};
+let _txDebounceTimer = null;
+
+async function txInit() {
+  const body = document.getElementById("tx-body");
+  if (!selectedCompanyId) {
+    if (body) body.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company in the sidebar to see transactions.</td></tr>';
+    return;
+  }
+  const company = _getSelectedCompany();
+  if (!company || company.source !== "manual") {
+    if (body) body.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--color-text-muted);">Transactions are only available for manual + Plaid companies. QBO transactions live in QuickBooks.</td></tr>';
+    return;
+  }
+  document.getElementById("tx-page-title").textContent = `Transactions — ${company.name}`;
+  _txState.offset = 0;
+  await Promise.all([_txLoadCategories(), _txLoadAccounts()]);
+  await txReload();
+}
+
+async function _txLoadCategories() {
+  try {
+    const resp = await apiGet(`/api/categories/${selectedCompanyId}`);
+    _txState.categories = resp.categories || [];
+    const sel = document.getElementById("tx-filter-category");
+    if (sel) {
+      sel.innerHTML = `<option value="">All categories</option>` +
+        _txState.categories.map((c) => `<option value="${c.id}">${_escapeHtml(c.code ? c.code + " " : "")}${_escapeHtml(c.name)}</option>`).join("");
+    }
+  } catch (e) { console.warn("Categories load failed", e); }
+}
+
+async function _txLoadAccounts() {
+  try {
+    const resp = await apiGet(`/api/plaid/accounts/${selectedCompanyId}`);
+    _txState.accounts = resp.accounts || [];
+    const sel = document.getElementById("tx-filter-account");
+    if (sel) {
+      sel.innerHTML = `<option value="">All accounts</option>` +
+        _txState.accounts.map((a) => `<option value="${a.id}">${_escapeHtml(a.name)}${a.mask ? " ···" + a.mask : ""}</option>`).join("");
+    }
+  } catch (e) { console.warn("Accounts load failed", e); }
+}
+
+function txDebouncedReload() {
+  clearTimeout(_txDebounceTimer);
+  _txDebounceTimer = setTimeout(txReload, 350);
+}
+
+function txResetFilters() {
+  ["tx-filter-search", "tx-filter-date-from", "tx-filter-date-to"].forEach((id) => {
+    const el = document.getElementById(id); if (el) el.value = "";
+  });
+  ["tx-filter-account", "tx-filter-category"].forEach((id) => {
+    const el = document.getElementById(id); if (el) el.value = "";
+  });
+  ["tx-filter-uncat", "tx-filter-transfers"].forEach((id) => {
+    const el = document.getElementById(id); if (el) el.checked = false;
+  });
+  _txState.offset = 0;
+  txReload();
+}
+
+async function txReload() {
+  if (!selectedCompanyId) return;
+  const body = document.getElementById("tx-body");
+  body.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--color-text-muted);">Loading...</td></tr>';
+
+  const params = new URLSearchParams({
+    limit: String(_txState.limit),
+    offset: String(_txState.offset),
+  });
+  const search = document.getElementById("tx-filter-search").value.trim();
+  if (search) params.set("search", search);
+  const dateFrom = document.getElementById("tx-filter-date-from").value;
+  if (dateFrom) params.set("date_from", dateFrom);
+  const dateTo = document.getElementById("tx-filter-date-to").value;
+  if (dateTo) params.set("date_to", dateTo);
+  const acct = document.getElementById("tx-filter-account").value;
+  if (acct) params.set("account_id", acct);
+  const cat = document.getElementById("tx-filter-category").value;
+  if (cat) params.set("category_id", cat);
+  if (document.getElementById("tx-filter-uncat").checked) params.set("uncategorized_only", "true");
+  if (document.getElementById("tx-filter-transfers").checked) params.set("transfers_only", "true");
+
+  try {
+    const resp = await apiGet(`/api/transactions/${selectedCompanyId}?${params.toString()}`);
+    const txs = resp.transactions || [];
+    _txState.has_more = !!resp.has_more;
+    _txRender(txs);
+    document.getElementById("tx-summary").textContent = `${txs.length} shown`;
+    const pageNum = Math.floor(_txState.offset / _txState.limit) + 1;
+    document.getElementById("tx-pagination-info").textContent = `Page ${pageNum}`;
+    document.getElementById("tx-prev").disabled = _txState.offset <= 0;
+    document.getElementById("tx-next").disabled = !_txState.has_more;
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--color-error);">Load failed: ${_escapeHtml(e.message || "unknown")}</td></tr>`;
+  }
+}
+
+function _txRender(txs) {
+  const body = document.getElementById("tx-body");
+  if (!txs.length) {
+    body.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--color-text-muted);">No transactions match these filters.</td></tr>';
+    return;
+  }
+  body.innerHTML = txs.map((t) => {
+    const amount = Number(t.amount || 0);
+    const color = amount > 0 ? "var(--color-text-primary)" : "var(--color-success)";
+    const acct = t.account ? `${_escapeHtml(t.account.name)}${t.account.mask ? " ···" + t.account.mask : ""}` : "—";
+    const catName = t.category ? t.category.name : (t.is_transfer ? "Transfer" : "Uncategorized");
+    const catClass = t.category ? "" : (t.is_transfer ? "color:var(--color-text-secondary);font-style:italic;" : "color:var(--color-error);");
+    const merch = t.merchant_name || t.description || "—";
+    const descLine = t.merchant_name && t.description && t.merchant_name !== t.description
+      ? `<div style="font-size:var(--text-xs);color:var(--color-text-secondary);">${_escapeHtml(t.description)}</div>` : "";
+    const isSplit = !!t.split_parent_id;
+    return `<tr data-tx-id="${t.id}">
+      <td><input type="checkbox" class="tx-row-check" value="${t.id}"></td>
+      <td style="font-size:var(--text-xs);white-space:nowrap;">${t.date || ""}${t.pending ? ' <span class="badge badge-warning" style="font-size:10px;">pending</span>' : ""}</td>
+      <td><div style="font-weight:500;">${_escapeHtml(merch)}</div>${descLine}</td>
+      <td style="font-size:var(--text-xs);">${acct}</td>
+      <td style="${catClass}cursor:pointer;" onclick="openCategoryPicker('${t.id}', '${_escapeHtml(catName).replace(/'/g, "\\'")}')">
+        ${_escapeHtml(catName)}${isSplit ? ' <span class="badge badge-neutral" style="font-size:10px;">split</span>' : ""}
+      </td>
+      <td style="text-align:right;color:${color};font-variant-numeric:tabular-nums;">${amount.toFixed(2)}</td>
+      <td style="text-align:right;">
+        <button class="btn btn-sm btn-ghost" onclick="txActionsMenu('${t.id}', event)" title="More">⋯</button>
+      </td>
+    </tr>`;
+  }).join("");
+}
+
+function txPage(delta) {
+  const next = _txState.offset + delta * _txState.limit;
+  if (next < 0) return;
+  if (delta > 0 && !_txState.has_more) return;
+  _txState.offset = next;
+  txReload();
+}
+
+function txToggleAll(checked) {
+  document.querySelectorAll(".tx-row-check").forEach((el) => { el.checked = checked; });
+}
+
+async function txSync() {
+  if (!selectedCompanyId) return;
+  const company = _getSelectedCompany();
+  try {
+    showToast(`Syncing ${company.name}...`, "info");
+    const res = await apiPost(`/api/plaid/sync/${selectedCompanyId}`, {});
+    const t = res.totals || {};
+    showToast(`Synced: +${t.added || 0} new, ${t.modified || 0} updated, ${t.removed || 0} removed`, "success");
+    await txReload();
+  } catch (e) {
+    showToast("Sync failed: " + (e.message || "unknown"), "error");
+  }
+}
+
+async function txRecategorize() {
+  if (!selectedCompanyId) return;
+  if (!confirm("Re-run categorization rules on all uncategorized transactions?")) return;
+  try {
+    const res = await apiPost(`/api/rules/${selectedCompanyId}/recategorize`, {});
+    showToast(`Categorized: ${res.rule || 0} by rule · ${res.plaid || 0} by Plaid · ${res.skipped || 0} still uncategorized`, "success");
+    await txReload();
+  } catch (e) {
+    showToast("Failed: " + (e.message || "unknown"), "error");
+  }
+}
+
+function txExportCsv() {
+  // Build CSV from current visible rows (simplest approach — rely on current filtered view)
+  const rows = Array.from(document.querySelectorAll("#tx-body tr[data-tx-id]"));
+  if (!rows.length) { showToast("Nothing to export", "info"); return; }
+  const header = ["Date", "Merchant", "Description", "Account", "Category", "Amount"];
+  const csvRows = [header.join(",")];
+  rows.forEach((r) => {
+    const cells = r.querySelectorAll("td");
+    // cells: [0]=checkbox, [1]=date, [2]=merchant/desc, [3]=account, [4]=category, [5]=amount
+    const merchant = cells[2].querySelector("div")?.textContent?.trim() || "";
+    const desc = cells[2].querySelectorAll("div")[1]?.textContent?.trim() || "";
+    const rowVals = [
+      cells[1].textContent.trim(),
+      merchant, desc,
+      cells[3].textContent.trim(),
+      cells[4].textContent.trim().replace(/\s+/g, " "),
+      cells[5].textContent.trim(),
+    ].map((v) => `"${v.replace(/"/g, '""')}"`);
+    csvRows.push(rowVals.join(","));
+  });
+  const blob = new Blob([csvRows.join("\n")], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "transactions.csv"; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// --- Transaction actions menu (simple prompt-based for v1) ---
+function txActionsMenu(txId, event) {
+  event.stopPropagation();
+  const choice = prompt("Actions: split / transfer / untransfer / rule / uncategorize\nType one:");
+  if (!choice) return;
+  const c = choice.trim().toLowerCase();
+  if (c === "split") return openSplitModal(txId);
+  if (c === "transfer") return _txMarkTransfer(txId, true);
+  if (c === "untransfer") return _txMarkTransfer(txId, false);
+  if (c === "uncategorize") return _txClearCategory(txId);
+  if (c === "rule") return _txCreateRuleFrom(txId);
+  showToast("Unknown action", "error");
+}
+
+async function _txMarkTransfer(txId, mark) {
+  try {
+    await apiPatch(`/api/transactions/${txId}`, { is_transfer: mark });
+    showToast(mark ? "Marked as transfer" : "Unmarked transfer", "success");
+    await txReload();
+  } catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+
+async function _txClearCategory(txId) {
+  try {
+    await apiPatch(`/api/transactions/${txId}`, { clear_category: true });
+    showToast("Category cleared", "success");
+    await txReload();
+  } catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+
+async function _txCreateRuleFrom(txId) {
+  const row = document.querySelector(`tr[data-tx-id="${txId}"]`);
+  if (!row) return;
+  const merchant = row.querySelectorAll("td")[2].querySelector("div")?.textContent?.trim() || "";
+  await rulesInit();
+  openRuleEditModal(null);
+  document.getElementById("rule-name").value = `${merchant} rule`;
+  document.getElementById("rule-merchant").value = merchant;
+  rulePreview();
+}
+
+
+// =====================================================================
+//  CATEGORY PICKER MODAL (used by Transactions inline categorize)
+// =====================================================================
+
+let _catPickerState = { txId: null, current: "" };
+
+function openCategoryPicker(txId, currentName) {
+  _catPickerState = { txId, current: currentName };
+  document.getElementById("cat-picker-search").value = "";
+  renderCategoryPickerList();
+  document.getElementById("category-picker-modal").classList.add("active");
+  document.getElementById("category-picker-modal").style.display = "flex";
+}
+
+function closeCategoryPicker() {
+  document.getElementById("category-picker-modal").classList.remove("active");
+  document.getElementById("category-picker-modal").style.display = "none";
+  _catPickerState = { txId: null, current: "" };
+}
+
+function renderCategoryPickerList() {
+  const q = (document.getElementById("cat-picker-search").value || "").toLowerCase();
+  const groups = { income: [], expense: [], asset: [], liability: [], equity: [] };
+  (_txState.categories || []).forEach((c) => {
+    if (q && !(c.name.toLowerCase().includes(q) || (c.code || "").includes(q))) return;
+    if (groups[c.type]) groups[c.type].push(c);
+  });
+  const html = Object.entries(groups)
+    .filter(([, arr]) => arr.length)
+    .map(([type, arr]) => `
+      <div style="font-size:var(--text-xs);text-transform:uppercase;color:var(--color-text-secondary);margin:8px 4px 4px;">${type}</div>
+      ${arr.map((c) => `<div class="cat-picker-row" style="padding:8px 12px;border-radius:6px;cursor:pointer;display:flex;justify-content:space-between;" onmouseover="this.style.background='var(--color-bg-muted)'" onmouseout="this.style.background='transparent'" onclick="categoryPickerSelect('${c.id}')">
+        <span>${_escapeHtml(c.name)}</span>
+        <span style="font-size:var(--text-xs);color:var(--color-text-secondary);">${_escapeHtml(c.code || "")}</span>
+      </div>`).join("")}
+    `).join("");
+  document.getElementById("cat-picker-list").innerHTML = html || '<div style="padding:12px;color:var(--color-text-muted);text-align:center;">No matches</div>';
+}
+
+async function categoryPickerSelect(categoryId) {
+  const txId = _catPickerState.txId;
+  if (!txId) return;
+  try {
+    await apiPatch(`/api/transactions/${txId}`, { category_id: categoryId });
+    closeCategoryPicker();
+    await txReload();
+  } catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+
+async function categoryPickerClear() {
+  const txId = _catPickerState.txId;
+  if (!txId) return;
+  try {
+    await apiPatch(`/api/transactions/${txId}`, { clear_category: true });
+    closeCategoryPicker();
+    await txReload();
+  } catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+
+
+// =====================================================================
+//  SPLIT TRANSACTION MODAL
+// =====================================================================
+
+let _splitState = { txId: null, parentAmount: 0, lines: [] };
+
+async function openSplitModal(txId) {
+  const row = document.querySelector(`tr[data-tx-id="${txId}"]`);
+  const amount = row ? parseFloat(row.querySelectorAll("td")[5].textContent.trim()) : 0;
+  const merchant = row ? (row.querySelectorAll("td")[2].querySelector("div")?.textContent?.trim() || "") : "";
+  const date = row ? row.querySelectorAll("td")[1].textContent.trim() : "";
+  _splitState = {
+    txId, parentAmount: amount,
+    lines: [
+      { category_id: "", amount: (amount / 2).toFixed(2), notes: "" },
+      { category_id: "", amount: (amount / 2).toFixed(2), notes: "" },
+    ],
+  };
+  document.getElementById("split-parent-info").innerHTML = `
+    <div><strong>${_escapeHtml(merchant)}</strong> · ${date}</div>
+    <div style="font-size:var(--text-xs);color:var(--color-text-secondary);">Total to split: <strong>${amount.toFixed(2)}</strong></div>
+  `;
+  _renderSplitLines();
+  document.getElementById("split-modal").classList.add("active");
+  document.getElementById("split-modal").style.display = "flex";
+}
+
+function closeSplitModal() {
+  document.getElementById("split-modal").classList.remove("active");
+  document.getElementById("split-modal").style.display = "none";
+}
+
+function splitAddLine() {
+  _splitState.lines.push({ category_id: "", amount: 0, notes: "" });
+  _renderSplitLines();
+}
+
+function _renderSplitLines() {
+  const container = document.getElementById("split-lines");
+  const categories = _txState.categories || [];
+  container.innerHTML = _splitState.lines.map((l, i) => `
+    <div style="display:grid;grid-template-columns:2fr 2fr 120px auto;gap:8px;align-items:end;">
+      <div>
+        <label class="form-label" style="font-size:var(--text-xs);">Category</label>
+        <select class="form-select form-select-sm" onchange="_splitUpdate(${i}, 'category_id', this.value)">
+          <option value="">— select —</option>
+          ${categories.map((c) => `<option value="${c.id}" ${l.category_id === c.id ? "selected" : ""}>${_escapeHtml(c.code ? c.code + " " : "")}${_escapeHtml(c.name)}</option>`).join("")}
+        </select>
+      </div>
+      <div>
+        <label class="form-label" style="font-size:var(--text-xs);">Notes</label>
+        <input class="form-input form-input-sm" type="text" value="${_escapeHtml(l.notes || "")}" oninput="_splitUpdate(${i}, 'notes', this.value)">
+      </div>
+      <div>
+        <label class="form-label" style="font-size:var(--text-xs);">Amount</label>
+        <input class="form-input form-input-sm" type="number" step="0.01" value="${l.amount}" oninput="_splitUpdate(${i}, 'amount', this.value)">
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="_splitRemove(${i})" type="button" ${_splitState.lines.length <= 2 ? "disabled" : ""}>&times;</button>
+    </div>`).join("");
+  _updateSplitBalance();
+}
+
+function _splitUpdate(i, field, value) {
+  _splitState.lines[i][field] = field === "amount" ? parseFloat(value) || 0 : value;
+  _updateSplitBalance();
+}
+
+function _splitRemove(i) {
+  if (_splitState.lines.length <= 2) return;
+  _splitState.lines.splice(i, 1);
+  _renderSplitLines();
+}
+
+function _updateSplitBalance() {
+  const total = _splitState.lines.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
+  const parent = _splitState.parentAmount;
+  const diff = total - parent;
+  const el = document.getElementById("split-balance");
+  const ok = Math.abs(diff) < 0.005;
+  el.innerHTML = `Total: <strong>${total.toFixed(2)}</strong> / ${parent.toFixed(2)} ${ok ? '<span style="color:var(--color-success);">✓ balanced</span>' : `<span style="color:var(--color-error);">off by ${diff.toFixed(2)}</span>`}`;
+  document.getElementById("split-save-btn").disabled = !ok;
+}
+
+async function splitSave() {
+  if (!_splitState.txId) return;
+  const errEl = document.getElementById("split-error");
+  errEl.style.display = "none";
+  if (_splitState.lines.some((l) => !l.category_id)) {
+    errEl.textContent = "Each line needs a category."; errEl.style.display = "block"; return;
+  }
+  try {
+    await apiPost(`/api/transactions/${_splitState.txId}/split`, {
+      splits: _splitState.lines.map((l) => ({
+        category_id: l.category_id,
+        amount: parseFloat(l.amount),
+        notes: l.notes || null,
+      })),
+    });
+    closeSplitModal();
+    showToast("Transaction split", "success");
+    await txReload();
+  } catch (e) { errEl.textContent = "Failed: " + (e.message || "unknown"); errEl.style.display = "block"; }
+}
+
+
+// =====================================================================
+//  CHART OF ACCOUNTS PAGE
+// =====================================================================
+
+let _coaState = { accounts: [] };
+let _coaDebounceTimer = null;
+
+async function coaInit() {
+  const body = document.getElementById("coa-body");
+  if (!selectedCompanyId) {
+    body.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company.</td></tr>';
+    return;
+  }
+  const company = _getSelectedCompany();
+  if (!company || company.source !== "manual") {
+    body.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--color-text-muted);">Chart of Accounts is only available for manual + Plaid companies.</td></tr>';
+    return;
+  }
+  document.getElementById("coa-page-title").textContent = `Chart of Accounts — ${company.name}`;
+  await coaReload();
+}
+
+function coaDebouncedReload() {
+  clearTimeout(_coaDebounceTimer);
+  _coaDebounceTimer = setTimeout(coaReload, 300);
+}
+
+async function coaReload() {
+  if (!selectedCompanyId) return;
+  const body = document.getElementById("coa-body");
+  body.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--color-text-muted);">Loading...</td></tr>';
+  try {
+    const resp = await apiGet(`/api/coa/${selectedCompanyId}`);
+    _coaState.accounts = resp.accounts || [];
+    _coaRender();
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--color-error);">Load failed: ${_escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+function _coaRender() {
+  const body = document.getElementById("coa-body");
+  const typeFilter = document.getElementById("coa-filter-type").value;
+  const search = (document.getElementById("coa-filter-search").value || "").toLowerCase();
+  const rows = _coaState.accounts.filter((a) => {
+    if (!a.is_active) return false;
+    if (typeFilter && a.type !== typeFilter) return false;
+    if (search && !(a.name.toLowerCase().includes(search) || a.code.includes(search))) return false;
+    return true;
+  });
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--color-text-muted);">No accounts match.</td></tr>'; return; }
+  const typeColor = { asset: "#10b981", liability: "#ef4444", equity: "#8b5cf6", income: "#3b82f6", expense: "#f59e0b" };
+  body.innerHTML = rows.map((a) => `<tr>
+    <td style="font-family:monospace;font-size:var(--text-sm);">${_escapeHtml(a.code)}</td>
+    <td><strong>${_escapeHtml(a.name)}</strong></td>
+    <td><span class="badge" style="background:${typeColor[a.type] || "#888"}22;color:${typeColor[a.type] || "#888"};">${a.type}</span></td>
+    <td style="text-align:right;font-variant-numeric:tabular-nums;">${(a.ytd_activity || 0).toFixed(2)}</td>
+    <td style="text-align:right;">
+      <button class="btn btn-sm btn-ghost" onclick="openCoaEditModal('${a.id}')">Edit</button>
+      <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="coaArchive('${a.id}')">Archive</button>
+    </td>
+  </tr>`).join("");
+}
+
+let _coaEditId = null;
+function openCoaEditModal(id) {
+  _coaEditId = id;
+  const acc = id ? _coaState.accounts.find((a) => a.id === id) : null;
+  document.getElementById("coa-edit-title").textContent = id ? "Edit Account" : "New Account";
+  document.getElementById("coa-code").value = acc ? acc.code : "";
+  document.getElementById("coa-name").value = acc ? acc.name : "";
+  document.getElementById("coa-type").value = acc ? acc.type : "expense";
+  document.getElementById("coa-active").checked = acc ? !!acc.is_active : true;
+  // Parent dropdown (filtered on open)
+  const parentSel = document.getElementById("coa-parent");
+  parentSel.innerHTML = '<option value="">(no parent)</option>' +
+    _coaState.accounts.filter((p) => p.is_active && p.id !== id).map((p) => `<option value="${p.id}" ${acc && acc.parent_id === p.id ? "selected" : ""}>${_escapeHtml(p.code)} ${_escapeHtml(p.name)}</option>`).join("");
+  document.getElementById("coa-error").style.display = "none";
+  document.getElementById("coa-edit-modal").classList.add("active");
+  document.getElementById("coa-edit-modal").style.display = "flex";
+}
+function closeCoaEditModal() {
+  document.getElementById("coa-edit-modal").classList.remove("active");
+  document.getElementById("coa-edit-modal").style.display = "none";
+}
+
+async function coaSave() {
+  const errEl = document.getElementById("coa-error");
+  errEl.style.display = "none";
+  const code = document.getElementById("coa-code").value.trim();
+  const name = document.getElementById("coa-name").value.trim();
+  const type = document.getElementById("coa-type").value;
+  const parent_id = document.getElementById("coa-parent").value || null;
+  const is_active = document.getElementById("coa-active").checked;
+  if (!code || !name) { errEl.textContent = "Code and name are required."; errEl.style.display = "block"; return; }
+  try {
+    if (_coaEditId) {
+      await apiPatch(`/api/coa/${_coaEditId}`, { code, name, type, parent_id, is_active });
+    } else {
+      await apiPost(`/api/coa/${selectedCompanyId}`, { code, name, type, parent_id });
+    }
+    closeCoaEditModal();
+    await coaReload();
+  } catch (e) { errEl.textContent = "Failed: " + (e.message || "unknown"); errEl.style.display = "block"; }
+}
+
+async function coaArchive(id) {
+  if (!confirm("Archive this account? Inactive accounts stop showing in pickers and reports.")) return;
+  try {
+    await apiPatch(`/api/coa/${id}`, { is_active: false });
+    showToast("Archived", "success");
+    await coaReload();
+  } catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+
+
+// =====================================================================
+//  RULES PAGE
+// =====================================================================
+
+let _rulesState = { rules: [] };
+
+async function rulesInit() {
+  const body = document.getElementById("rules-body");
+  if (!selectedCompanyId) { body.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company.</td></tr>'; return; }
+  const company = _getSelectedCompany();
+  if (!company || company.source !== "manual") { body.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--color-text-muted);">Rules apply to manual + Plaid companies only.</td></tr>'; return; }
+  document.getElementById("rules-page-title").textContent = `Categorization Rules — ${company.name}`;
+
+  // Preload accounts + categories for dropdowns in the rule form
+  if (!_txState.categories.length) await _txLoadCategories();
+  if (!_txState.accounts.length) await _txLoadAccounts();
+  await rulesReload();
+}
+
+async function rulesReload() {
+  try {
+    const resp = await apiGet(`/api/rules/${selectedCompanyId}`);
+    _rulesState.rules = resp.rules || [];
+    _rulesRender();
+  } catch (e) {
+    document.getElementById("rules-body").innerHTML = `<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--color-error);">Load failed: ${_escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+function _rulesRender() {
+  const body = document.getElementById("rules-body");
+  const rules = _rulesState.rules;
+  if (!rules.length) { body.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--color-text-muted);">No rules yet. Click <strong>New Rule</strong> to create one.</td></tr>'; return; }
+  body.innerHTML = rules.map((r) => {
+    const parts = [];
+    if (r.match?.merchant) parts.push(`merchant contains <em>"${_escapeHtml(r.match.merchant)}"</em>`);
+    if (r.match?.description_regex) parts.push(`description ~ <em>/${_escapeHtml(r.match.description_regex)}/</em>`);
+    if (r.match?.min !== undefined || r.match?.max !== undefined) {
+      const lo = r.match.min ?? "-∞", hi = r.match.max ?? "∞";
+      parts.push(`amount in [${lo}, ${hi}]`);
+    }
+    const action = [];
+    if (r.action?.set_category_id) {
+      const cat = _txState.categories.find((c) => c.id === r.action.set_category_id);
+      action.push(cat ? `→ ${_escapeHtml(cat.name)}` : "→ (unknown)");
+    }
+    if (r.action?.mark_transfer) action.push("mark transfer");
+    return `<tr>
+      <td><strong>${_escapeHtml(r.name)}</strong></td>
+      <td style="font-size:var(--text-xs);">${parts.join(" · ") || "<em>no filters</em>"}</td>
+      <td style="font-size:var(--text-xs);">${action.join(" · ") || "—"}</td>
+      <td style="text-align:center;">${r.priority}</td>
+      <td style="text-align:center;">
+        <input type="checkbox" ${r.enabled ? "checked" : ""} onchange="rulesToggleEnabled('${r.id}', this.checked)">
+      </td>
+      <td style="text-align:right;">
+        <button class="btn btn-sm btn-ghost" onclick="openRuleEditModal('${r.id}')">Edit</button>
+        <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="rulesDelete('${r.id}')">Delete</button>
+      </td>
+    </tr>`;
+  }).join("");
+}
+
+async function rulesToggleEnabled(id, enabled) {
+  const r = _rulesState.rules.find((x) => x.id === id);
+  if (!r) return;
+  try {
+    await apiPatch(`/api/rules/${id}`, {
+      name: r.name, priority: r.priority, match: r.match, action: r.action, enabled,
+    });
+    r.enabled = enabled;
+  } catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+
+async function rulesDelete(id) {
+  if (!confirm("Delete this rule?")) return;
+  try {
+    await apiDelete(`/api/rules/${id}`);
+    await rulesReload();
+  } catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+
+async function rulesRecategorize() {
+  if (!confirm("Re-run rules on all uncategorized transactions?")) return;
+  try {
+    const res = await apiPost(`/api/rules/${selectedCompanyId}/recategorize`, {});
+    showToast(`Categorized: ${res.rule || 0} by rule · ${res.plaid || 0} by Plaid · ${res.skipped || 0} still uncategorized`, "success");
+  } catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+
+let _ruleEditId = null;
+function openRuleEditModal(id) {
+  _ruleEditId = id;
+  const r = id ? _rulesState.rules.find((x) => x.id === id) : null;
+  document.getElementById("rule-edit-title").textContent = id ? "Edit Rule" : "New Rule";
+  document.getElementById("rule-name").value = r ? r.name : "";
+  document.getElementById("rule-merchant").value = r?.match?.merchant || "";
+  document.getElementById("rule-desc-regex").value = r?.match?.description_regex || "";
+  document.getElementById("rule-amt-min").value = r?.match?.min ?? "";
+  document.getElementById("rule-amt-max").value = r?.match?.max ?? "";
+  document.getElementById("rule-priority").value = r?.priority ?? 100;
+  document.getElementById("rule-mark-transfer").checked = !!r?.action?.mark_transfer;
+  document.getElementById("rule-enabled").checked = r ? !!r.enabled : true;
+
+  // Account dropdown
+  const accSel = document.getElementById("rule-account");
+  accSel.innerHTML = '<option value="">Any account</option>' +
+    (_txState.accounts || []).map((a) => `<option value="${a.id}" ${r?.match?.account_id === a.id ? "selected" : ""}>${_escapeHtml(a.name)}${a.mask ? " ···" + a.mask : ""}</option>`).join("");
+
+  // Category dropdown
+  const catSel = document.getElementById("rule-set-category");
+  catSel.innerHTML = '<option value="">(don\'t set a category)</option>' +
+    (_txState.categories || []).map((c) => `<option value="${c.id}" ${r?.action?.set_category_id === c.id ? "selected" : ""}>${_escapeHtml(c.code ? c.code + " " : "")}${_escapeHtml(c.name)}</option>`).join("");
+
+  document.getElementById("rule-error").style.display = "none";
+  document.getElementById("rule-preview-count").textContent = "";
+  document.getElementById("rule-edit-modal").classList.add("active");
+  document.getElementById("rule-edit-modal").style.display = "flex";
+}
+
+function closeRuleEditModal() {
+  document.getElementById("rule-edit-modal").classList.remove("active");
+  document.getElementById("rule-edit-modal").style.display = "none";
+  _ruleEditId = null;
+}
+
+let _rulePreviewTimer = null;
+function rulePreview() {
+  clearTimeout(_rulePreviewTimer);
+  _rulePreviewTimer = setTimeout(async () => {
+    const match = _collectRuleMatch();
+    if (!match || Object.keys(match).length === 0) {
+      document.getElementById("rule-preview-count").textContent = "";
+      return;
+    }
+    try {
+      const res = await apiPost("/api/rules/preview", { company_id: selectedCompanyId, match });
+      document.getElementById("rule-preview-count").textContent = `Matches ${res.matches}/${res.scanned} uncategorized`;
+    } catch (e) { /* silent */ }
+  }, 400);
+}
+
+function _collectRuleMatch() {
+  const match = {};
+  const m = document.getElementById("rule-merchant").value.trim();
+  if (m) match.merchant = m;
+  const d = document.getElementById("rule-desc-regex").value.trim();
+  if (d) match.description_regex = d;
+  const lo = document.getElementById("rule-amt-min").value;
+  if (lo !== "") match.min = parseFloat(lo);
+  const hi = document.getElementById("rule-amt-max").value;
+  if (hi !== "") match.max = parseFloat(hi);
+  const acct = document.getElementById("rule-account").value;
+  if (acct) match.account_id = acct;
+  return match;
+}
+
+async function ruleSave() {
+  const errEl = document.getElementById("rule-error");
+  errEl.style.display = "none";
+  const name = document.getElementById("rule-name").value.trim();
+  if (!name) { errEl.textContent = "Name is required."; errEl.style.display = "block"; return; }
+  const match = _collectRuleMatch();
+  if (Object.keys(match).length === 0) { errEl.textContent = "At least one match condition required."; errEl.style.display = "block"; return; }
+  const action = {};
+  const setCat = document.getElementById("rule-set-category").value;
+  if (setCat) action.set_category_id = setCat;
+  if (document.getElementById("rule-mark-transfer").checked) action.mark_transfer = true;
+  if (!action.set_category_id && !action.mark_transfer) {
+    errEl.textContent = "Set a category or mark as transfer."; errEl.style.display = "block"; return;
+  }
+  const body = {
+    name, priority: parseInt(document.getElementById("rule-priority").value || "100", 10),
+    match, action,
+    enabled: document.getElementById("rule-enabled").checked,
+  };
+  try {
+    if (_ruleEditId) {
+      await apiPatch(`/api/rules/${_ruleEditId}`, body);
+    } else {
+      await apiPost(`/api/rules/${selectedCompanyId}`, body);
+    }
+    closeRuleEditModal();
+    await rulesReload();
+  } catch (e) { errEl.textContent = "Failed: " + (e.message || "unknown"); errEl.style.display = "block"; }
+}
+
+
+// =====================================================================
+//  JOURNAL ENTRIES PAGE
+// =====================================================================
+
+let _journalState = { entries: [], editingLines: [] };
+
+async function journalInit() {
+  if (!selectedCompanyId) return;
+  const company = _getSelectedCompany();
+  if (!company || company.source !== "manual") {
+    document.getElementById("journal-list").innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">Journal entries are for manual + Plaid companies only.</div>';
+    return;
+  }
+  document.getElementById("journal-page-title").textContent = `Journal Entries — ${company.name}`;
+  if (!_txState.categories.length) await _txLoadCategories();
+  if (!_coaState.accounts.length) {
+    try { const resp = await apiGet(`/api/coa/${selectedCompanyId}`); _coaState.accounts = resp.accounts || []; } catch (e) {}
+  }
+  await journalReload();
+}
+
+async function journalReload() {
+  const list = document.getElementById("journal-list");
+  list.innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">Loading...</div>';
+  try {
+    const resp = await apiGet(`/api/journal/${selectedCompanyId}`);
+    _journalState.entries = resp.entries || [];
+    _journalRender();
+  } catch (e) {
+    list.innerHTML = `<div style="text-align:center;padding:24px;color:var(--color-error);">Load failed: ${_escapeHtml(e.message)}</div>`;
+  }
+}
+
+function _journalRender() {
+  const list = document.getElementById("journal-list");
+  const entries = _journalState.entries;
+  if (!entries.length) { list.innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">No journal entries yet.</div>'; return; }
+  list.innerHTML = entries.map((e) => {
+    const totalDebit = (e.lines || []).reduce((s, l) => s + parseFloat(l.debit || 0), 0);
+    return `<div class="card" style="margin-bottom:12px;padding:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <div>
+          <strong>${e.date || ""}</strong>
+          <span style="margin-left:10px;">${_escapeHtml(e.memo || "")}</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <span style="font-size:var(--text-sm);">${totalDebit.toFixed(2)}</span>
+          <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="journalDelete('${e.id}')">&times;</button>
+        </div>
+      </div>
+      <table class="data-table" style="width:100%;font-size:var(--text-sm);">
+        <thead><tr><th>Account</th><th>Description</th><th style="text-align:right;">Debit</th><th style="text-align:right;">Credit</th></tr></thead>
+        <tbody>${(e.lines || []).map((l) => `<tr>
+          <td>${_escapeHtml(l.coa?.code || "")} ${_escapeHtml(l.coa?.name || "")}</td>
+          <td>${_escapeHtml(l.description || "")}</td>
+          <td style="text-align:right;">${parseFloat(l.debit || 0).toFixed(2)}</td>
+          <td style="text-align:right;">${parseFloat(l.credit || 0).toFixed(2)}</td>
+        </tr>`).join("")}</tbody>
+      </table>
+    </div>`;
+  }).join("");
+}
+
+async function journalDelete(id) {
+  if (!confirm("Delete this journal entry?")) return;
+  try { await apiDelete(`/api/journal/${id}`); await journalReload(); }
+  catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+
+function openJournalEditModal() {
+  if (!selectedCompanyId) return;
+  _journalState.editingLines = [
+    { coa_account_id: "", description: "", debit: 0, credit: 0 },
+    { coa_account_id: "", description: "", debit: 0, credit: 0 },
+  ];
+  const today = new Date().toISOString().slice(0, 10);
+  document.getElementById("journal-date").value = today;
+  document.getElementById("journal-memo").value = "";
+  document.getElementById("journal-error").style.display = "none";
+  _renderJournalLines();
+  document.getElementById("journal-edit-modal").classList.add("active");
+  document.getElementById("journal-edit-modal").style.display = "flex";
+}
+function closeJournalEditModal() {
+  document.getElementById("journal-edit-modal").classList.remove("active");
+  document.getElementById("journal-edit-modal").style.display = "none";
+}
+
+function journalAddLine() {
+  _journalState.editingLines.push({ coa_account_id: "", description: "", debit: 0, credit: 0 });
+  _renderJournalLines();
+}
+
+function _renderJournalLines() {
+  const body = document.getElementById("journal-lines-body");
+  const coa = _coaState.accounts.filter((a) => a.is_active);
+  body.innerHTML = _journalState.editingLines.map((l, i) => `<tr>
+    <td>
+      <select class="form-select form-select-sm" onchange="_journalLineUpdate(${i}, 'coa_account_id', this.value)">
+        <option value="">— pick account —</option>
+        ${coa.map((a) => `<option value="${a.id}" ${l.coa_account_id === a.id ? "selected" : ""}>${_escapeHtml(a.code)} ${_escapeHtml(a.name)}</option>`).join("")}
+      </select>
+    </td>
+    <td><input class="form-input form-input-sm" type="text" value="${_escapeHtml(l.description || "")}" oninput="_journalLineUpdate(${i}, 'description', this.value)"></td>
+    <td style="text-align:right;"><input class="form-input form-input-sm" type="number" step="0.01" value="${l.debit || ""}" oninput="_journalLineUpdate(${i}, 'debit', this.value)" style="text-align:right;width:100px;"></td>
+    <td style="text-align:right;"><input class="form-input form-input-sm" type="number" step="0.01" value="${l.credit || ""}" oninput="_journalLineUpdate(${i}, 'credit', this.value)" style="text-align:right;width:100px;"></td>
+    <td><button class="btn btn-ghost btn-sm" onclick="_journalLineRemove(${i})" type="button" ${_journalState.editingLines.length <= 2 ? "disabled" : ""}>&times;</button></td>
+  </tr>`).join("");
+  _updateJournalBalance();
+}
+
+function _journalLineUpdate(i, field, value) {
+  if (field === "debit" || field === "credit") _journalState.editingLines[i][field] = parseFloat(value) || 0;
+  else _journalState.editingLines[i][field] = value;
+  _updateJournalBalance();
+}
+function _journalLineRemove(i) {
+  if (_journalState.editingLines.length <= 2) return;
+  _journalState.editingLines.splice(i, 1);
+  _renderJournalLines();
+}
+function _updateJournalBalance() {
+  const td = _journalState.editingLines.reduce((s, l) => s + (parseFloat(l.debit) || 0), 0);
+  const tc = _journalState.editingLines.reduce((s, l) => s + (parseFloat(l.credit) || 0), 0);
+  const ok = Math.abs(td - tc) < 0.005 && td > 0;
+  document.getElementById("journal-balance").innerHTML = `Dr ${td.toFixed(2)} / Cr ${tc.toFixed(2)} ${ok ? '<span style="color:var(--color-success);">✓</span>' : '<span style="color:var(--color-error);">unbalanced</span>'}`;
+  document.getElementById("journal-save-btn").disabled = !ok;
+}
+
+async function journalSave() {
+  const errEl = document.getElementById("journal-error");
+  errEl.style.display = "none";
+  const date = document.getElementById("journal-date").value;
+  if (!date) { errEl.textContent = "Date required."; errEl.style.display = "block"; return; }
+  const memo = document.getElementById("journal-memo").value.trim();
+  const lines = _journalState.editingLines.filter((l) => l.coa_account_id);
+  if (lines.some((l) => !l.coa_account_id)) { errEl.textContent = "Every line needs an account."; errEl.style.display = "block"; return; }
+  try {
+    await apiPost(`/api/journal/${selectedCompanyId}`, { date, memo: memo || null, lines });
+    closeJournalEditModal();
+    await journalReload();
+  } catch (e) { errEl.textContent = "Failed: " + (e.message || "unknown"); errEl.style.display = "block"; }
+}
+
+
+// =====================================================================
+//  BANK ACCOUNTS PAGE
+// =====================================================================
+
+let _baState = { items: [], accounts: [] };
+
+async function baInit() {
+  const list = document.getElementById("ba-list");
+  if (!selectedCompanyId) { list.innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company.</div>'; return; }
+  const company = _getSelectedCompany();
+  if (!company || company.source !== "manual") { list.innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">Bank accounts only apply to manual + Plaid companies.</div>'; return; }
+  document.getElementById("ba-page-title").textContent = `Bank Accounts — ${company.name}`;
+  if (!_coaState.accounts.length) {
+    try { const r = await apiGet(`/api/coa/${selectedCompanyId}`); _coaState.accounts = r.accounts || []; } catch (e) {}
+  }
+  await baReload();
+}
+
+async function baReload() {
+  try {
+    const resp = await apiGet(`/api/plaid/accounts/${selectedCompanyId}`);
+    _baState.items = resp.items || [];
+    _baState.accounts = resp.accounts || [];
+    _baRender();
+  } catch (e) {
+    document.getElementById("ba-list").innerHTML = `<div style="text-align:center;padding:24px;color:var(--color-error);">Load failed: ${_escapeHtml(e.message)}</div>`;
+  }
+}
+
+function _baRender() {
+  const list = document.getElementById("ba-list");
+  if (!_baState.items.length) { list.innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">No banks linked yet. Click <strong>Link Another Bank</strong>.</div>'; return; }
+  const coaAssets = _coaState.accounts.filter((a) => a.is_active && (a.type === "asset" || a.type === "liability"));
+  list.innerHTML = _baState.items.map((it) => {
+    const accts = _baState.accounts.filter((a) => a.plaid_item_id === it.id);
+    const lastSync = it.last_synced_at ? new Date(it.last_synced_at).toLocaleString() : "never";
+    return `<div class="card" style="margin-bottom:12px;padding:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <div>
+          <strong>${_escapeHtml(it.institution_name || "Bank")}</strong>
+          <span class="badge ${it.status === "good" ? "badge-success" : "badge-warning"}" style="margin-left:8px;">${it.status || "unknown"}</span>
+          <div style="font-size:var(--text-xs);color:var(--color-text-secondary);">Last synced: ${lastSync}</div>
+        </div>
+        <div style="display:flex;gap:6px;">
+          <button class="btn btn-sm btn-secondary" onclick="baSyncItem('${it.id}')">Sync</button>
+          <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="baDisconnect('${it.id}')">Disconnect</button>
+        </div>
+      </div>
+      <table class="data-table" style="width:100%;font-size:var(--text-sm);">
+        <thead><tr><th>Account</th><th>Type</th><th style="text-align:right;">Balance</th><th>Maps to CoA</th></tr></thead>
+        <tbody>${accts.map((a) => `<tr>
+          <td><strong>${_escapeHtml(a.name)}</strong>${a.mask ? ` <span style="color:var(--color-text-secondary);">···${a.mask}</span>` : ""}</td>
+          <td style="font-size:var(--text-xs);">${a.type || ""}${a.subtype ? " · " + a.subtype : ""}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;">${parseFloat(a.current_balance || 0).toFixed(2)}</td>
+          <td>
+            <select class="form-select form-select-sm" onchange="baUpdateCoaMapping('${a.id}', this.value)">
+              <option value="">(none)</option>
+              ${coaAssets.map((c) => `<option value="${c.id}" ${a.coa_account_id === c.id ? "selected" : ""}>${_escapeHtml(c.code)} ${_escapeHtml(c.name)}</option>`).join("")}
+            </select>
+          </td>
+        </tr>`).join("")}</tbody>
+      </table>
+    </div>`;
+  }).join("");
+}
+
+async function baSyncItem() {
+  await syncPlaidCompany(selectedCompanyId, _getSelectedCompany()?.name);
+  await baReload();
+}
+
+async function baDisconnect(itemId) {
+  if (!confirm("Disconnect this bank? Linked transactions will be removed.")) return;
+  try {
+    await apiPost(`/api/plaid/disconnect/${itemId}`, {});
+    showToast("Bank disconnected", "success");
+    await baReload();
+  } catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+
+async function baUpdateCoaMapping(accountId, coaId) {
+  try { await apiPatch(`/api/accounts/${accountId}`, { coa_account_id: coaId || null }); showToast("Mapping updated", "success"); }
+  catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+
+async function baLinkAnother() {
+  // Reuse the existing Plaid link flow
+  const company = _getSelectedCompany();
+  if (!company) return;
+  await connectPlaidBank(company.id, company.name);
+}
+
+
+// =====================================================================
+//  DASHBOARD — scope to selected company when one is picked
+// =====================================================================
+
+async function dashInit() {
+  // Existing consolidated dashboard logic already runs on load; only intervene
+  // when a specific manual company is selected.
+  const company = _getSelectedCompany();
+  if (!company || company.source !== "manual") {
+    // Back to consolidated — re-run existing loader if it exists
+    if (typeof loadDashboard === "function") loadDashboard();
+    return;
+  }
+  // Per-company dashboard
+  try {
+    const data = await apiGet(`/api/dashboard/${company.id}`);
+    _renderPerCompanyDashboard(data);
+  } catch (e) {
+    showToast("Dashboard load failed: " + (e.message || "unknown"), "error");
+  }
+}
+
+function _renderPerCompanyDashboard(data) {
+  // Minimal render: find a container within the existing dashboard page and swap.
+  // Create a wrapper element if it doesn't exist.
+  const page = document.getElementById("page-dashboard");
+  if (!page) return;
+  let wrap = document.getElementById("per-company-dash-wrap");
+  if (!wrap) {
+    wrap = document.createElement("div");
+    wrap.id = "per-company-dash-wrap";
+    page.insertBefore(wrap, page.firstChild);
+  }
+  const k = data.kpi || {};
+  const months = data.trend_months || [];
+  const topExp = data.top_expenses || [];
+  const recent = data.recent_transactions || [];
+
+  wrap.innerHTML = `
+    <div class="card mb-4" style="padding:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <h2 style="margin:0;font-size:var(--text-lg);">${_escapeHtml(data.company.name)} · Dashboard</h2>
+        <span class="badge badge-neutral">Manual + Plaid</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px;">
+        ${_kpiCard("Cash on hand", k.cash_on_hand)}
+        ${_kpiCard("YTD Revenue", k.ytd_revenue)}
+        ${_kpiCard("YTD Expenses", k.ytd_expense)}
+        ${_kpiCard("YTD Net Income", k.ytd_net, k.ytd_net >= 0 ? "var(--color-success)" : "var(--color-error)")}
+      </div>
+      ${data.uncategorized_count > 0 ? `<div style="background:oklch(0.95 0.08 60);border-radius:var(--radius-md);padding:10px 14px;margin-bottom:16px;font-size:var(--text-sm);">
+        ⚠ <strong>${data.uncategorized_count}</strong> transactions are uncategorized. <a href="#transactions" onclick="navigateTo('transactions');document.getElementById('tx-filter-uncat').checked=true;txReload();return false;">Review now →</a>
+      </div>` : ""}
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px;">
+        <div>
+          <h3 style="font-size:var(--text-sm);margin-bottom:8px;">Monthly Net Cash Flow</h3>
+          <div style="display:flex;gap:4px;align-items:flex-end;height:120px;border-bottom:1px solid var(--color-border);">
+            ${months.map((m) => {
+              const h = Math.max(4, Math.min(100, Math.abs(m.net) / 100));
+              const color = m.net >= 0 ? "var(--color-success)" : "var(--color-error)";
+              return `<div title="${m.month}: ${m.net.toFixed(2)}" style="flex:1;background:${color};height:${h}px;border-radius:2px 2px 0 0;"></div>`;
+            }).join("")}
+          </div>
+          <div style="display:flex;gap:4px;margin-top:4px;font-size:9px;color:var(--color-text-secondary);">
+            ${months.map((m) => `<div style="flex:1;text-align:center;">${m.month.slice(5)}</div>`).join("")}
+          </div>
+        </div>
+        <div>
+          <h3 style="font-size:var(--text-sm);margin-bottom:8px;">Top Expenses YTD</h3>
+          ${topExp.length ? topExp.map((t) => `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:var(--text-sm);">
+            <span>${_escapeHtml(t.name)}</span>
+            <strong>${t.total.toFixed(2)}</strong>
+          </div>`).join("") : '<div style="font-size:var(--text-sm);color:var(--color-text-muted);">No expenses yet.</div>'}
+        </div>
+      </div>
+      <h3 style="font-size:var(--text-sm);margin:16px 0 8px;">Recent Activity</h3>
+      <table class="data-table" style="width:100%;font-size:var(--text-sm);">
+        <thead><tr><th>Date</th><th>Merchant</th><th style="text-align:right;">Amount</th></tr></thead>
+        <tbody>${recent.length ? recent.map((t) => `<tr>
+          <td style="font-size:var(--text-xs);">${t.date || ""}</td>
+          <td>${_escapeHtml(t.merchant_name || t.description || "—")}</td>
+          <td style="text-align:right;color:${(t.amount || 0) > 0 ? "var(--color-text-primary)" : "var(--color-success)"};">${parseFloat(t.amount || 0).toFixed(2)}</td>
+        </tr>`).join("") : '<tr><td colspan="3" style="text-align:center;color:var(--color-text-muted);padding:12px;">No transactions yet.</td></tr>'}</tbody>
+      </table>
+    </div>
+  `;
+
+  // Hide the existing consolidated dashboard content
+  Array.from(page.children).forEach((el) => {
+    if (el.id !== "per-company-dash-wrap") el.style.display = "none";
+  });
+}
+
+function _kpiCard(label, value, color) {
+  const c = color || "var(--color-text-primary)";
+  return `<div style="background:var(--color-bg-muted);padding:12px;border-radius:var(--radius-md);">
+    <div style="font-size:var(--text-xs);color:var(--color-text-secondary);text-transform:uppercase;">${label}</div>
+    <div style="font-size:var(--text-lg);font-weight:700;color:${c};margin-top:4px;">${(value || 0).toFixed(2)}</div>
+  </div>`;
+}
+
+
+// =====================================================================
+//  apiPatch helper (may not exist in older app.js)
+// =====================================================================
+
+if (typeof apiPatch === "undefined") {
+  window.apiPatch = async function(path, body) {
+    const res = await fetch(`${API}${path}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify(body),
+    });
+    const data = res.status === 204 ? {} : await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `API ${res.status}`);
+    return data;
+  };
+}
+
+
+// =====================================================================
+//  Wire company switcher into existing load flow
+// =====================================================================
+
+// Patch loadCompanyList to re-render the switcher after the list refreshes
+const _origLoadCompanyList = typeof loadCompanyList === "function" ? loadCompanyList : null;
+if (_origLoadCompanyList) {
+  window.loadCompanyList = async function(...args) {
+    const r = await _origLoadCompanyList.apply(this, args);
+    _loadPersistedSelection();
+    // If the persisted id no longer exists, reset
+    if (selectedCompanyId && !(allCompanies || []).some((c) => c.id === selectedCompanyId)) {
+      selectedCompanyId = null;
+      _persistSelection();
+    }
+    renderCompanySwitcher();
+    return r;
+  };
 }
