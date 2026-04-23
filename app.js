@@ -4558,7 +4558,7 @@ document.addEventListener("click", (e) => {
 
 let _txState = {
   limit: 50, offset: 0, has_more: false,
-  categories: [], accounts: [],
+  categories: [], accounts: [], items: [],
 };
 let _txDebounceTimer = null;
 
@@ -4595,12 +4595,36 @@ async function _txLoadAccounts() {
   try {
     const resp = await apiGet(`/api/plaid/accounts/${selectedCompanyId}`);
     _txState.accounts = resp.accounts || [];
-    const sel = document.getElementById("tx-filter-account");
-    if (sel) {
-      sel.innerHTML = `<option value="">All accounts</option>` +
-        _txState.accounts.map((a) => `<option value="${a.id}">${_escapeHtml(a.name)}${a.mask ? " ···" + a.mask : ""}</option>`).join("");
-    }
+    _txState.items = resp.items || [];
+    _txRenderBankFilter();
+    _txRenderAccountFilter();
   } catch (e) { console.warn("Accounts load failed", e); }
+}
+
+function _txRenderBankFilter() {
+  const sel = document.getElementById("tx-filter-bank");
+  if (!sel) return;
+  sel.innerHTML = `<option value="">All banks</option>` +
+    _txState.items.map((it) => `<option value="${it.id}">${_escapeHtml(it.institution_name || "Bank")}</option>`).join("");
+}
+
+function _txRenderAccountFilter() {
+  const sel = document.getElementById("tx-filter-account");
+  if (!sel) return;
+  const bankId = document.getElementById("tx-filter-bank")?.value || "";
+  const scoped = bankId
+    ? _txState.accounts.filter((a) => a.plaid_item_id === bankId)
+    : _txState.accounts;
+  sel.innerHTML = `<option value="">All accounts</option>` +
+    scoped.map((a) => `<option value="${a.id}">${_escapeHtml(a.name)}${a.mask ? " ···" + a.mask : ""}</option>`).join("");
+}
+
+function txBankChanged() {
+  // Rebuild account options to match the selected bank and reset account picker
+  const acctSel = document.getElementById("tx-filter-account");
+  if (acctSel) acctSel.value = "";
+  _txRenderAccountFilter();
+  txReload();
 }
 
 function txDebouncedReload() {
@@ -4612,12 +4636,13 @@ function txResetFilters() {
   ["tx-filter-search", "tx-filter-date-from", "tx-filter-date-to"].forEach((id) => {
     const el = document.getElementById(id); if (el) el.value = "";
   });
-  ["tx-filter-account", "tx-filter-category"].forEach((id) => {
+  ["tx-filter-bank", "tx-filter-account", "tx-filter-category"].forEach((id) => {
     const el = document.getElementById(id); if (el) el.value = "";
   });
   ["tx-filter-uncat", "tx-filter-transfers"].forEach((id) => {
     const el = document.getElementById(id); if (el) el.checked = false;
   });
+  _txRenderAccountFilter();
   _txState.offset = 0;
   txReload();
 }
@@ -4637,6 +4662,8 @@ async function txReload() {
   if (dateFrom) params.set("date_from", dateFrom);
   const dateTo = document.getElementById("tx-filter-date-to").value;
   if (dateTo) params.set("date_to", dateTo);
+  const bank = document.getElementById("tx-filter-bank").value;
+  if (bank) params.set("plaid_item_id", bank);
   const acct = document.getElementById("tx-filter-account").value;
   if (acct) params.set("account_id", acct);
   const cat = document.getElementById("tx-filter-category").value;
@@ -5448,16 +5475,27 @@ function _baRender() {
   list.innerHTML = _baState.items.map((it) => {
     const accts = _baState.accounts.filter((a) => a.plaid_item_id === it.id);
     const lastSync = it.last_synced_at ? new Date(it.last_synced_at).toLocaleString() : "never";
+    const safeInst = (it.institution_name || "Bank").replace(/'/g, "\\'");
     return `<div class="card" style="margin-bottom:12px;padding:12px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap;">
         <div>
           <strong>${_escapeHtml(it.institution_name || "Bank")}</strong>
           <span class="badge ${it.status === "good" ? "badge-success" : "badge-warning"}" style="margin-left:8px;">${it.status || "unknown"}</span>
-          <div style="font-size:var(--text-xs);color:var(--color-text-secondary);">Last synced: ${lastSync}</div>
+          <div style="font-size:var(--text-xs);color:var(--color-text-secondary);">${accts.length} account${accts.length === 1 ? "" : "s"} · last synced: ${lastSync}</div>
         </div>
         <div style="display:flex;gap:6px;">
-          <button class="btn btn-sm btn-secondary" onclick="baSyncItem('${it.id}')">Sync</button>
-          <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="baDisconnect('${it.id}')">Disconnect</button>
+          <button class="btn btn-sm btn-secondary" onclick="baSyncItem('${it.id}')" title="Pull latest transactions from Plaid">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+            Sync
+          </button>
+          <button class="btn btn-sm btn-secondary" onclick="baReconnect('${it.id}','${safeInst}')" title="Re-link if the bank says credentials expired">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            Reconnect
+          </button>
+          <button class="btn btn-sm" style="background:var(--color-error);color:white;border:none;" onclick="baDeleteBank('${it.id}','${safeInst}', ${accts.length})" title="Disconnect and delete this bank — transactions and accounts are removed">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14z"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+            Delete Bank
+          </button>
         </div>
       </div>
       <table class="data-table" style="width:100%;font-size:var(--text-sm);">
@@ -5478,17 +5516,38 @@ function _baRender() {
   }).join("");
 }
 
-async function baSyncItem() {
+async function baSyncItem(itemId) {
+  // Sync is per-company at the API layer, but the outcome is the same —
+  // all items for the company refresh.
   await syncPlaidCompany(selectedCompanyId, _getSelectedCompany()?.name);
   await baReload();
 }
 
-async function baDisconnect(itemId) {
-  if (!confirm("Disconnect this bank? Linked transactions will be removed.")) return;
+async function baReconnect(itemId, institutionName) {
+  // Reconnect uses the same Plaid Link flow but for an existing item.
+  // For v1 simplicity, re-run the standard connect-bank flow. Plaid's
+  // `mergeReconnectedPlaidItem` equivalent is handled server-side on exchange.
+  if (!confirm(`Reconnect ${institutionName}? This will re-run Plaid Link. If the same bank is chosen, existing transactions are preserved.`)) return;
+  const company = _getSelectedCompany();
+  if (!company) return;
+  await connectPlaidBank(company.id, company.name);
+}
+
+async function baDeleteBank(itemId, institutionName, accountCount) {
+  const msg = `Delete ${institutionName}?\n\nThis will:\n• Disconnect the bank at Plaid\n• Remove ${accountCount} linked account${accountCount === 1 ? "" : "s"}\n• Delete ALL transactions from this bank\n\nThis cannot be undone. Reports will change.\n\nType DELETE to confirm.`;
+  const answer = prompt(msg);
+  if (answer !== "DELETE") {
+    if (answer !== null) showToast("Canceled — didn't match.", "info");
+    return;
+  }
   try {
     await apiPost(`/api/plaid/disconnect/${itemId}`, {});
-    showToast("Bank disconnected", "success");
+    showToast(`${institutionName} deleted`, "success");
     await baReload();
+    // Refresh the main company list so the Companies page shows "No bank linked" if this was the last one
+    if (typeof loadCompanyList === "function") {
+      await loadCompanyList();
+    }
   } catch (e) { showToast("Failed: " + e.message, "error"); }
 }
 

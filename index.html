@@ -1255,7 +1255,7 @@
         </div>
 
         <!-- Filters -->
-        <div style="padding:0 var(--space-1);display:grid;grid-template-columns:1fr 140px 140px 180px 180px auto;gap:8px;align-items:end;margin-bottom:var(--space-3);">
+        <div style="padding:0 var(--space-1);display:grid;grid-template-columns:1fr 130px 130px 160px 160px 160px auto;gap:8px;align-items:end;margin-bottom:var(--space-3);">
           <div>
             <label class="form-label" style="font-size:var(--text-xs);">Search merchant or description</label>
             <input class="form-input" type="search" id="tx-filter-search" placeholder="e.g. Starbucks" oninput="txDebouncedReload()">
@@ -1267,6 +1267,12 @@
           <div>
             <label class="form-label" style="font-size:var(--text-xs);">To</label>
             <input class="form-input" type="date" id="tx-filter-date-to" onchange="txReload()">
+          </div>
+          <div>
+            <label class="form-label" style="font-size:var(--text-xs);">Bank</label>
+            <select class="form-select" id="tx-filter-bank" onchange="txBankChanged()">
+              <option value="">All banks</option>
+            </select>
           </div>
           <div>
             <label class="form-label" style="font-size:var(--text-xs);">Account</label>
