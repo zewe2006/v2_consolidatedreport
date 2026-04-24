@@ -438,6 +438,10 @@ function navigateTo(page) {
     rules: "Categorization Rules",
     "manual-journal": "Journal Entries",
     "bank-accounts": "Bank Accounts",
+    customers: "Customers",
+    vendors: "Vendors",
+    invoices: "Invoices",
+    bills: "Bills",
   });
   document.getElementById("page-title").textContent = allTitles[page] || "Dashboard";
   location.hash = page;
@@ -474,6 +478,10 @@ function navigateTo(page) {
   if (page === "manual-journal") journalInit();
   if (page === "bank-accounts") baInit();
   if (page === "dashboard") dashInit();
+  if (page === "customers") customersInit();
+  if (page === "vendors") vendorsInit();
+  if (page === "invoices") invoicesInit();
+  if (page === "bills") billsInit();
 }
 
 window.addEventListener("hashchange", () => {
@@ -4183,6 +4191,499 @@ async function openPlaidLinkForPending() {
   await connectPlaidBank(_pendingPlaidCompany.id, _pendingPlaidCompany.name);
 }
 
+// =====================================================================
+//  M3: QBO AR/AP Import
+// =====================================================================
+
+let _qboArApPlan = null;
+
+function openQboArApImportModal() {
+  const srcSel = document.getElementById("qbo-arap-src");
+  const destSel = document.getElementById("qbo-arap-dest");
+  const qboCos = (allCompanies || []).filter((c) => (c.source || "qbo") === "qbo");
+  const manualCos = (allCompanies || []).filter((c) => c.source === "manual");
+  if (!qboCos.length) { showToast("No QuickBooks companies connected.", "error"); return; }
+  if (!manualCos.length) { showToast("No manual companies. Create one first.", "error"); return; }
+  srcSel.innerHTML = '<option value="">Select...</option>' +
+    qboCos.map((c) => `<option value="${c.id}">${_escapeHtml(c.name)}</option>`).join("");
+  destSel.innerHTML = '<option value="">Select...</option>' +
+    manualCos.map((c) => `<option value="${c.id}">${_escapeHtml(c.name)}</option>`).join("");
+  const end = document.getElementById("qbo-arap-end");
+  if (end && !end.value) end.value = new Date().toISOString().slice(0, 10);
+  _qboArApPlan = null;
+  _qboArApResetUi();
+  const modal = document.getElementById("qbo-arap-modal");
+  modal.classList.add("active"); modal.style.display = "flex";
+}
+function closeQboArApImportModal() {
+  const m = document.getElementById("qbo-arap-modal");
+  m.classList.remove("active"); m.style.display = "none"; _qboArApPlan = null;
+}
+function _qboArApResetUi() {
+  document.getElementById("qbo-arap-error").style.display = "none";
+  document.getElementById("qbo-arap-preview").style.display = "none";
+  document.getElementById("qbo-arap-result").style.display = "none";
+  document.getElementById("qbo-arap-progress").style.display = "none";
+  document.getElementById("qbo-arap-preview-btn").style.display = "inline-flex";
+  document.getElementById("qbo-arap-preview-btn").disabled = false;
+  document.getElementById("qbo-arap-confirm-btn").style.display = "none";
+  document.getElementById("qbo-arap-back-btn").style.display = "none";
+  ["qbo-arap-src","qbo-arap-dest","qbo-arap-start","qbo-arap-end"].forEach((id) => { const el = document.getElementById(id); if (el) el.disabled = false; });
+}
+function qboArApBackToForm() { _qboArApPlan = null; _qboArApResetUi(); }
+
+function _qboArApCollect() {
+  const errEl = document.getElementById("qbo-arap-error");
+  errEl.style.display = "none";
+  const src = document.getElementById("qbo-arap-src").value;
+  const dest = document.getElementById("qbo-arap-dest").value;
+  const start = document.getElementById("qbo-arap-start").value;
+  const end = document.getElementById("qbo-arap-end").value;
+  if (!src || !dest || !start || !end) { errEl.textContent = "All fields required."; errEl.style.display = "block"; return null; }
+  if (src === dest) { errEl.textContent = "Source and destination must differ."; errEl.style.display = "block"; return null; }
+  return { source_qbo_company_id: src, dest_manual_company_id: dest, start_date: start, end_date: end };
+}
+
+async function runQboArApPreview() {
+  const form = _qboArApCollect(); if (!form) return;
+  const progEl = document.getElementById("qbo-arap-progress");
+  const progText = document.getElementById("qbo-arap-progress-text");
+  const previewEl = document.getElementById("qbo-arap-preview");
+  const errEl = document.getElementById("qbo-arap-error");
+  const btn = document.getElementById("qbo-arap-preview-btn");
+  progText.textContent = "Previewing... counting entities in QBO.";
+  progEl.style.display = "block"; btn.disabled = true; previewEl.style.display = "none";
+  try {
+    const r = await apiPost("/api/import/qbo-ar-ap", { ...form, preview: true });
+    progEl.style.display = "none";
+    const c = r.counts;
+    const newList = (r.new_coas || []).slice(0, 12);
+    const newHtml = newList.length
+      ? `<div style="margin-top:6px;font-size:var(--text-xs);">New CoA accounts: ${newList.map((u) => `<code>${_escapeHtml(u.coa_code || "")}</code> ${_escapeHtml(u.qbo_name)}`).join(" · ")}${r.new_coas.length > newList.length ? ` +${r.new_coas.length - newList.length} more` : ""}</div>`
+      : "";
+    previewEl.innerHTML = `
+      <strong>Ready to import</strong>
+      <div style="margin-top:6px;">
+        <div><strong>${_escapeHtml(r.source_company)}</strong> → <strong>${_escapeHtml(r.dest_company)}</strong></div>
+        <div><strong>${c.customers}</strong> customers · <strong>${c.vendors}</strong> vendors</div>
+        <div><strong>${c.invoices}</strong> invoices · <strong>${c.bills}</strong> bills (${r.start_date} → ${r.end_date})</div>
+        <div><strong>${c.new_coa}</strong> new CoA accounts will be created</div>
+      </div>${newHtml}`;
+    previewEl.style.display = "block";
+    _qboArApPlan = form;
+    ["qbo-arap-src","qbo-arap-dest","qbo-arap-start","qbo-arap-end"].forEach((id) => document.getElementById(id).disabled = true);
+    btn.style.display = "none";
+    document.getElementById("qbo-arap-confirm-btn").style.display = "inline-flex";
+    document.getElementById("qbo-arap-back-btn").style.display = "inline-flex";
+  } catch (e) {
+    progEl.style.display = "none"; btn.disabled = false;
+    errEl.textContent = "Preview failed: " + (e.message || "unknown");
+    errEl.style.display = "block";
+  }
+}
+
+async function runQboArApConfirm() {
+  if (!_qboArApPlan) return;
+  const progEl = document.getElementById("qbo-arap-progress");
+  const progText = document.getElementById("qbo-arap-progress-text");
+  const previewEl = document.getElementById("qbo-arap-preview");
+  const resultEl = document.getElementById("qbo-arap-result");
+  const errEl = document.getElementById("qbo-arap-error");
+  const confirmBtn = document.getElementById("qbo-arap-confirm-btn");
+  const backBtn = document.getElementById("qbo-arap-back-btn");
+  progText.textContent = "Importing — this can take 1–3 minutes.";
+  progEl.style.display = "block"; confirmBtn.disabled = true; backBtn.disabled = true;
+  try {
+    const r = await apiPost("/api/import/qbo-ar-ap", { ..._qboArApPlan, preview: false });
+    progEl.style.display = "none"; confirmBtn.style.display = "none"; backBtn.style.display = "none"; previewEl.style.display = "none";
+    resultEl.innerHTML = `
+      <div>Imported:</div>
+      <ul style="margin:4px 0 0 16px;font-size:var(--text-sm);">
+        <li><strong>${r.customers}</strong> customers</li>
+        <li><strong>${r.vendors}</strong> vendors</li>
+        <li><strong>${r.invoices}</strong> invoices${r.skipped_invoices ? ` (${r.skipped_invoices} skipped — missing customer)` : ""}</li>
+        <li><strong>${r.bills}</strong> bills${r.skipped_bills ? ` (${r.skipped_bills} skipped — missing vendor)` : ""}</li>
+      </ul>
+      <div style="margin-top:10px;">
+        <button class="btn btn-sm btn-primary" onclick="setSelectedCompany('${_qboArApPlan.dest_manual_company_id}');navigateTo('invoices');closeQboArApImportModal();" type="button">Open Invoices</button>
+      </div>`;
+    resultEl.style.display = "block";
+    showToast(`Imported ${r.invoices} invoices + ${r.bills} bills`, "success");
+  } catch (e) {
+    progEl.style.display = "none"; confirmBtn.disabled = false; backBtn.disabled = false;
+    errEl.textContent = "Import failed: " + (e.message || "unknown");
+    errEl.style.display = "block";
+  }
+}
+
+
+// =====================================================================
+//  M4: Match Transaction to Invoice/Bill
+// =====================================================================
+
+let _matchContext = { kind: "invoice", txId: null, txAmount: 0, txMerchant: "" };
+
+async function txApplyToInvoice(txId) { await _openMatchModal(txId, "invoice"); }
+async function txApplyToBill(txId) { await _openMatchModal(txId, "bill"); }
+
+async function _openMatchModal(txId, kind) {
+  const row = document.querySelector(`tr[data-tx-id="${txId}"]`);
+  const amount = row ? Math.abs(parseFloat(row.querySelectorAll("td")[5].textContent.trim())) : 0;
+  const merchant = row ? (row.querySelectorAll("td")[2].querySelector("div")?.textContent?.trim() || "") : "";
+  _matchContext = { kind, txId, txAmount: amount, txMerchant: merchant };
+  document.getElementById("match-modal-title").textContent = `Apply to ${kind === "invoice" ? "Invoice" : "Bill"}`;
+  document.getElementById("match-tx-context").innerHTML = `
+    <strong>${_escapeHtml(merchant || "(unknown)")}</strong> · ${amount.toFixed(2)}<br>
+    Looking for ${kind === "invoice" ? "open invoices" : "open bills"} with matching amount and date.
+  `;
+  const list = document.getElementById("match-candidates");
+  list.innerHTML = '<div style="color:var(--color-text-muted);padding:12px;text-align:center;">Loading suggestions...</div>';
+  const modal = document.getElementById("match-modal");
+  modal.classList.add("active"); modal.style.display = "flex";
+  try {
+    const r = await apiGet(`/api/payments/match-suggestions/${txId}?kind=${kind}&top_n=10`);
+    if (!r.candidates?.length) {
+      list.innerHTML = `<div style="color:var(--color-text-muted);padding:12px;text-align:center;">No matching open ${kind}s within the amount tolerance.</div>`;
+      return;
+    }
+    list.innerHTML = r.candidates.map((c) => `
+      <div style="border:1px solid var(--color-border);border-radius:var(--radius-md);padding:10px;display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <strong>${_escapeHtml(c.number || "—")}</strong> · ${c.date}
+          <div style="font-size:var(--text-xs);color:var(--color-text-secondary);">
+            ${_escapeHtml(c.party?.display_name || "")} · Balance ${parseFloat(c.balance || 0).toFixed(2)} of ${parseFloat(c.total || 0).toFixed(2)}
+            · Score ${c.score}
+          </div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="_applyMatch('${c.id}', ${c.balance})" type="button">Apply</button>
+      </div>
+    `).join("");
+  } catch (e) {
+    list.innerHTML = `<div style="color:var(--color-error);padding:12px;text-align:center;">${_escapeHtml(e.message)}</div>`;
+  }
+}
+
+function closeMatchModal() {
+  const m = document.getElementById("match-modal");
+  m.classList.remove("active"); m.style.display = "none";
+}
+
+async function _applyMatch(targetId, maxAmount) {
+  const errEl = document.getElementById("match-error");
+  errEl.style.display = "none";
+  const ctx = _matchContext;
+  const amt = Math.min(ctx.txAmount, parseFloat(maxAmount) || ctx.txAmount);
+  try {
+    const body = {
+      plaid_txn_id: ctx.txId,
+      amount: amt,
+      payment_method: "ach",
+      memo: `Auto-matched from transaction: ${ctx.txMerchant}`.slice(0, 200),
+    };
+    if (ctx.kind === "invoice") body.invoice_id = targetId; else body.bill_id = targetId;
+    await apiPost("/api/payments/apply-match", body);
+    showToast(`Applied ${amt.toFixed(2)} to ${ctx.kind}`, "success");
+    closeMatchModal();
+    await txReload();
+  } catch (e) {
+    errEl.textContent = "Failed: " + (e.message || "unknown");
+    errEl.style.display = "block";
+  }
+}
+
+
+// =====================================================================
+//  M5: Print + Email + Credit Memos + Recurring
+// =====================================================================
+
+function docPrint() {
+  const { kind, data } = _docDetailState;
+  if (!data) return;
+  const doc = kind === "invoice" ? data.invoice : data.bill;
+  const party = kind === "invoice" ? data.customer : data.vendor;
+  const lines = data.lines || [];
+  const title = kind === "invoice" ? "INVOICE" : "BILL";
+  const host = document.getElementById("doc-print-host");
+  host.innerHTML = `
+    <div style="max-width:720px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #222;padding-bottom:12px;">
+        <div>
+          <h1 style="margin:0;font-size:28px;">${title}</h1>
+          <div>#${_escapeHtml(doc.number || "")}</div>
+        </div>
+        <div style="text-align:right;">
+          <div><strong>Date:</strong> ${doc.date}</div>
+          ${doc.due_date ? `<div><strong>Due:</strong> ${doc.due_date}</div>` : ""}
+        </div>
+      </div>
+      <div style="margin:20px 0;">
+        <div style="font-size:12px;color:#666;text-transform:uppercase;">${kind === "invoice" ? "Bill To" : "From"}</div>
+        <div><strong>${_escapeHtml(party?.display_name || "")}</strong></div>
+        ${party?.company_name ? `<div>${_escapeHtml(party.company_name)}</div>` : ""}
+        ${party?.email ? `<div>${_escapeHtml(party.email)}</div>` : ""}
+      </div>
+      <table style="width:100%;border-collapse:collapse;margin-bottom:16px;">
+        <thead><tr style="border-bottom:1px solid #222;">
+          <th style="text-align:left;padding:6px 4px;">Description</th>
+          <th style="text-align:right;padding:6px 4px;">Qty</th>
+          <th style="text-align:right;padding:6px 4px;">Unit</th>
+          <th style="text-align:right;padding:6px 4px;">Amount</th>
+        </tr></thead>
+        <tbody>
+          ${lines.map((l) => `<tr style="border-bottom:1px solid #eee;">
+            <td style="padding:6px 4px;">${_escapeHtml(l.description || "")}</td>
+            <td style="text-align:right;padding:6px 4px;">${parseFloat(l.quantity || 0).toFixed(2)}</td>
+            <td style="text-align:right;padding:6px 4px;">${parseFloat(l.unit_price || 0).toFixed(2)}</td>
+            <td style="text-align:right;padding:6px 4px;">${parseFloat(l.amount || 0).toFixed(2)}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>
+      <div style="text-align:right;margin-bottom:8px;">Subtotal: <strong>${parseFloat(doc.subtotal || 0).toFixed(2)}</strong></div>
+      <div style="text-align:right;margin-bottom:8px;">Tax: <strong>${parseFloat(doc.tax_total || 0).toFixed(2)}</strong></div>
+      <div style="text-align:right;font-size:18px;border-top:2px solid #222;padding-top:8px;">
+        <strong>Total: ${parseFloat(doc.total || 0).toFixed(2)}</strong>
+      </div>
+      <div style="text-align:right;font-size:14px;color:#c33;margin-top:4px;">Balance: ${parseFloat(doc.balance || 0).toFixed(2)}</div>
+      ${doc.memo ? `<div style="margin-top:24px;padding-top:12px;border-top:1px solid #eee;font-size:13px;"><strong>Memo:</strong> ${_escapeHtml(doc.memo)}</div>` : ""}
+    </div>
+  `;
+  window.print();
+}
+
+// --- Email invoice ---
+let _emailInvoiceId = null;
+
+function openEmailInvoice() {
+  const data = _docDetailState.data;
+  const inv = data.invoice;
+  const cust = data.customer || {};
+  _emailInvoiceId = inv.id;
+  const company = _getSelectedCompany();
+  document.getElementById("email-invoice-to").value = cust.email || "";
+  document.getElementById("email-invoice-subject").value = `Invoice ${inv.number || ""} from ${company?.name || ""}`.trim();
+  document.getElementById("email-invoice-body").value =
+    `<p>Hi ${cust.display_name || ""},</p>\n` +
+    `<p>Please find your invoice details below:</p>\n` +
+    `<p><strong>${inv.number}</strong> — total $${parseFloat(inv.total || 0).toFixed(2)} — due ${inv.due_date || "on receipt"}.</p>\n` +
+    `<p>Balance owing: $${parseFloat(inv.balance || 0).toFixed(2)}.</p>\n` +
+    `<p>Thank you!</p>`;
+  document.getElementById("email-invoice-error").style.display = "none";
+  const m = document.getElementById("email-invoice-modal");
+  m.classList.add("active"); m.style.display = "flex";
+}
+function closeEmailInvoice() {
+  const m = document.getElementById("email-invoice-modal");
+  m.classList.remove("active"); m.style.display = "none"; _emailInvoiceId = null;
+}
+
+async function emailInvoiceSend() {
+  const errEl = document.getElementById("email-invoice-error");
+  errEl.style.display = "none";
+  const to = document.getElementById("email-invoice-to").value.trim();
+  if (!to) { errEl.textContent = "Recipient email required."; errEl.style.display = "block"; return; }
+  const btn = document.getElementById("email-invoice-send-btn");
+  btn.disabled = true; btn.textContent = "Sending...";
+  try {
+    await apiPost(`/api/invoices/${_emailInvoiceId}/email`, {
+      to_email: to,
+      subject: document.getElementById("email-invoice-subject").value,
+      body_html: document.getElementById("email-invoice-body").value,
+    });
+    showToast("Email sent", "success");
+    closeEmailInvoice();
+  } catch (e) {
+    errEl.textContent = "Failed: " + (e.message || "unknown");
+    errEl.style.display = "block";
+  } finally {
+    btn.disabled = false; btn.textContent = "Send Email";
+  }
+}
+
+
+// --- Credit Memos (simple modal-based UI) ---
+
+let _cmCustomers = [], _cmCoa = [];
+
+async function openCreditMemoModal() {
+  const company = _getSelectedCompany();
+  if (!company || company.source !== "manual") { showToast("Pick a manual company first.", "error"); return; }
+  if (!_contactsState.coa.length) await _contactsLoadCoa();
+  _cmCoa = _contactsState.coa;
+  try {
+    const [cr, lr] = await Promise.all([
+      apiGet(`/api/customers/${selectedCompanyId}`),
+      apiGet(`/api/credit-memos/${selectedCompanyId}`),
+    ]);
+    _cmCustomers = cr.customers || [];
+    const rows = lr.credit_memos || [];
+    const list = document.getElementById("credit-memo-list");
+    if (!rows.length) {
+      list.innerHTML = '<div style="text-align:center;padding:16px;color:var(--color-text-muted);font-size:var(--text-sm);">No credit memos yet.</div>';
+    } else {
+      list.innerHTML = `<table class="data-table" style="width:100%;font-size:var(--text-sm);">
+        <thead><tr><th>Date</th><th>#</th><th>Customer</th><th>Status</th><th style="text-align:right;">Total</th><th style="text-align:right;">Balance</th><th></th></tr></thead>
+        <tbody>${rows.map((c) => `<tr>
+          <td>${c.date}</td><td>${_escapeHtml(c.number || "—")}</td>
+          <td>${_escapeHtml(c.customer?.display_name || "")}</td>
+          <td>${_statusBadge(c.status || "open")}</td>
+          <td style="text-align:right;">${parseFloat(c.total || 0).toFixed(2)}</td>
+          <td style="text-align:right;">${parseFloat(c.balance || 0).toFixed(2)}</td>
+          <td><button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="creditMemoDelete('${c.id}')">×</button></td>
+        </tr>`).join("")}</tbody></table>`;
+    }
+    const m = document.getElementById("credit-memo-modal");
+    m.classList.add("active"); m.style.display = "flex";
+  } catch (e) { showToast("Load failed: " + e.message, "error"); }
+}
+function closeCreditMemoModal() {
+  const m = document.getElementById("credit-memo-modal");
+  m.classList.remove("active"); m.style.display = "none";
+  creditMemoCancelForm();
+}
+function creditMemoNewForm() {
+  document.getElementById("credit-memo-new-form").style.display = "block";
+  const custSel = document.getElementById("cm-customer");
+  custSel.innerHTML = '<option value="">— select —</option>' +
+    _cmCustomers.map((c) => `<option value="${c.id}">${_escapeHtml(c.display_name)}</option>`).join("");
+  const acctSel = document.getElementById("cm-account");
+  acctSel.innerHTML = '<option value="">— select —</option>' +
+    _cmCoa.filter((a) => a.is_active).map((a) => `<option value="${a.id}">${_escapeHtml(a.code)} ${_escapeHtml(a.name)} (${a.type})</option>`).join("");
+  document.getElementById("cm-date").value = new Date().toISOString().slice(0, 10);
+  document.getElementById("cm-amount").value = "";
+  document.getElementById("cm-memo").value = "";
+  document.getElementById("cm-error").style.display = "none";
+}
+function creditMemoCancelForm() {
+  document.getElementById("credit-memo-new-form").style.display = "none";
+}
+async function creditMemoSave() {
+  const errEl = document.getElementById("cm-error");
+  errEl.style.display = "none";
+  const customer_id = document.getElementById("cm-customer").value;
+  const date = document.getElementById("cm-date").value;
+  const amount = parseFloat(document.getElementById("cm-amount").value || "0");
+  const coa_account_id = document.getElementById("cm-account").value;
+  if (!customer_id || !date || !amount || !coa_account_id) {
+    errEl.textContent = "All fields required."; errEl.style.display = "block"; return;
+  }
+  try {
+    await apiPost(`/api/credit-memos/${selectedCompanyId}`, {
+      customer_id, date,
+      memo: document.getElementById("cm-memo").value.trim() || null,
+      lines: [{ description: document.getElementById("cm-memo").value || "Credit",
+                quantity: 1, unit_price: amount, tax_rate: 0, coa_account_id }],
+    });
+    creditMemoCancelForm();
+    await openCreditMemoModal();
+  } catch (e) { errEl.textContent = "Failed: " + e.message; errEl.style.display = "block"; }
+}
+async function creditMemoDelete(id) {
+  if (!confirm("Delete this credit memo? Any applied amounts will be restored to invoices.")) return;
+  try { await apiDelete(`/api/credit-memos/${id}`); await openCreditMemoModal(); }
+  catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+
+
+// --- Recurring Invoices ---
+
+let _recCustomers = [], _recCoa = [];
+
+async function openRecurringModal() {
+  const company = _getSelectedCompany();
+  if (!company || company.source !== "manual") { showToast("Pick a manual company first.", "error"); return; }
+  if (!_contactsState.coa.length) await _contactsLoadCoa();
+  _recCoa = _contactsState.coa;
+  try {
+    const [cr, lr] = await Promise.all([
+      apiGet(`/api/customers/${selectedCompanyId}`),
+      apiGet(`/api/recurring-invoices/${selectedCompanyId}`),
+    ]);
+    _recCustomers = cr.customers || [];
+    const rows = lr.recurring_invoices || [];
+    const list = document.getElementById("recurring-list");
+    if (!rows.length) {
+      list.innerHTML = '<div style="text-align:center;padding:16px;color:var(--color-text-muted);font-size:var(--text-sm);">No recurring invoices yet.</div>';
+    } else {
+      list.innerHTML = `<table class="data-table" style="width:100%;font-size:var(--text-sm);">
+        <thead><tr><th>Name</th><th>Customer</th><th>Frequency</th><th>Next Run</th><th style="text-align:center;">Active</th><th></th></tr></thead>
+        <tbody>${rows.map((r) => `<tr>
+          <td><strong>${_escapeHtml(r.name)}</strong></td>
+          <td>${_escapeHtml(r.customer?.display_name || "")}</td>
+          <td style="text-transform:capitalize;">${r.frequency}</td>
+          <td>${r.next_run_date}</td>
+          <td style="text-align:center;">${r.is_active ? "✓" : "✗"}</td>
+          <td><button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="recurringDelete('${r.id}')">×</button></td>
+        </tr>`).join("")}</tbody></table>`;
+    }
+    const m = document.getElementById("recurring-modal");
+    m.classList.add("active"); m.style.display = "flex";
+  } catch (e) { showToast("Load failed: " + e.message, "error"); }
+}
+function closeRecurringModal() {
+  const m = document.getElementById("recurring-modal");
+  m.classList.remove("active"); m.style.display = "none";
+  recurringCancelForm();
+}
+function recurringNewForm() {
+  document.getElementById("recurring-new-form").style.display = "block";
+  const custSel = document.getElementById("rec-customer");
+  custSel.innerHTML = '<option value="">— select —</option>' +
+    _recCustomers.map((c) => `<option value="${c.id}">${_escapeHtml(c.display_name)}</option>`).join("");
+  const acctSel = document.getElementById("rec-account");
+  acctSel.innerHTML = '<option value="">— select —</option>' +
+    _recCoa.filter((a) => a.is_active && a.type === "income").map((a) => `<option value="${a.id}">${_escapeHtml(a.code)} ${_escapeHtml(a.name)}</option>`).join("");
+  document.getElementById("rec-start").value = new Date().toISOString().slice(0, 10);
+  document.getElementById("rec-name").value = "";
+  document.getElementById("rec-description").value = "";
+  document.getElementById("rec-amount").value = "";
+  document.getElementById("rec-due-days").value = "30";
+  document.getElementById("rec-error").style.display = "none";
+}
+function recurringCancelForm() { document.getElementById("recurring-new-form").style.display = "none"; }
+
+async function recurringSave() {
+  const errEl = document.getElementById("rec-error");
+  errEl.style.display = "none";
+  const name = document.getElementById("rec-name").value.trim();
+  const customer_id = document.getElementById("rec-customer").value;
+  const frequency = document.getElementById("rec-frequency").value;
+  const start_date = document.getElementById("rec-start").value;
+  const end_date = document.getElementById("rec-end").value || null;
+  const description = document.getElementById("rec-description").value.trim();
+  const amount = parseFloat(document.getElementById("rec-amount").value || "0");
+  const coa_account_id = document.getElementById("rec-account").value;
+  const due_days_offset = parseInt(document.getElementById("rec-due-days").value || "30", 10);
+  if (!name || !customer_id || !start_date || !amount || !coa_account_id) {
+    errEl.textContent = "All fields required."; errEl.style.display = "block"; return;
+  }
+  try {
+    await apiPost(`/api/recurring-invoices/${selectedCompanyId}`, {
+      customer_id, name, frequency, start_date, end_date,
+      template_json: {
+        due_days_offset,
+        memo: description,
+        lines: [{ description, quantity: 1, unit_price: amount, tax_rate: 0, coa_account_id }],
+      },
+    });
+    recurringCancelForm();
+    await openRecurringModal();
+  } catch (e) { errEl.textContent = "Failed: " + e.message; errEl.style.display = "block"; }
+}
+async function recurringDelete(id) {
+  if (!confirm("Delete this recurring invoice schedule?")) return;
+  try { await apiDelete(`/api/recurring-invoices/${id}`); await openRecurringModal(); }
+  catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+async function recurringRunNow() {
+  if (!confirm("Materialize all due recurring invoices now?")) return;
+  try {
+    const r = await apiPost("/api/recurring-invoices/process", {});
+    showToast(`Processed ${r.processed}, created ${(r.created || []).length}`, "success");
+    await openRecurringModal();
+  } catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+
+
 // Pending exchange data, held between Plaid Link onSuccess and the user's import-date choice
 let _pendingExchange = null; // { company_id, company_name, public_token, institution_id, institution_name }
 
@@ -4529,10 +5030,11 @@ function renderCompanySwitcher() {
   menuEl.innerHTML = items.join("");
 
   // Toggle per-company nav visibility
-  const perCompanySection = document.getElementById("sidebar-section-company");
-  if (perCompanySection) {
-    perCompanySection.classList.toggle("hidden", !current || current.source !== "manual");
-  }
+  const hidden = !current || current.source !== "manual";
+  ["sidebar-section-company", "sidebar-section-sales", "sidebar-section-expenses"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle("hidden", hidden);
+  });
 }
 
 function toggleCompanySwitcher() {
@@ -4960,7 +5462,9 @@ function txExportCsv() {
 // --- Transaction actions menu (simple prompt-based for v1) ---
 function txActionsMenu(txId, event) {
   event.stopPropagation();
-  const choice = prompt("Actions: split / transfer / untransfer / rule / uncategorize\nType one:");
+  const choice = prompt(
+    "Actions: split / transfer / untransfer / rule / uncategorize / invoice / bill\nType one:",
+  );
   if (!choice) return;
   const c = choice.trim().toLowerCase();
   if (c === "split") return openSplitModal(txId);
@@ -4968,6 +5472,8 @@ function txActionsMenu(txId, event) {
   if (c === "untransfer") return _txMarkTransfer(txId, false);
   if (c === "uncategorize") return _txClearCategory(txId);
   if (c === "rule") return _txCreateRuleFrom(txId);
+  if (c === "invoice") return txApplyToInvoice(txId);
+  if (c === "bill") return txApplyToBill(txId);
   showToast("Unknown action", "error");
 }
 
@@ -6124,6 +6630,695 @@ if (typeof apiPatch === "undefined") {
     if (!res.ok) throw new Error(data.detail || `API ${res.status}`);
     return data;
   };
+}
+
+
+// =====================================================================
+//  CUSTOMERS + VENDORS (shared contact entity)
+// =====================================================================
+
+let _contactsState = { kind: "customer", rows: [], editing: null, coa: [] };
+let _contactDebounceTimer = null;
+
+async function _contactsLoadCoa() {
+  if (!selectedCompanyId) return;
+  try {
+    const r = await apiGet(`/api/coa/${selectedCompanyId}`);
+    _contactsState.coa = r.accounts || [];
+  } catch (e) { _contactsState.coa = []; }
+}
+
+async function customersInit() {
+  const body = document.getElementById("customers-body");
+  if (!selectedCompanyId) { body.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company.</td></tr>'; return; }
+  const company = _getSelectedCompany();
+  if (!company || company.source !== "manual") { body.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--color-text-muted);">Customers are only available for manual companies.</td></tr>'; return; }
+  document.getElementById("customers-page-title").textContent = `Customers — ${company.name}`;
+  _contactsState.kind = "customer";
+  await _contactsLoadCoa();
+  await customersReload();
+}
+
+function customersDebouncedReload() { clearTimeout(_contactDebounceTimer); _contactDebounceTimer = setTimeout(customersReload, 250); }
+
+async function customersReload() {
+  if (!selectedCompanyId) return;
+  const search = document.getElementById("customers-search").value.trim();
+  try {
+    const qs = search ? `?search=${encodeURIComponent(search)}` : "";
+    const r = await apiGet(`/api/customers/${selectedCompanyId}${qs}`);
+    _contactsState.rows = r.customers || [];
+    _customersRender();
+  } catch (e) {
+    document.getElementById("customers-body").innerHTML = `<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--color-error);">Load failed: ${_escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+function _customersRender() {
+  const body = document.getElementById("customers-body");
+  const rows = _contactsState.rows;
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--color-text-muted);">No customers yet.</td></tr>'; return; }
+  body.innerHTML = rows.map((c) => `<tr>
+    <td><strong>${_escapeHtml(c.display_name)}</strong></td>
+    <td>${_escapeHtml(c.company_name || "—")}</td>
+    <td>${_escapeHtml(c.email || "—")}</td>
+    <td>${_escapeHtml(c.phone || "—")}</td>
+    <td style="text-align:right;font-variant-numeric:tabular-nums;${(c.balance || 0) > 0 ? "color:var(--color-warning);" : ""}">${(c.balance || 0).toFixed(2)}</td>
+    <td style="text-align:right;">
+      <button class="btn btn-sm btn-ghost" onclick="openCustomerEdit('${c.id}')">Edit</button>
+      <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="customerDelete('${c.id}','${c.display_name.replace(/'/g, "\\'")}')">×</button>
+    </td>
+  </tr>`).join("");
+}
+
+async function openCustomerEdit(id) {
+  if (!_contactsState.coa.length) await _contactsLoadCoa();
+  _contactsState.kind = "customer";
+  const existing = id ? _contactsState.rows.find((x) => x.id === id) : null;
+  _contactsState.editing = id || null;
+  document.getElementById("contact-edit-title").textContent = id ? "Edit Customer" : "New Customer";
+  document.getElementById("contact-vendor-only").style.display = "none";
+  _fillContactForm(existing);
+  document.getElementById("contact-edit-error").style.display = "none";
+  document.getElementById("contact-edit-modal").classList.add("active");
+  document.getElementById("contact-edit-modal").style.display = "flex";
+}
+
+function _fillContactForm(existing) {
+  document.getElementById("contact-display-name").value = existing?.display_name || "";
+  document.getElementById("contact-company-name").value = existing?.company_name || "";
+  document.getElementById("contact-email").value = existing?.email || "";
+  document.getElementById("contact-phone").value = existing?.phone || "";
+  document.getElementById("contact-terms-days").value = existing?.terms_days ?? 30;
+  const addr = existing?.billing_address || {};
+  document.getElementById("contact-bill-line1").value = addr.line1 || "";
+  document.getElementById("contact-bill-city").value = addr.city || "";
+  document.getElementById("contact-bill-region").value = addr.region || "";
+  document.getElementById("contact-bill-postal").value = addr.postal_code || "";
+  document.getElementById("contact-bill-country").value = addr.country || "US";
+  document.getElementById("contact-notes").value = existing?.notes || "";
+  if (_contactsState.kind === "vendor") {
+    document.getElementById("contact-tax-id").value = existing?.tax_id || "";
+    document.getElementById("contact-is-1099").checked = !!existing?.is_1099;
+  }
+  const acctSel = document.getElementById("contact-default-account");
+  acctSel.innerHTML = '<option value="">— none —</option>' +
+    _contactsState.coa.filter((a) => a.is_active).map((a) => `<option value="${a.id}" ${existing?.default_account_id === a.id ? "selected" : ""}>${_escapeHtml(a.code)} ${_escapeHtml(a.name)}</option>`).join("");
+}
+
+function closeContactEdit() {
+  document.getElementById("contact-edit-modal").classList.remove("active");
+  document.getElementById("contact-edit-modal").style.display = "none";
+}
+
+async function contactSave() {
+  const errEl = document.getElementById("contact-edit-error");
+  errEl.style.display = "none";
+  const name = document.getElementById("contact-display-name").value.trim();
+  if (!name) { errEl.textContent = "Display name required."; errEl.style.display = "block"; return; }
+  const kind = _contactsState.kind;
+  const body = {
+    display_name: name,
+    company_name: document.getElementById("contact-company-name").value.trim() || null,
+    email: document.getElementById("contact-email").value.trim() || null,
+    phone: document.getElementById("contact-phone").value.trim() || null,
+    terms_days: parseInt(document.getElementById("contact-terms-days").value || "30", 10),
+    default_account_id: document.getElementById("contact-default-account").value || null,
+    billing_address: {
+      line1: document.getElementById("contact-bill-line1").value.trim(),
+      city: document.getElementById("contact-bill-city").value.trim(),
+      region: document.getElementById("contact-bill-region").value.trim(),
+      postal_code: document.getElementById("contact-bill-postal").value.trim(),
+      country: document.getElementById("contact-bill-country").value.trim() || "US",
+    },
+    notes: document.getElementById("contact-notes").value.trim() || null,
+  };
+  if (kind === "vendor") {
+    body.tax_id = document.getElementById("contact-tax-id").value.trim() || null;
+    body.is_1099 = document.getElementById("contact-is-1099").checked;
+  }
+  try {
+    const url = kind === "customer"
+      ? (_contactsState.editing ? `/api/customers/${_contactsState.editing}` : `/api/customers/${selectedCompanyId}`)
+      : (_contactsState.editing ? `/api/vendors/${_contactsState.editing}` : `/api/vendors/${selectedCompanyId}`);
+    if (_contactsState.editing) {
+      await apiPatch(url, body);
+    } else {
+      await apiPost(url, body);
+    }
+    closeContactEdit();
+    if (kind === "customer") await customersReload(); else await vendorsReload();
+  } catch (e) { errEl.textContent = "Failed: " + (e.message || "unknown"); errEl.style.display = "block"; }
+}
+
+async function customerDelete(id, label) {
+  if (!confirm(`Archive customer "${label}"?`)) return;
+  try { await apiDelete(`/api/customers/${id}`); await customersReload(); }
+  catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+
+// ------ VENDORS ------
+
+async function vendorsInit() {
+  const body = document.getElementById("vendors-body");
+  if (!selectedCompanyId) { body.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company.</td></tr>'; return; }
+  const company = _getSelectedCompany();
+  if (!company || company.source !== "manual") { body.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--color-text-muted);">Vendors are only available for manual companies.</td></tr>'; return; }
+  document.getElementById("vendors-page-title").textContent = `Vendors — ${company.name}`;
+  _contactsState.kind = "vendor";
+  await _contactsLoadCoa();
+  await vendorsReload();
+}
+
+function vendorsDebouncedReload() { clearTimeout(_contactDebounceTimer); _contactDebounceTimer = setTimeout(vendorsReload, 250); }
+
+async function vendorsReload() {
+  if (!selectedCompanyId) return;
+  const search = document.getElementById("vendors-search").value.trim();
+  try {
+    const qs = search ? `?search=${encodeURIComponent(search)}` : "";
+    const r = await apiGet(`/api/vendors/${selectedCompanyId}${qs}`);
+    _contactsState.rows = r.vendors || [];
+    _vendorsRender();
+  } catch (e) {
+    document.getElementById("vendors-body").innerHTML = `<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--color-error);">Load failed: ${_escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+function _vendorsRender() {
+  const body = document.getElementById("vendors-body");
+  const rows = _contactsState.rows;
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--color-text-muted);">No vendors yet.</td></tr>'; return; }
+  body.innerHTML = rows.map((v) => `<tr>
+    <td><strong>${_escapeHtml(v.display_name)}</strong></td>
+    <td>${_escapeHtml(v.company_name || "—")}</td>
+    <td>${_escapeHtml(v.email || "—")}</td>
+    <td>${_escapeHtml(v.phone || "—")}</td>
+    <td style="text-align:center;">${v.is_1099 ? '<span class="badge badge-neutral">1099</span>' : ""}</td>
+    <td style="text-align:right;font-variant-numeric:tabular-nums;${(v.balance || 0) > 0 ? "color:var(--color-warning);" : ""}">${(v.balance || 0).toFixed(2)}</td>
+    <td style="text-align:right;">
+      <button class="btn btn-sm btn-ghost" onclick="openVendorEdit('${v.id}')">Edit</button>
+      <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="vendorDelete('${v.id}','${v.display_name.replace(/'/g, "\\'")}')">×</button>
+    </td>
+  </tr>`).join("");
+}
+
+async function openVendorEdit(id) {
+  if (!_contactsState.coa.length) await _contactsLoadCoa();
+  _contactsState.kind = "vendor";
+  const existing = id ? _contactsState.rows.find((x) => x.id === id) : null;
+  _contactsState.editing = id || null;
+  document.getElementById("contact-edit-title").textContent = id ? "Edit Vendor" : "New Vendor";
+  document.getElementById("contact-vendor-only").style.display = "block";
+  _fillContactForm(existing);
+  document.getElementById("contact-edit-error").style.display = "none";
+  document.getElementById("contact-edit-modal").classList.add("active");
+  document.getElementById("contact-edit-modal").style.display = "flex";
+}
+
+async function vendorDelete(id, label) {
+  if (!confirm(`Archive vendor "${label}"?`)) return;
+  try { await apiDelete(`/api/vendors/${id}`); await vendorsReload(); }
+  catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+
+
+// =====================================================================
+//  INVOICES + BILLS (doc editor shared)
+// =====================================================================
+
+let _docState = {
+  kind: "invoice",   // 'invoice' | 'bill'
+  editing: null,
+  lines: [],
+  parties: [],       // customers or vendors
+  coa: [],
+  rows: [],          // list page rows
+};
+let _invoicesState = { rows: [] };
+let _billsState = { rows: [] };
+
+const _INVOICE_STATUSES = [
+  ["draft","Draft"],["sent","Sent"],["partially_paid","Partially Paid"],
+  ["paid","Paid"],["overdue","Overdue"],["void","Void"],
+];
+const _BILL_STATUSES = [
+  ["open","Open"],["partially_paid","Partially Paid"],["paid","Paid"],
+  ["overdue","Overdue"],["void","Void"],
+];
+
+function _statusBadge(status) {
+  const colors = {
+    draft: "badge-neutral", sent: "badge-neutral", open: "badge-neutral",
+    partially_paid: "badge-warning",
+    paid: "badge-success",
+    overdue: "badge-warning",
+    void: "badge-neutral",
+  };
+  return `<span class="badge ${colors[status] || "badge-neutral"}" style="text-transform:capitalize;">${status.replace("_"," ")}</span>`;
+}
+
+async function _docLoadParties(kind) {
+  const url = kind === "invoice" ? `/api/customers/${selectedCompanyId}` : `/api/vendors/${selectedCompanyId}`;
+  try {
+    const r = await apiGet(url);
+    _docState.parties = kind === "invoice" ? (r.customers || []) : (r.vendors || []);
+  } catch (e) { _docState.parties = []; }
+}
+
+async function invoicesInit() {
+  const body = document.getElementById("invoices-body");
+  if (!selectedCompanyId) { body.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company.</td></tr>'; return; }
+  const company = _getSelectedCompany();
+  if (!company || company.source !== "manual") { body.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--color-text-muted);">Invoices are only available for manual companies.</td></tr>'; return; }
+  document.getElementById("invoices-page-title").textContent = `Invoices — ${company.name}`;
+  await invoicesReload();
+}
+
+async function invoicesReload() {
+  if (!selectedCompanyId) return;
+  const status = document.getElementById("invoices-filter-status").value;
+  const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+  try {
+    const r = await apiGet(`/api/invoices/${selectedCompanyId}${qs}`);
+    _invoicesState.rows = r.invoices || [];
+    _renderDocList("invoice");
+  } catch (e) {
+    document.getElementById("invoices-body").innerHTML = `<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--color-error);">${_escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+async function billsInit() {
+  const body = document.getElementById("bills-body");
+  if (!selectedCompanyId) { body.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company.</td></tr>'; return; }
+  const company = _getSelectedCompany();
+  if (!company || company.source !== "manual") { body.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--color-text-muted);">Bills are only available for manual companies.</td></tr>'; return; }
+  document.getElementById("bills-page-title").textContent = `Bills — ${company.name}`;
+  await billsReload();
+}
+
+async function billsReload() {
+  if (!selectedCompanyId) return;
+  const status = document.getElementById("bills-filter-status").value;
+  const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+  try {
+    const r = await apiGet(`/api/bills/${selectedCompanyId}${qs}`);
+    _billsState.rows = r.bills || [];
+    _renderDocList("bill");
+  } catch (e) {
+    document.getElementById("bills-body").innerHTML = `<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--color-error);">${_escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+function _renderDocList(kind) {
+  const body = document.getElementById(kind === "invoice" ? "invoices-body" : "bills-body");
+  const rows = kind === "invoice" ? _invoicesState.rows : _billsState.rows;
+  if (!rows.length) { body.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--color-text-muted);">No ${kind}s yet.</td></tr>`; return; }
+  const partyLabel = (d) => (kind === "invoice" ? d.customer : d.vendor)?.display_name || "—";
+  body.innerHTML = rows.map((d) => `<tr>
+    <td><strong>${_escapeHtml(d.number || "—")}</strong></td>
+    <td>${d.date || ""}</td>
+    <td>${d.due_date || "—"}</td>
+    <td>${_escapeHtml(partyLabel(d))}</td>
+    <td>${_statusBadge(d.status)}</td>
+    <td style="text-align:right;font-variant-numeric:tabular-nums;">${parseFloat(d.total || 0).toFixed(2)}</td>
+    <td style="text-align:right;font-variant-numeric:tabular-nums;${parseFloat(d.balance || 0) > 0 ? "color:var(--color-warning);" : ""}">${parseFloat(d.balance || 0).toFixed(2)}</td>
+    <td style="text-align:right;">
+      <button class="btn btn-sm btn-secondary" onclick="openDocDetail('${kind}','${d.id}')">View</button>
+      ${d.status !== "paid" && d.status !== "void" ? `<button class="btn btn-sm btn-ghost" onclick="${kind === "invoice" ? "openInvoiceEdit" : "openBillEdit"}('${d.id}')">Edit</button>` : ""}
+    </td>
+  </tr>`).join("");
+}
+
+async function openInvoiceEdit(id) { await _openDocEdit("invoice", id); }
+async function openBillEdit(id) { await _openDocEdit("bill", id); }
+
+async function _openDocEdit(kind, id) {
+  _docState.kind = kind;
+  _docState.editing = id;
+  if (!_contactsState.coa.length) await _contactsLoadCoa();
+  _docState.coa = _contactsState.coa;
+  await _docLoadParties(kind);
+
+  document.getElementById("doc-edit-title").textContent = (id ? "Edit " : "New ") + (kind === "invoice" ? "Invoice" : "Bill");
+  document.getElementById("doc-edit-party-label").textContent = kind === "invoice" ? "Customer" : "Vendor";
+  const partySel = document.getElementById("doc-party");
+  partySel.innerHTML = '<option value="">— select —</option>' +
+    _docState.parties.map((p) => `<option value="${p.id}">${_escapeHtml(p.display_name)}</option>`).join("");
+
+  // Status options
+  const statuses = kind === "invoice" ? _INVOICE_STATUSES : _BILL_STATUSES;
+  const statusSel = document.getElementById("doc-status");
+  statusSel.innerHTML = statuses.map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+
+  // Load for edit
+  let doc = null, lines = [];
+  if (id) {
+    const endpoint = kind === "invoice" ? `/api/invoices/detail/${id}` : `/api/bills/detail/${id}`;
+    try {
+      const r = await apiGet(endpoint);
+      doc = kind === "invoice" ? r.invoice : r.bill;
+      lines = r.lines || [];
+    } catch (e) { showToast("Load failed: " + e.message, "error"); return; }
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  document.getElementById("doc-number").value = doc?.number || _suggestDocNumber(kind);
+  document.getElementById("doc-date").value = doc?.date || today;
+  document.getElementById("doc-due-date").value = doc?.due_date || "";
+  document.getElementById("doc-memo").value = doc?.memo || "";
+  document.getElementById("doc-status").value = doc?.status || (kind === "invoice" ? "draft" : "open");
+  partySel.value = doc?.customer_id || doc?.vendor_id || "";
+
+  _docState.lines = lines.length ? lines.map((l) => ({ ...l })) : [{ description: "", quantity: 1, unit_price: 0, tax_rate: 0, coa_account_id: "" }];
+
+  // Set due date from party terms if creating new
+  if (!id) docPartyChanged();
+
+  _renderDocLines();
+  document.getElementById("doc-edit-error").style.display = "none";
+  document.getElementById("doc-edit-modal").classList.add("active");
+  document.getElementById("doc-edit-modal").style.display = "flex";
+}
+
+function _suggestDocNumber(kind) {
+  const prefix = kind === "invoice" ? "INV-" : "BILL-";
+  const rows = kind === "invoice" ? _invoicesState.rows : _billsState.rows;
+  const nums = rows.map((r) => {
+    const m = (r.number || "").match(/(\d+)$/);
+    return m ? parseInt(m[1], 10) : 0;
+  });
+  const next = (nums.length ? Math.max(...nums) : 0) + 1;
+  return prefix + String(next).padStart(4, "0");
+}
+
+function docPartyChanged() {
+  const party = _docState.parties.find((p) => p.id === document.getElementById("doc-party").value);
+  if (party && party.terms_days) {
+    const date = document.getElementById("doc-date").value || new Date().toISOString().slice(0, 10);
+    const due = new Date(date + "T00:00:00");
+    due.setDate(due.getDate() + party.terms_days);
+    document.getElementById("doc-due-date").value = due.toISOString().slice(0, 10);
+  }
+  // Default account
+  if (party?.default_account_id) {
+    for (const l of _docState.lines) { if (!l.coa_account_id) l.coa_account_id = party.default_account_id; }
+    _renderDocLines();
+  }
+}
+
+function _renderDocLines() {
+  const body = document.getElementById("doc-lines-body");
+  const coa = _docState.coa.filter((a) => a.is_active);
+  // For invoices, prefer income accounts; for bills, expense — but show all for flexibility
+  const sortedCoa = [...coa].sort((a, b) => {
+    const rank = { income: 1, expense: 2, asset: 3, liability: 4, equity: 5 };
+    return (rank[a.type] || 9) - (rank[b.type] || 9) || a.code.localeCompare(b.code);
+  });
+  body.innerHTML = _docState.lines.map((l, i) => {
+    const amt = (parseFloat(l.quantity) || 0) * (parseFloat(l.unit_price) || 0);
+    return `<tr>
+      <td><input class="form-input form-input-sm" type="text" value="${_escapeHtml(l.description || "")}" oninput="_docLine(${i},'description',this.value)"></td>
+      <td>
+        <select class="form-select form-select-sm" onchange="_docLine(${i},'coa_account_id',this.value)">
+          <option value="">— select —</option>
+          ${sortedCoa.map((a) => `<option value="${a.id}" ${l.coa_account_id === a.id ? "selected" : ""}>${_escapeHtml(a.code)} ${_escapeHtml(a.name)} (${a.type})</option>`).join("")}
+        </select>
+      </td>
+      <td><input class="form-input form-input-sm" type="number" step="0.01" value="${l.quantity || 1}" oninput="_docLine(${i},'quantity',this.value)" style="text-align:right;"></td>
+      <td><input class="form-input form-input-sm" type="number" step="0.01" value="${l.unit_price || 0}" oninput="_docLine(${i},'unit_price',this.value)" style="text-align:right;"></td>
+      <td><input class="form-input form-input-sm" type="number" step="0.001" value="${((l.tax_rate || 0) * 100).toFixed(2)}" oninput="_docLine(${i},'tax_rate_pct',this.value)" style="text-align:right;"></td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums;">${amt.toFixed(2)}</td>
+      <td><button class="btn btn-ghost btn-sm" onclick="_docRemoveLine(${i})" type="button">×</button></td>
+    </tr>`;
+  }).join("");
+  _updateDocTotals();
+}
+
+function _docLine(i, field, value) {
+  if (field === "tax_rate_pct") {
+    _docState.lines[i].tax_rate = (parseFloat(value) || 0) / 100;
+  } else if (field === "quantity" || field === "unit_price") {
+    _docState.lines[i][field] = parseFloat(value) || 0;
+  } else {
+    _docState.lines[i][field] = value;
+  }
+  _updateDocTotals();
+}
+
+function _docRemoveLine(i) {
+  if (_docState.lines.length <= 1) { showToast("At least one line required.", "info"); return; }
+  _docState.lines.splice(i, 1);
+  _renderDocLines();
+}
+
+function docAddLine() {
+  _docState.lines.push({ description: "", quantity: 1, unit_price: 0, tax_rate: 0, coa_account_id: "" });
+  _renderDocLines();
+}
+
+function _updateDocTotals() {
+  let subtotal = 0, tax = 0;
+  for (const l of _docState.lines) {
+    const amt = (parseFloat(l.quantity) || 0) * (parseFloat(l.unit_price) || 0);
+    subtotal += amt;
+    tax += amt * (parseFloat(l.tax_rate) || 0);
+  }
+  const total = subtotal + tax;
+  document.getElementById("doc-totals").innerHTML = `
+    Subtotal: <strong>${subtotal.toFixed(2)}</strong>
+    &nbsp;·&nbsp; Tax: <strong>${tax.toFixed(2)}</strong>
+    &nbsp;·&nbsp; <strong style="font-size:var(--text-md);">Total: ${total.toFixed(2)}</strong>`;
+}
+
+function closeDocEdit() {
+  document.getElementById("doc-edit-modal").classList.remove("active");
+  document.getElementById("doc-edit-modal").style.display = "none";
+}
+
+async function docSave() {
+  const errEl = document.getElementById("doc-edit-error");
+  errEl.style.display = "none";
+  const kind = _docState.kind;
+  const party_id = document.getElementById("doc-party").value;
+  if (!party_id) { errEl.textContent = `${kind === "invoice" ? "Customer" : "Vendor"} required.`; errEl.style.display = "block"; return; }
+  const number = document.getElementById("doc-number").value.trim();
+  const date = document.getElementById("doc-date").value;
+  if (!date) { errEl.textContent = "Date required."; errEl.style.display = "block"; return; }
+  if (kind === "invoice" && !number) { errEl.textContent = "Invoice number required."; errEl.style.display = "block"; return; }
+  if (!_docState.lines.length) { errEl.textContent = "At least one line required."; errEl.style.display = "block"; return; }
+  if (_docState.lines.some((l) => !l.coa_account_id)) { errEl.textContent = "Every line needs a category."; errEl.style.display = "block"; return; }
+
+  const body = {
+    number,
+    date,
+    due_date: document.getElementById("doc-due-date").value || null,
+    status: document.getElementById("doc-status").value,
+    memo: document.getElementById("doc-memo").value.trim() || null,
+    lines: _docState.lines.map((l) => ({
+      description: l.description || null,
+      quantity: parseFloat(l.quantity) || 0,
+      unit_price: parseFloat(l.unit_price) || 0,
+      tax_rate: parseFloat(l.tax_rate) || 0,
+      coa_account_id: l.coa_account_id,
+    })),
+  };
+  if (kind === "invoice") body.customer_id = party_id; else body.vendor_id = party_id;
+
+  try {
+    const base = kind === "invoice" ? "/api/invoices" : "/api/bills";
+    if (_docState.editing) {
+      await apiPatch(`${base}/${_docState.editing}`, body);
+    } else {
+      await apiPost(`${base}/${selectedCompanyId}`, body);
+    }
+    closeDocEdit();
+    if (kind === "invoice") await invoicesReload(); else await billsReload();
+  } catch (e) {
+    errEl.textContent = "Failed: " + (e.message || "unknown");
+    errEl.style.display = "block";
+  }
+}
+
+
+// ---------- Detail modal ----------
+
+let _docDetailState = { kind: null, id: null, data: null };
+
+async function openDocDetail(kind, id) {
+  _docDetailState = { kind, id, data: null };
+  const endpoint = kind === "invoice" ? `/api/invoices/detail/${id}` : `/api/bills/detail/${id}`;
+  try {
+    const r = await apiGet(endpoint);
+    _docDetailState.data = r;
+    _renderDocDetail();
+    document.getElementById("doc-detail-modal").classList.add("active");
+    document.getElementById("doc-detail-modal").style.display = "flex";
+  } catch (e) { showToast("Load failed: " + e.message, "error"); }
+}
+
+function closeDocDetail() {
+  document.getElementById("doc-detail-modal").classList.remove("active");
+  document.getElementById("doc-detail-modal").style.display = "none";
+}
+
+function _renderDocDetail() {
+  const { kind, data } = _docDetailState;
+  const doc = kind === "invoice" ? data.invoice : data.bill;
+  const party = kind === "invoice" ? data.customer : data.vendor;
+  const lines = data.lines || [];
+  const payments = data.payments || [];
+  document.getElementById("doc-detail-title").textContent = `${kind === "invoice" ? "Invoice" : "Bill"} ${doc.number || ""}`;
+
+  const canPay = doc.status !== "paid" && doc.status !== "void" && parseFloat(doc.balance || 0) > 0.005;
+
+  const linesHtml = lines.map((l) => `<tr>
+    <td>${_escapeHtml(l.description || "—")}</td>
+    <td style="text-align:right;">${parseFloat(l.quantity || 0).toFixed(2)}</td>
+    <td style="text-align:right;">${parseFloat(l.unit_price || 0).toFixed(2)}</td>
+    <td style="text-align:right;">${((parseFloat(l.tax_rate || 0)) * 100).toFixed(2)}%</td>
+    <td style="text-align:right;font-variant-numeric:tabular-nums;">${parseFloat(l.amount || 0).toFixed(2)}</td>
+  </tr>`).join("");
+
+  const paymentsHtml = payments.length
+    ? `<table class="data-table" style="width:100%;font-size:var(--text-sm);margin-top:12px;">
+         <thead><tr><th>Date</th><th>Method</th><th>Reference</th><th style="text-align:right;">Amount</th><th></th></tr></thead>
+         <tbody>${payments.map((p) => `<tr>
+           <td>${p.date}</td>
+           <td>${_escapeHtml(p.payment_method || "—")}</td>
+           <td>${_escapeHtml(p.reference || "—")}</td>
+           <td style="text-align:right;">${parseFloat(p.amount || 0).toFixed(2)}</td>
+           <td><button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="_docDetailDeletePayment('${p.id}')">×</button></td>
+         </tr>`).join("")}</tbody>
+       </table>`
+    : '<div style="font-size:var(--text-sm);color:var(--color-text-muted);margin-top:8px;">No payments recorded yet.</div>';
+
+  document.getElementById("doc-detail-body").innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;font-size:var(--text-sm);">
+      <div>
+        <strong>${_escapeHtml(party?.display_name || "—")}</strong>
+        ${party?.company_name ? `<div>${_escapeHtml(party.company_name)}</div>` : ""}
+        ${party?.email ? `<div style="color:var(--color-text-secondary);">${_escapeHtml(party.email)}</div>` : ""}
+      </div>
+      <div style="text-align:right;">
+        ${_statusBadge(doc.status)}
+        <div style="margin-top:4px;">Date: ${doc.date}${doc.due_date ? " · Due: " + doc.due_date : ""}</div>
+      </div>
+    </div>
+    <table class="data-table" style="width:100%;font-size:var(--text-sm);">
+      <thead><tr><th>Description</th><th style="text-align:right;">Qty</th><th style="text-align:right;">Unit</th><th style="text-align:right;">Tax</th><th style="text-align:right;">Amount</th></tr></thead>
+      <tbody>${linesHtml}</tbody>
+    </table>
+    <div style="text-align:right;margin-top:8px;font-size:var(--text-sm);">
+      Subtotal: <strong>${parseFloat(doc.subtotal || 0).toFixed(2)}</strong>
+      &nbsp;·&nbsp; Tax: <strong>${parseFloat(doc.tax_total || 0).toFixed(2)}</strong>
+      &nbsp;·&nbsp; <strong style="font-size:var(--text-md);">Total: ${parseFloat(doc.total || 0).toFixed(2)}</strong>
+    </div>
+    <div style="text-align:right;font-size:var(--text-md);margin-top:4px;${parseFloat(doc.balance || 0) > 0.005 ? "color:var(--color-warning);" : ""}">
+      Balance: <strong>${parseFloat(doc.balance || 0).toFixed(2)}</strong>
+    </div>
+    ${doc.memo ? `<div style="margin-top:8px;padding:8px;background:var(--color-bg-muted);border-radius:6px;font-size:var(--text-sm);"><strong>Memo:</strong> ${_escapeHtml(doc.memo)}</div>` : ""}
+    <h4 style="margin:16px 0 4px;font-size:var(--text-sm);">Payments</h4>
+    ${paymentsHtml}
+    <div style="display:flex;gap:8px;margin-top:16px;">
+      ${canPay ? `<button class="btn btn-primary btn-sm" onclick="openPaymentModal()" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+        Record Payment</button>` : ""}
+      <button class="btn btn-secondary btn-sm" onclick="docPrint()" type="button" title="Print or Save as PDF">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+        Print / PDF
+      </button>
+      ${kind === "invoice" ? `<button class="btn btn-secondary btn-sm" onclick="openEmailInvoice()" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+        Email
+      </button>` : ""}
+      <button class="btn btn-ghost btn-sm" onclick="closeDocDetail()" type="button">Close</button>
+    </div>`;
+}
+
+async function _docDetailDeletePayment(paymentId) {
+  if (!confirm("Void this payment? The invoice/bill balance will be restored.")) return;
+  try {
+    await apiDelete(`/api/payments/${paymentId}`);
+    // Refresh detail view
+    await openDocDetail(_docDetailState.kind, _docDetailState.id);
+    // Also refresh list
+    if (_docDetailState.kind === "invoice") await invoicesReload(); else await billsReload();
+  } catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+
+
+// ---------- Payment modal ----------
+
+async function openPaymentModal() {
+  const { kind, data } = _docDetailState;
+  const doc = kind === "invoice" ? data.invoice : data.bill;
+  const balance = parseFloat(doc.balance || 0);
+  // Load bank accounts from current _txState
+  let bankAccounts = _txState.accounts || [];
+  if (!bankAccounts.length) {
+    try {
+      const r = await apiGet(`/api/plaid/accounts/${selectedCompanyId}`);
+      bankAccounts = r.accounts || [];
+    } catch (e) {}
+  }
+  document.getElementById("payment-context").innerHTML = `
+    <strong>${kind === "invoice" ? "Invoice" : "Bill"} ${doc.number || ""}</strong> — Balance due: <strong>${balance.toFixed(2)}</strong>
+  `;
+  document.getElementById("payment-date").value = new Date().toISOString().slice(0, 10);
+  document.getElementById("payment-amount").value = balance.toFixed(2);
+  document.getElementById("payment-method").value = "";
+  document.getElementById("payment-reference").value = "";
+  document.getElementById("payment-memo").value = "";
+  const bankSel = document.getElementById("payment-bank-account");
+  bankSel.innerHTML = '<option value="">— optional —</option>' +
+    bankAccounts.filter((a) => a.plaid_item_id).map((a) => `<option value="${a.id}">${_escapeHtml(a.name)}${a.mask ? " ···" + a.mask : ""}</option>`).join("");
+  document.getElementById("payment-error").style.display = "none";
+  document.getElementById("payment-modal").classList.add("active");
+  document.getElementById("payment-modal").style.display = "flex";
+}
+
+function closePaymentModal() {
+  document.getElementById("payment-modal").classList.remove("active");
+  document.getElementById("payment-modal").style.display = "none";
+}
+
+async function paymentSave() {
+  const { kind, data } = _docDetailState;
+  const doc = kind === "invoice" ? data.invoice : data.bill;
+  const errEl = document.getElementById("payment-error");
+  errEl.style.display = "none";
+  const date = document.getElementById("payment-date").value;
+  const amount = parseFloat(document.getElementById("payment-amount").value || "0");
+  if (!date || !amount || amount <= 0) { errEl.textContent = "Date and positive amount required."; errEl.style.display = "block"; return; }
+  if (amount - parseFloat(doc.balance || 0) > 0.005) {
+    if (!confirm(`Amount ${amount.toFixed(2)} exceeds balance ${parseFloat(doc.balance).toFixed(2)}. Record anyway?`)) return;
+  }
+
+  const body = {
+    date,
+    amount,
+    kind: kind === "invoice" ? "invoice_payment" : "bill_payment",
+    bank_account_id: document.getElementById("payment-bank-account").value || null,
+    payment_method: document.getElementById("payment-method").value || null,
+    reference: document.getElementById("payment-reference").value.trim() || null,
+    memo: document.getElementById("payment-memo").value.trim() || null,
+    applications: [{
+      [kind === "invoice" ? "invoice_id" : "bill_id"]: doc.id,
+      amount,
+    }],
+  };
+
+  try {
+    await apiPost(`/api/payments/${selectedCompanyId}`, body);
+    closePaymentModal();
+    // Refresh detail + list
+    await openDocDetail(kind, doc.id);
+    if (kind === "invoice") await invoicesReload(); else await billsReload();
+  } catch (e) {
+    errEl.textContent = "Failed: " + (e.message || "unknown");
+    errEl.style.display = "block";
+  }
 }
 
 

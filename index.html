@@ -146,6 +146,36 @@
       </ul>
     </div>
 
+    <!-- Sales section -->
+    <div class="sidebar-section needs-company" id="sidebar-section-sales">
+      <div class="sidebar-label">Sales</div>
+      <ul class="sidebar-nav">
+        <li><a href="#customers" data-page="customers">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <span>Customers</span>
+        </a></li>
+        <li><a href="#invoices" data-page="invoices">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          <span>Invoices</span>
+        </a></li>
+      </ul>
+    </div>
+
+    <!-- Expenses section -->
+    <div class="sidebar-section needs-company" id="sidebar-section-expenses">
+      <div class="sidebar-label">Expenses</div>
+      <ul class="sidebar-nav">
+        <li><a href="#vendors" data-page="vendors">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7h-3V5a2 2 0 0 0-2-2H9a2 2 0 0 0-2 2v2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2zM9 5h6v2H9V5z"/></svg>
+          <span>Vendors</span>
+        </a></li>
+        <li><a href="#bills" data-page="bills">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M12 18v-6M9 15h6"/></svg>
+          <span>Bills</span>
+        </a></li>
+      </ul>
+    </div>
+
     <div class="sidebar-section">
       <div class="sidebar-label">Reports</div>
       <ul class="sidebar-nav">
@@ -665,9 +695,13 @@
           <div class="text-muted" style="font-size:var(--text-xs);margin-top:2px;">Connect QuickBooks or set up a manual company with bank feeds.</div>
         </div>
         <div style="display:flex;gap:8px;">
-          <button class="btn btn-secondary" onclick="openQboImportModal()" type="button" title="Import historical QuickBooks data into a manual company">
+          <button class="btn btn-secondary" onclick="openQboImportModal()" type="button" title="Import historical QuickBooks transactions into a manual company">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-            Import QBO → Manual
+            Import QBO Transactions
+          </button>
+          <button class="btn btn-secondary" onclick="openQboArApImportModal()" type="button" title="Import customers, vendors, invoices and bills from QuickBooks">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            Import QBO AR/AP
           </button>
           <button class="btn btn-primary" id="companies-add-btn" onclick="openAddCompany()" type="button">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
@@ -1437,6 +1471,144 @@
       </div>
     </section>
 
+    <!-- ======== CUSTOMERS PAGE ======== -->
+    <section id="page-customers" class="page-content">
+      <div class="card mb-4">
+        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+          <span class="card-title" id="customers-page-title">Customers</span>
+          <div style="display:flex;gap:8px;">
+            <input class="form-input form-input-sm" type="search" id="customers-search" placeholder="Search customers" oninput="customersDebouncedReload()" style="width:220px;">
+            <button class="btn btn-primary btn-sm" onclick="openCustomerEdit(null)" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              New Customer
+            </button>
+          </div>
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="width:100%;">
+            <thead><tr>
+              <th style="text-align:left;">Name</th>
+              <th style="text-align:left;">Company</th>
+              <th style="text-align:left;">Email</th>
+              <th style="text-align:left;">Phone</th>
+              <th style="text-align:right;">Open Balance</th>
+              <th style="text-align:right;">Actions</th>
+            </tr></thead>
+            <tbody id="customers-body"><tr><td colspan="6" style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company in the sidebar.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======== VENDORS PAGE ======== -->
+    <section id="page-vendors" class="page-content">
+      <div class="card mb-4">
+        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+          <span class="card-title" id="vendors-page-title">Vendors</span>
+          <div style="display:flex;gap:8px;">
+            <input class="form-input form-input-sm" type="search" id="vendors-search" placeholder="Search vendors" oninput="vendorsDebouncedReload()" style="width:220px;">
+            <button class="btn btn-primary btn-sm" onclick="openVendorEdit(null)" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              New Vendor
+            </button>
+          </div>
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="width:100%;">
+            <thead><tr>
+              <th style="text-align:left;">Name</th>
+              <th style="text-align:left;">Company</th>
+              <th style="text-align:left;">Email</th>
+              <th style="text-align:left;">Phone</th>
+              <th style="text-align:center;">1099</th>
+              <th style="text-align:right;">Open Balance</th>
+              <th style="text-align:right;">Actions</th>
+            </tr></thead>
+            <tbody id="vendors-body"><tr><td colspan="7" style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company in the sidebar.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======== INVOICES PAGE ======== -->
+    <section id="page-invoices" class="page-content">
+      <div class="card mb-4">
+        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+          <span class="card-title" id="invoices-page-title">Invoices</span>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <select class="form-select form-select-sm" id="invoices-filter-status" onchange="invoicesReload()" style="width:160px;">
+              <option value="">All statuses</option>
+              <option value="draft">Draft</option>
+              <option value="sent">Sent</option>
+              <option value="partially_paid">Partially Paid</option>
+              <option value="paid">Paid</option>
+              <option value="overdue">Overdue</option>
+              <option value="void">Void</option>
+            </select>
+            <button class="btn btn-secondary btn-sm" onclick="openCreditMemoModal()" type="button">Credit Memos</button>
+            <button class="btn btn-secondary btn-sm" onclick="openRecurringModal()" type="button">Recurring</button>
+            <button class="btn btn-primary btn-sm" onclick="openInvoiceEdit(null)" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              New Invoice
+            </button>
+          </div>
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="width:100%;">
+            <thead><tr>
+              <th style="text-align:left;">#</th>
+              <th style="text-align:left;">Date</th>
+              <th style="text-align:left;">Due</th>
+              <th style="text-align:left;">Customer</th>
+              <th style="text-align:left;">Status</th>
+              <th style="text-align:right;">Total</th>
+              <th style="text-align:right;">Balance</th>
+              <th style="text-align:right;">Actions</th>
+            </tr></thead>
+            <tbody id="invoices-body"><tr><td colspan="8" style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company in the sidebar.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======== BILLS PAGE ======== -->
+    <section id="page-bills" class="page-content">
+      <div class="card mb-4">
+        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+          <span class="card-title" id="bills-page-title">Bills</span>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <select class="form-select form-select-sm" id="bills-filter-status" onchange="billsReload()" style="width:160px;">
+              <option value="">All statuses</option>
+              <option value="open">Open</option>
+              <option value="partially_paid">Partially Paid</option>
+              <option value="paid">Paid</option>
+              <option value="overdue">Overdue</option>
+              <option value="void">Void</option>
+            </select>
+            <button class="btn btn-primary btn-sm" onclick="openBillEdit(null)" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              New Bill
+            </button>
+          </div>
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="width:100%;">
+            <thead><tr>
+              <th style="text-align:left;">#</th>
+              <th style="text-align:left;">Date</th>
+              <th style="text-align:left;">Due</th>
+              <th style="text-align:left;">Vendor</th>
+              <th style="text-align:left;">Status</th>
+              <th style="text-align:right;">Total</th>
+              <th style="text-align:right;">Balance</th>
+              <th style="text-align:right;">Actions</th>
+            </tr></thead>
+            <tbody id="bills-body"><tr><td colspan="8" style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company in the sidebar.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
     <!-- ======== BANK ACCOUNTS PAGE ======== -->
     <section id="page-bank-accounts" class="page-content">
       <div class="card mb-4">
@@ -1986,6 +2158,190 @@
   </div>
 </div>
 
+<!-- ======== MODAL: Import QBO AR/AP ======== -->
+<div id="qbo-arap-modal" class="modal-overlay">
+  <div class="modal-content" style="max-width:620px;">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:var(--text-lg);">Import QBO AR/AP → Manual company</h3>
+      <button class="modal-close" onclick="closeQboArApImportModal()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--color-text-secondary);">&times;</button>
+    </div>
+    <div style="background:var(--color-bg-muted);padding:12px;border-radius:var(--radius-md);font-size:var(--text-sm);margin-bottom:16px;">
+      Pulls Customers, Vendors, Invoices, and Bills from the selected QBO company into the
+      manual company. Uses QBO IDs so re-running is idempotent.
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Source (QuickBooks)</label>
+        <select class="form-select" id="qbo-arap-src"><option value="">Select...</option></select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Destination (Manual)</label>
+        <select class="form-select" id="qbo-arap-dest"><option value="">Select...</option></select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Invoices/Bills from</label>
+        <input class="form-input" type="date" id="qbo-arap-start" value="2025-01-01">
+      </div>
+      <div class="form-group">
+        <label class="form-label">through</label>
+        <input class="form-input" type="date" id="qbo-arap-end">
+      </div>
+    </div>
+    <div id="qbo-arap-error" style="display:none;color:var(--color-error);font-size:var(--text-sm);margin-bottom:12px;"></div>
+    <div id="qbo-arap-progress" style="display:none;font-size:var(--text-sm);margin-bottom:12px;color:var(--color-text-secondary);">
+      <div class="loading-spinner" style="display:inline-block;width:14px;height:14px;border-width:2px;vertical-align:-3px;margin-right:6px;"></div>
+      <span id="qbo-arap-progress-text">Working...</span>
+    </div>
+    <div id="qbo-arap-preview" style="display:none;padding:12px;border-radius:var(--radius-md);background:oklch(0.96 0.04 250);color:#0f1d3d;font-size:var(--text-sm);margin-bottom:12px;border:1px solid oklch(0.85 0.08 250);"></div>
+    <div id="qbo-arap-result" style="display:none;padding:12px;border-radius:var(--radius-md);background:oklch(0.95 0.06 140);color:#0a2417;font-size:var(--text-sm);margin-bottom:12px;border:1px solid oklch(0.85 0.1 140);"></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-primary" id="qbo-arap-preview-btn" onclick="runQboArApPreview()" type="button">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        Preview
+      </button>
+      <button class="btn btn-primary" id="qbo-arap-confirm-btn" onclick="runQboArApConfirm()" type="button" style="display:none;background:var(--color-success);">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+        Confirm &amp; Import
+      </button>
+      <button class="btn btn-ghost btn-sm" id="qbo-arap-back-btn" onclick="qboArApBackToForm()" type="button" style="display:none;">&larr; Change</button>
+      <button class="btn btn-secondary" onclick="closeQboArApImportModal()" type="button">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: Apply Transaction to Invoice/Bill ======== -->
+<div id="match-modal" class="modal-overlay">
+  <div class="modal-content" style="max-width:640px;">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:var(--text-lg);" id="match-modal-title">Apply to Invoice</h3>
+      <button class="modal-close" onclick="closeMatchModal()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--color-text-secondary);">&times;</button>
+    </div>
+    <div id="match-tx-context" style="background:var(--color-bg-muted);padding:10px;border-radius:var(--radius-md);font-size:var(--text-sm);margin-bottom:12px;"></div>
+    <div id="match-candidates" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;"></div>
+    <div id="match-error" style="display:none;color:var(--color-error);font-size:var(--text-sm);margin-bottom:8px;"></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-secondary" onclick="closeMatchModal()" type="button">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: Email Invoice ======== -->
+<div id="email-invoice-modal" class="modal-overlay">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:var(--text-lg);">Email Invoice</h3>
+      <button class="modal-close" onclick="closeEmailInvoice()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--color-text-secondary);">&times;</button>
+    </div>
+    <div class="form-group"><label class="form-label">To</label>
+      <input class="form-input" type="email" id="email-invoice-to"></div>
+    <div class="form-group"><label class="form-label">Subject</label>
+      <input class="form-input" type="text" id="email-invoice-subject"></div>
+    <div class="form-group"><label class="form-label">Message (HTML allowed)</label>
+      <textarea class="form-input" id="email-invoice-body" rows="6"></textarea></div>
+    <div id="email-invoice-error" style="display:none;color:var(--color-error);font-size:var(--text-sm);margin-bottom:8px;"></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-primary" id="email-invoice-send-btn" onclick="emailInvoiceSend()" type="button">Send Email</button>
+      <button class="btn btn-secondary" onclick="closeEmailInvoice()" type="button">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: Credit Memos ======== -->
+<div id="credit-memo-modal" class="modal-overlay">
+  <div class="modal-content" style="max-width:720px;">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:var(--text-lg);">Credit Memos</h3>
+      <button class="modal-close" onclick="closeCreditMemoModal()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--color-text-secondary);">&times;</button>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:12px;">
+      <button class="btn btn-primary btn-sm" onclick="creditMemoNewForm()" type="button">+ New Credit Memo</button>
+    </div>
+    <div id="credit-memo-list"></div>
+    <div id="credit-memo-new-form" style="display:none;border-top:1px solid var(--color-border);padding-top:12px;margin-top:12px;">
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Customer</label>
+          <select class="form-select" id="cm-customer"><option value="">— select —</option></select></div>
+        <div class="form-group"><label class="form-label">Date</label>
+          <input class="form-input" type="date" id="cm-date"></div>
+        <div class="form-group"><label class="form-label">Amount</label>
+          <input class="form-input" type="number" step="0.01" id="cm-amount"></div>
+      </div>
+      <div class="form-group"><label class="form-label">Memo</label>
+        <input class="form-input" type="text" id="cm-memo"></div>
+      <div class="form-group"><label class="form-label">Category (income account, usually)</label>
+        <select class="form-select" id="cm-account"><option value="">— select —</option></select></div>
+      <div id="cm-error" style="display:none;color:var(--color-error);font-size:var(--text-sm);margin-bottom:8px;"></div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-primary btn-sm" onclick="creditMemoSave()" type="button">Save</button>
+        <button class="btn btn-secondary btn-sm" onclick="creditMemoCancelForm()" type="button">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: Recurring Invoices ======== -->
+<div id="recurring-modal" class="modal-overlay">
+  <div class="modal-content" style="max-width:720px;">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:var(--text-lg);">Recurring Invoices</h3>
+      <button class="modal-close" onclick="closeRecurringModal()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--color-text-secondary);">&times;</button>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:12px;">
+      <button class="btn btn-primary btn-sm" onclick="recurringNewForm()" type="button">+ New Recurring Invoice</button>
+      <button class="btn btn-secondary btn-sm" onclick="recurringRunNow()" type="button">Run Due Now</button>
+    </div>
+    <div id="recurring-list"></div>
+    <div id="recurring-new-form" style="display:none;border-top:1px solid var(--color-border);padding-top:12px;margin-top:12px;">
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Name</label>
+          <input class="form-input" type="text" id="rec-name" placeholder="e.g. Monthly rent — Acme"></div>
+        <div class="form-group"><label class="form-label">Customer</label>
+          <select class="form-select" id="rec-customer"><option value="">— select —</option></select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Frequency</label>
+          <select class="form-select" id="rec-frequency">
+            <option value="monthly">Monthly</option>
+            <option value="weekly">Weekly</option>
+            <option value="quarterly">Quarterly</option>
+            <option value="annual">Annual</option>
+          </select></div>
+        <div class="form-group"><label class="form-label">Start date</label>
+          <input class="form-input" type="date" id="rec-start"></div>
+        <div class="form-group"><label class="form-label">End date (optional)</label>
+          <input class="form-input" type="date" id="rec-end"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="flex:2;"><label class="form-label">Description</label>
+          <input class="form-input" type="text" id="rec-description"></div>
+        <div class="form-group"><label class="form-label">Amount</label>
+          <input class="form-input" type="number" step="0.01" id="rec-amount"></div>
+        <div class="form-group"><label class="form-label">Category</label>
+          <select class="form-select" id="rec-account"></select></div>
+      </div>
+      <div class="form-group"><label class="form-label">Payment terms (days until due)</label>
+        <input class="form-input" type="number" id="rec-due-days" value="30"></div>
+      <div id="rec-error" style="display:none;color:var(--color-error);font-size:var(--text-sm);margin-bottom:8px;"></div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-primary btn-sm" onclick="recurringSave()" type="button">Save</button>
+        <button class="btn btn-secondary btn-sm" onclick="recurringCancelForm()" type="button">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======== PRINT STYLES for Invoice/Bill ======== -->
+<style>
+@media print {
+  body > *:not(.doc-print-host) { display: none !important; }
+  .doc-print-host { display: block !important; font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 40px; color: #111; }
+}
+.doc-print-host { display: none; }
+</style>
+<div id="doc-print-host" class="doc-print-host"></div>
+
 <!-- ======== MODAL: Import QBO → Manual ======== -->
 <div id="qbo-import-modal" class="modal-overlay">
   <div class="modal-content" style="max-width:620px;">
@@ -2044,6 +2400,164 @@
       </button>
       <button class="btn btn-ghost btn-sm" id="qbo-import-back-btn" onclick="qboImportBackToForm()" type="button" style="display:none;">&larr; Change options</button>
       <button class="btn btn-secondary" onclick="closeQboImportModal()" type="button">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: Customer / Vendor Editor (shared) ======== -->
+<div id="contact-edit-modal" class="modal-overlay">
+  <div class="modal-content" style="max-width:720px;">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:var(--text-lg);" id="contact-edit-title">New Customer</h3>
+      <button class="modal-close" onclick="closeContactEdit()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--color-text-secondary);">&times;</button>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Display Name <span style="color:var(--color-error);">*</span></label>
+        <input class="form-input" type="text" id="contact-display-name"></div>
+      <div class="form-group"><label class="form-label">Company Name</label>
+        <input class="form-input" type="text" id="contact-company-name"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Email</label>
+        <input class="form-input" type="email" id="contact-email"></div>
+      <div class="form-group"><label class="form-label">Phone</label>
+        <input class="form-input" type="tel" id="contact-phone"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Terms (days)</label>
+        <input class="form-input" type="number" id="contact-terms-days" value="30"></div>
+      <div class="form-group"><label class="form-label">Default Account</label>
+        <select class="form-select" id="contact-default-account"><option value="">— none —</option></select></div>
+    </div>
+    <div id="contact-vendor-only" style="display:none;">
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Tax ID</label>
+          <input class="form-input" type="text" id="contact-tax-id" placeholder="EIN / SSN"></div>
+        <div class="form-group" style="display:flex;align-items:end;">
+          <label style="display:flex;align-items:center;gap:6px;font-size:var(--text-sm);">
+            <input type="checkbox" id="contact-is-1099"> 1099 vendor
+          </label>
+        </div>
+      </div>
+    </div>
+    <div style="font-size:var(--text-xs);color:var(--color-text-secondary);margin-top:8px;margin-bottom:4px;">Billing Address</div>
+    <div class="form-row">
+      <div class="form-group"><input class="form-input" type="text" id="contact-bill-line1" placeholder="Street"></div>
+      <div class="form-group"><input class="form-input" type="text" id="contact-bill-city" placeholder="City"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><input class="form-input" type="text" id="contact-bill-region" placeholder="State / Region"></div>
+      <div class="form-group"><input class="form-input" type="text" id="contact-bill-postal" placeholder="Postal Code"></div>
+      <div class="form-group"><input class="form-input" type="text" id="contact-bill-country" placeholder="Country" value="US"></div>
+    </div>
+    <div class="form-group"><label class="form-label">Notes</label>
+      <textarea class="form-input" id="contact-notes" rows="2"></textarea></div>
+    <div id="contact-edit-error" style="display:none;color:var(--color-error);font-size:var(--text-sm);margin-bottom:8px;"></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-primary" id="contact-save-btn" onclick="contactSave()" type="button">Save</button>
+      <button class="btn btn-secondary" onclick="closeContactEdit()" type="button">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: Invoice / Bill Editor (shared) ======== -->
+<div id="doc-edit-modal" class="modal-overlay">
+  <div class="modal-content" style="max-width:1000px;">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:var(--text-lg);" id="doc-edit-title">New Invoice</h3>
+      <button class="modal-close" onclick="closeDocEdit()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--color-text-secondary);">&times;</button>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label" id="doc-edit-party-label">Customer</label>
+        <select class="form-select" id="doc-party" onchange="docPartyChanged()"><option value="">— select —</option></select></div>
+      <div class="form-group"><label class="form-label">Number</label>
+        <input class="form-input" type="text" id="doc-number"></div>
+      <div class="form-group"><label class="form-label">Date</label>
+        <input class="form-input" type="date" id="doc-date"></div>
+      <div class="form-group"><label class="form-label">Due Date</label>
+        <input class="form-input" type="date" id="doc-due-date"></div>
+    </div>
+
+    <div style="overflow-x:auto;margin-bottom:8px;">
+      <table class="data-table" style="width:100%;min-width:800px;font-size:var(--text-sm);">
+        <thead><tr>
+          <th style="text-align:left;">Description</th>
+          <th style="text-align:left;min-width:180px;">Category / Account</th>
+          <th style="text-align:right;width:80px;">Qty</th>
+          <th style="text-align:right;width:120px;">Unit Price</th>
+          <th style="text-align:right;width:80px;">Tax %</th>
+          <th style="text-align:right;width:110px;">Amount</th>
+          <th style="width:32px;"></th>
+        </tr></thead>
+        <tbody id="doc-lines-body"></tbody>
+      </table>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <button class="btn btn-ghost btn-sm" onclick="docAddLine()" type="button">+ Add line</button>
+      <div id="doc-totals" style="font-size:var(--text-sm);"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group" style="flex:2;"><label class="form-label">Memo</label>
+        <input class="form-input" type="text" id="doc-memo"></div>
+      <div class="form-group"><label class="form-label">Status</label>
+        <select class="form-select" id="doc-status"></select></div>
+    </div>
+    <div id="doc-edit-error" style="display:none;color:var(--color-error);font-size:var(--text-sm);margin-bottom:8px;"></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-primary" id="doc-save-btn" onclick="docSave()" type="button">Save</button>
+      <button class="btn btn-secondary" onclick="closeDocEdit()" type="button">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: Doc Detail (invoice/bill view + pay) ======== -->
+<div id="doc-detail-modal" class="modal-overlay">
+  <div class="modal-content" style="max-width:820px;">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:var(--text-lg);" id="doc-detail-title">Invoice</h3>
+      <button class="modal-close" onclick="closeDocDetail()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--color-text-secondary);">&times;</button>
+    </div>
+    <div id="doc-detail-body"></div>
+  </div>
+</div>
+
+<!-- ======== MODAL: Record Payment ======== -->
+<div id="payment-modal" class="modal-overlay">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:var(--text-lg);">Record Payment</h3>
+      <button class="modal-close" onclick="closePaymentModal()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--color-text-secondary);">&times;</button>
+    </div>
+    <div id="payment-context" style="background:var(--color-bg-muted);padding:10px;border-radius:var(--radius-md);font-size:var(--text-sm);margin-bottom:12px;"></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Date</label>
+        <input class="form-input" type="date" id="payment-date"></div>
+      <div class="form-group"><label class="form-label">Amount</label>
+        <input class="form-input" type="number" step="0.01" id="payment-amount"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Bank / Cash Account</label>
+        <select class="form-select" id="payment-bank-account"><option value="">— optional —</option></select></div>
+      <div class="form-group"><label class="form-label">Method</label>
+        <select class="form-select" id="payment-method">
+          <option value="">—</option>
+          <option value="check">Check</option>
+          <option value="ach">ACH</option>
+          <option value="card">Card</option>
+          <option value="cash">Cash</option>
+          <option value="wire">Wire</option>
+        </select></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Reference</label>
+        <input class="form-input" type="text" id="payment-reference" placeholder="Check # / confirmation"></div>
+      <div class="form-group"><label class="form-label">Memo</label>
+        <input class="form-input" type="text" id="payment-memo"></div>
+    </div>
+    <div id="payment-error" style="display:none;color:var(--color-error);font-size:var(--text-sm);margin-bottom:8px;"></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-primary" id="payment-save-btn" onclick="paymentSave()" type="button">Record Payment</button>
+      <button class="btn btn-secondary" onclick="closePaymentModal()" type="button">Cancel</button>
     </div>
   </div>
 </div>
