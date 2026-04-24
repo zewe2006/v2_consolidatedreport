@@ -823,6 +823,7 @@ async function loadPL() {
     const sel = getSelectedCompanies("pl");
     const viewEl = document.getElementById("pl-view-mode");
     const byCompany = viewEl ? viewEl.value === "by_company" : false;
+    const summarize = (document.getElementById("pl-summarize")?.value || "") || null;
     const data = await apiPost("/api/reports/profit-loss", {
       start_date: document.getElementById("pl-start-date").value || null,
       end_date: document.getElementById("pl-end-date").value || null,
@@ -833,6 +834,7 @@ async function loadPL() {
       company_id: sel.company_id,
       company_ids: sel.company_ids,
       by_company: byCompany,
+      summarize_column_by: summarize,
     });
     currentReportData.pl = data;
     if (byCompany && data.company_breakdowns) {
@@ -919,6 +921,21 @@ function renderQBOReport(data, wrapperId) {
   if (data.message && !current) { wrapper.innerHTML = top + `<p class="text-muted" style="padding:var(--space-4);">${data.message}</p>`; return; }
   if (!current || (!current.Rows && !current.rows)) { wrapper.innerHTML = top + '<p class="text-muted" style="padding:var(--space-4);">No data returned.</p>'; return; }
 
+  // Detect column-summarized response: Columns.Column has more than 2 entries
+  const colDefs = current.Columns?.Column || current.columns?.Column || [];
+  const periodCols = colDefs.slice(1); // first is Account
+  const isMultiCol = periodCols.length > 1;
+
+  if (isMultiCol) {
+    let html = top + '<table class="data-table"><thead><tr><th>Account</th>';
+    for (const c of periodCols) html += `<th class="num">${c.ColTitle || c.col_title || ""}</th>`;
+    html += "</tr></thead><tbody>";
+    html += renderRowsMulti((current.Rows || current.rows || {}).Row || [], 0, periodCols.length);
+    html += "</tbody></table>";
+    wrapper.innerHTML = html;
+    return;
+  }
+
   const rows = current.Rows || current.rows || {};
   const headerRow = rows.Row || [];
   const priorData = priorYear || priorMonth;
@@ -930,6 +947,44 @@ function renderQBOReport(data, wrapperId) {
   html += renderRows(headerRow, 0, priorLookup, hasCmp);
   html += "</tbody></table>";
   wrapper.innerHTML = html;
+}
+
+// Render rows for a multi-column summarized report (by month/quarter/year).
+// Each ColData: [name, val_1, val_2, ..., val_N]. nPeriod = N.
+function renderRowsMulti(arr, depth, nPeriod) {
+  const fmt = (s) => {
+    const n = parseFloat(s) || 0;
+    if (n === 0) return "$0.00";
+    return (n < 0 ? "\u2212" : "") + "$" + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+  let h = "";
+  for (const r of arr) {
+    if (r.type === "Section" || r.group) {
+      if (r.Header?.ColData) {
+        h += `<tr class="section-header"><td colspan="${nPeriod + 1}">${r.Header.ColData[0]?.value || ""}</td></tr>`;
+      }
+      if (r.Rows?.Row) h += renderRowsMulti(r.Rows.Row, depth + 1, nPeriod);
+      if (r.Summary?.ColData) {
+        const cd = r.Summary.ColData;
+        const name = cd[0]?.value || "Total";
+        let row = `<tr class="total-row"><td>${name}</td>`;
+        for (let i = 1; i <= nPeriod; i++) {
+          row += `<td class="num">${fmt(cd[i]?.value)}</td>`;
+        }
+        h += row + "</tr>";
+      }
+    } else if (r.ColData) {
+      const cd = r.ColData;
+      const name = cd[0]?.value || "";
+      const cls = depth > 0 ? `indent-${Math.min(depth, 2)}` : "";
+      let row = `<tr class="${cls}"><td>${name}</td>`;
+      for (let i = 1; i <= nPeriod; i++) {
+        row += `<td class="num">${fmt(cd[i]?.value)}</td>`;
+      }
+      h += row + "</tr>";
+    }
+  }
+  return h;
 }
 
 function buildReportLookup(report) {
