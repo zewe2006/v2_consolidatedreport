@@ -208,7 +208,7 @@ function updateTrialBanner() {
 function applyPlanRestrictions() {
   if (!currentUser) return;
   const isFree = currentUser.plan === "free" && !currentUser.trial_active;
-  // Gate Business-only features: period comparison, intercompany journals, account mapping
+  // Gate Business-only features (period comparison, intercompany journals, etc.)
   document.querySelectorAll(".business-only").forEach((el) => {
     if (isFree) {
       el.style.opacity = "0.5";
@@ -419,7 +419,6 @@ function navigateTo(page) {
     "cash-flow": "Cash Flow Statement",
     intercompany: "Intercompany Journal Entries",
     companies: "Company Management",
-    "account-mapping": "Account Mapping",
     users: "User Management",
     "knowledge-base": "AI Knowledge Base",
     "delivery-import": "UberEats / DoorDash Import",
@@ -448,7 +447,6 @@ function navigateTo(page) {
   location.hash = page;
   if (page === "companies") loadCompanies();
   if (page === "intercompany") loadICHistory();
-  if (page === "account-mapping") loadAccountMappings();
   if (page === "users") loadUsers();
   if (page === "knowledge-base") loadKnowledgeBase();
   if (page === "delivery-import") diInit();
@@ -2455,54 +2453,6 @@ async function onAccountChange(side, slot) {
     entitySel.classList.add("hidden");
     entitySel.innerHTML = '<option value="">\u2014 Select Customer/Vendor \u2014</option>';
   }
-}
-
-// =====================================================================
-//  ACCOUNT MAPPING
-// =====================================================================
-
-async function loadQBOAccounts() {
-  const el = document.getElementById("qbo-accounts-list");
-  const companyFilter = document.getElementById("mapping-company-filter")?.value;
-  el.innerHTML = '<div class="loading-spinner" style="margin:var(--space-4) auto;"></div>';
-  try {
-    if (companyFilter) {
-      const accounts = await apiGet(`/api/accounts/cached?company_id=${companyFilter}`);
-      if (!accounts.length) { el.innerHTML = '<p class="text-muted">No cached accounts. Sync this company first.</p>'; return; }
-      let html = '<table class="data-table"><thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Classification</th><th class="num">Balance</th><th>Action</th></tr></thead><tbody>';
-      for (const a of accounts)
-        html += `<tr><td class="font-mono">${a.qbo_account_id}</td><td>${a.fully_qualified_name || a.name}</td><td>${a.account_type || "-"}</td><td>${a.classification || "-"}</td><td class="num">$${(a.current_balance || 0).toLocaleString("en-US", { minimumFractionDigits: 2 })}</td><td><button class="btn btn-sm btn-secondary" onclick="openMappingModal('${a.qbo_account_id}','${(a.fully_qualified_name || a.name).replace(/'/g, "\\'")}','${companyFilter}')">Map</button></td></tr>`;
-      el.innerHTML = html + "</tbody></table>";
-    } else {
-      el.innerHTML = '<p class="text-muted">Select a company first.</p>';
-    }
-  } catch (e) { el.innerHTML = `<p style="color:var(--color-error);">Error: ${e.message}</p>`; }
-}
-
-function openMappingModal(accountId, accountName, companyId) {
-  const cat = prompt(`Map "${accountName}" to consolidation category:\n\n(e.g., Revenue, COGS, Operating Expenses, Fixed Assets, Current Liabilities, Equity)`);
-  if (!cat) return;
-  const sub = prompt("Subcategory (optional):\n\n(e.g., Food Revenue, Rent, Payroll)");
-  apiPost("/api/account-mappings", { company_id: companyId, qbo_account_id: accountId, qbo_account_name: accountName, consolidated_category: cat, consolidated_subcategory: sub || null })
-    .then(() => { showToast("Mapping saved.", "success"); loadAccountMappings(); })
-    .catch((e) => showToast("Error: " + e.message, "error"));
-}
-
-async function loadAccountMappings() {
-  try {
-    const mappings = await apiGet("/api/account-mappings");
-    const el = document.getElementById("account-mappings-list");
-    if (!mappings.length) { el.innerHTML = '<p class="text-muted" style="padding:var(--space-4);font-size:var(--text-sm);">No mappings yet.</p>'; return; }
-    let html = '<table class="data-table"><thead><tr><th>Company</th><th>QBO Account</th><th>Category</th><th>Subcategory</th><th>Action</th></tr></thead><tbody>';
-    for (const m of mappings)
-      html += `<tr><td>${m.company_name || "-"}</td><td>${m.qbo_account_name}</td><td>${m.consolidated_category}</td><td>${m.consolidated_subcategory || "-"}</td><td><button class="btn btn-sm btn-ghost" onclick="deleteMapping('${m.id}')" style="color:var(--color-error);">Remove</button></td></tr>`;
-    el.innerHTML = html + "</tbody></table>";
-  } catch { /* ok */ }
-}
-
-async function deleteMapping(id) {
-  try { await apiDelete(`/api/account-mappings/${id}`); loadAccountMappings(); }
-  catch (e) { showToast("Error: " + e.message, "error"); }
 }
 
 // =====================================================================

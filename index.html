@@ -242,10 +242,6 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M3 7v14M21 7v14M7 7V3h10v4M7 11h2M7 15h2M15 11h2M15 15h2M11 21v-4h2v4"/></svg>
           <span>Companies</span>
         </a></li>
-        <li class="business-only"><a href="#account-mapping" data-page="account-mapping">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="6" r="3"/><circle cx="19" cy="6" r="3"/><circle cx="5" cy="18" r="3"/><circle cx="19" cy="18" r="3"/><path d="M8 6h8M8 18h8M5 9v6M19 9v6"/></svg>
-          <span>Account Mapping</span>
-        </a></li>
         <li id="nav-users" style="display:none;"><a href="#users" data-page="users">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
           <span>Users</span>
@@ -977,39 +973,6 @@
       <div class="card">
         <div class="card-header"><span class="card-title">All Users</span></div>
         <div id="users-list" style="overflow-x:auto;"></div>
-      </div>
-    </section>
-
-    <!-- ======== ACCOUNT MAPPING PAGE ======== -->
-    <section id="page-account-mapping" class="page-content">
-      <div class="card mb-6">
-        <div class="card-header">
-          <span class="card-title">Account Mapping for Consolidation</span>
-        </div>
-        <p class="text-muted mb-4" style="font-size:var(--text-sm);">
-          Map each company's accounts to unified consolidation categories. 
-          Since your Charts of Accounts vary across companies, this mapping ensures 
-          the consolidated reports align correctly.
-        </p>
-        <div class="filter-bar" style="padding:0;">
-          <div class="filter-group">
-            <label>Company</label>
-            <select id="mapping-company-filter" class="company-selector"></select>
-          </div>
-          <button class="btn btn-primary btn-sm" onclick="loadQBOAccounts()">Load Accounts</button>
-        </div>
-      </div>
-
-      <div class="card mb-6">
-        <div class="card-header"><span class="card-title">Accounts</span></div>
-        <div id="qbo-accounts-list" class="text-muted" style="font-size:var(--text-sm);padding:var(--space-2);">
-          Select a company and click "Load Accounts" to see its Chart of Accounts.
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-header"><span class="card-title">Saved Mappings</span></div>
-        <div id="account-mappings-list" style="overflow-x:auto;"></div>
       </div>
     </section>
 
