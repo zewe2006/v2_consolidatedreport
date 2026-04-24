@@ -5188,7 +5188,7 @@ let _txDebounceTimer = null;
 async function txInit() {
   const body = document.getElementById("tx-body");
   if (!selectedCompanyId) {
-    if (body) body.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--color-text-muted);">
+    if (body) body.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:32px;color:var(--color-text-muted);">
       <div style="margin-bottom:12px;">Select a company from the sidebar switcher to see its transactions.</div>
       <button class="btn btn-primary btn-sm" onclick="navigateTo('companies')" type="button">Go to Companies</button>
     </td></tr>`;
@@ -5196,7 +5196,7 @@ async function txInit() {
   }
   const company = _getSelectedCompany();
   if (!company || company.source !== "manual") {
-    if (body) body.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--color-text-muted);">
+    if (body) body.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:32px;color:var(--color-text-muted);">
       Transactions are only available for <strong>Manual + Plaid</strong> companies.
       QBO companies keep their transactions in QuickBooks.
     </td></tr>`;
@@ -5517,6 +5517,10 @@ async function txReload() {
     const resp = await apiGet(`/api/transactions/${selectedCompanyId}?${params.toString()}`);
     const txs = resp.transactions || [];
     _txState.has_more = !!resp.has_more;
+    _txState.txs = txs;
+    // Fetch match hints first so the render shows inline Match buttons
+    // for any Plaid-categorized rows that line up with an open invoice/bill.
+    await _txLoadMatchHints(txs);
     _txRender(txs);
     document.getElementById("tx-summary").textContent = `${txs.length} shown`;
     const pageNum = Math.floor(_txState.offset / _txState.limit) + 1;
@@ -5531,12 +5535,14 @@ async function txReload() {
 function _txRender(txs) {
   const body = document.getElementById("tx-body");
   if (!txs.length) {
-    body.innerHTML = emptyStateCell(8, {title: "No transactions match these filters", body: "Try widening the date range, clearing search, or removing the category filter."});
+    body.innerHTML = emptyStateCell(10, {title: "No transactions match these filters", body: "Try widening the date range, clearing search, or removing the category filter."});
     return;
   }
   body.innerHTML = txs.map((t) => {
     const amount = Number(t.amount || 0);
-    const color = amount > 0 ? "var(--color-text-primary)" : "var(--color-success)";
+    // Plaid convention: positive amount = outflow (Spent). Negative = inflow (Received).
+    const spent = amount > 0 ? amount : 0;
+    const received = amount < 0 ? -amount : 0;
     const acct = t.account ? `${_escapeHtml(t.account.name)}${t.account.mask ? " ···" + t.account.mask : ""}` : "—";
     const catName = t.category ? t.category.name : (t.is_transfer ? "Transfer" : "Uncategorized");
     const catClass = t.category ? "" : (t.is_transfer ? "color:var(--color-text-secondary);font-style:italic;" : "color:var(--color-error);");
@@ -5547,23 +5553,70 @@ function _txRender(txs) {
       ? `<div style="font-size:var(--text-xs);color:var(--color-text-secondary);">${_escapeHtml(t.description)}</div>` : "";
     const isSplit = !!t.split_parent_id;
     const pencil = `<span class="inline-edit-pencil" aria-hidden="true">✎</span>`;
+
+    // Auto-match hint (populated asynchronously by _txApplyMatchHints)
+    const matchHint = _txMatchMap ? _txMatchMap[t.id] : null;
+    const matchHtml = matchHint
+      ? `<div style="font-size:var(--text-xs);color:var(--color-success);line-height:1.3;">`
+      + `<div style="font-weight:600;">${matchHint.kind === "invoice" ? "Invoice" : "Bill"} ${_escapeHtml(matchHint.number || "")}${matchHint.date ? " — " + formatDate(matchHint.date) : ""}</div>`
+      + `${matchHint.party ? `<div>${_escapeHtml(matchHint.party)}</div>` : ""}`
+      + `<div style="margin-top:3px;"><button class="btn btn-sm btn-primary" style="padding:2px 10px;" onclick="txApplyMatchHint('${t.id}')">Match</button> `
+      + `<button class="btn btn-sm btn-ghost" style="padding:2px 8px;" onclick="_txBeginInlineEdit(event, '${t.id}', 'category')" title="Categorize instead">Categorize</button></div>`
+      + `</div>`
+      : `<span class="tx-editable-content" style="${catClass}">${_escapeHtml(catName)}${isSplit ? ' <span class="badge badge-neutral" style="font-size:var(--text-xxs, 0.625rem);">split</span>' : ""}</span>${pencil}`;
+
     return `<tr data-tx-id="${t.id}" data-is-transfer="${t.is_transfer ? "1" : "0"}" data-has-category="${t.category_id ? "1" : "0"}" data-has-vendor="${t.vendor_id ? "1" : "0"}">
       <td><input type="checkbox" class="tx-row-check" value="${t.id}" onchange="txUpdateBulkBar()"></td>
       <td style="font-size:var(--text-xs);white-space:nowrap;">${formatDate(t.date)}${t.pending ? ' <span class="badge badge-warning" style="font-size:var(--text-xxs, 0.625rem);">pending</span>' : ""}</td>
       <td><div style="font-weight:500;">${_escapeHtml(merch)}</div>${descLine}</td>
       <td style="font-size:var(--text-xs);">${acct}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums;color:var(--color-text);">${spent > 0 ? formatNumber(spent) : ""}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums;color:var(--color-success);">${received > 0 ? formatNumber(received) : ""}</td>
       <td class="tx-editable" onclick="_txBeginInlineEdit(event, '${t.id}', 'vendor')" title="Click to set vendor">
         <span class="tx-editable-content" style="font-size:var(--text-xs);">${vendorCell}</span>${pencil}
       </td>
-      <td class="tx-editable" style="${catClass}" onclick="_txBeginInlineEdit(event, '${t.id}', 'category')" title="Click to set category">
-        <span class="tx-editable-content">${_escapeHtml(catName)}${isSplit ? ' <span class="badge badge-neutral" style="font-size:var(--text-xxs, 0.625rem);">split</span>' : ""}</span>${pencil}
-      </td>
-      <td style="text-align:right;color:${color};font-variant-numeric:tabular-nums;">${formatNumber(amount)}</td>
+      <td class="tx-editable" ${!matchHint ? `onclick="_txBeginInlineEdit(event, '${t.id}', 'category')"` : ""} title="${matchHint ? "Suggested match — click Match to apply" : "Click to set category"}">${matchHtml}</td>
       <td style="text-align:right;">
         <button class="btn btn-sm btn-ghost" onclick="txActionsMenu('${t.id}', event)" title="More">⋯</button>
       </td>
     </tr>`;
   }).join("");
+}
+
+// ---- Auto-match (QBO bank feed style) ----
+// _txMatchMap: txnId -> { kind, id, number, date, party, balance, score }
+let _txMatchMap = null;
+
+async function _txLoadMatchHints(txs) {
+  if (!selectedCompanyId || !txs || !txs.length) { _txMatchMap = null; return; }
+  // Only consider Plaid-auto-categorized or uncategorized rows worth matching.
+  // User-set rows are already decided.
+  const candidates = txs.filter((t) => !t.is_transfer && (t.categorized_by === "plaid" || !t.category_id));
+  if (!candidates.length) { _txMatchMap = null; return; }
+  try {
+    const r = await apiPost("/api/payments/match-suggestions/batch", {
+      company_id: selectedCompanyId,
+      transaction_ids: candidates.map((t) => t.id),
+    });
+    _txMatchMap = r.matches || {};
+  } catch (e) {
+    _txMatchMap = null;
+  }
+}
+
+async function txApplyMatchHint(txId) {
+  if (!_txMatchMap || !_txMatchMap[txId]) { showToast("No match available.", "error"); return; }
+  const m = _txMatchMap[txId];
+  try {
+    const body = m.kind === "invoice"
+      ? { plaid_txn_id: txId, invoice_id: m.id }
+      : { plaid_txn_id: txId, bill_id: m.id };
+    await apiPost("/api/payments/apply-match", body);
+    showToast(`Matched to ${m.kind} ${m.number || ""}.`, "success");
+    await txReload();
+  } catch (e) {
+    showToast("Match failed: " + (e.message || e), "error");
+  }
 }
 
 
