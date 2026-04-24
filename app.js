@@ -5567,37 +5567,44 @@ function _txRender(txs) {
 }
 
 
-// ---- Inline row-level type-to-filter editing (Transactions table) ----
-// Click a Category or Vendor cell → the cell's content swaps for an
-// <input list=…> combobox with native autocomplete. Pick or type → PATCH
-// the transaction and re-render in place. Escape cancels.
+// ---- Inline custom combobox (Transactions Category/Vendor cells) ----
+// Matches the Financials component pattern: click a cell → floating
+// popover anchored below the cell with a search input and a scrollable
+// list. Type to filter. If no match, a "Create '<text>'" row appears
+// at the bottom with an auto-detected type badge (for category) or a
+// plain create for vendor.
 
-// Ensure the shared datalists exist once, and refresh their options.
-function _txEnsureInlineDatalists() {
-  if (!document.getElementById("tx-inline-category-options")) {
-    const dl = document.createElement("datalist");
-    dl.id = "tx-inline-category-options";
-    document.body.appendChild(dl);
-  }
-  if (!document.getElementById("tx-inline-vendor-options")) {
-    const dl = document.createElement("datalist");
-    dl.id = "tx-inline-vendor-options";
-    document.body.appendChild(dl);
-  }
-  const catDl = document.getElementById("tx-inline-category-options");
-  catDl.innerHTML = (_txState.categories || [])
-    .map((c) => `<option value="${_escapeHtml(c.name)}"></option>`)
-    .join("");
-  const vDl = document.getElementById("tx-inline-vendor-options");
-  const vendors = (_txState.vendors || []);
-  vDl.innerHTML = vendors
-    .map((v) => `<option value="${_escapeHtml(v.display_name)}"></option>`)
-    .join("");
+const _TX_CAT_TYPE_COLORS = {
+  asset:     "background:#dbeafe;color:#1e40af;",
+  liability: "background:#ffedd5;color:#9a3412;",
+  equity:    "background:#ede9fe;color:#5b21b6;",
+  income:    "background:#d1fae5;color:#065f46;",
+  expense:   "background:#ffe4e6;color:#9f1239;",
+};
+
+function _txDetectCoaType(name) {
+  const n = (name || "").toLowerCase();
+  if (/revenue|income|sales|fees earned/.test(n)) return "income";
+  if (/payable|loan|credit card|liability|accrued/.test(n)) return "liability";
+  if (/equity|retained|owner|drawings/.test(n)) return "equity";
+  if (/receivable|cash|bank|asset|deposit|checking|savings/.test(n)) return "asset";
+  return "expense";
 }
 
-// Make sure _txState.vendors is populated the first time we need it.
+function _txNextCoaCode(type, categories) {
+  const prefixes = { asset: 1000, liability: 2000, equity: 3000, income: 4000, expense: 5000 };
+  const base = prefixes[type] || 5000;
+  let max = base;
+  for (const c of categories) {
+    if (c.type !== type || !c.code) continue;
+    const n = parseInt(c.code, 10);
+    if (!isNaN(n) && n > max) max = n;
+  }
+  return String(max + 10);
+}
+
 async function _txEnsureVendorsLoaded() {
-  if (_txState.vendors && _txState.vendors.length >= 0 && _txState._vendorsLoaded) return;
+  if (_txState._vendorsLoaded) return;
   try {
     const r = await apiGet(`/api/vendors/${selectedCompanyId}`);
     _txState.vendors = r.vendors || [];
@@ -5605,101 +5612,223 @@ async function _txEnsureVendorsLoaded() {
   } catch (e) { _txState.vendors = []; }
 }
 
+function _closeTxCombo() {
+  const el = document.getElementById("tx-combo");
+  if (el) el.remove();
+  document.removeEventListener("mousedown", _txComboOutsideClick, true);
+  document.removeEventListener("keydown", _txComboKeydown, true);
+}
+
+let _txComboCtx = null; // { txId, kind, cellEl, filtered, focusIdx, search, showCreate }
+
+function _txComboOutsideClick(e) {
+  const el = document.getElementById("tx-combo");
+  if (!el) return;
+  if (!el.contains(e.target) && !(_txComboCtx?.cellEl?.contains(e.target))) _closeTxCombo();
+}
+
+function _txComboKeydown(e) {
+  if (!_txComboCtx) return;
+  if (e.key === "Escape") { e.preventDefault(); _closeTxCombo(); return; }
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    const total = _txComboCtx.filtered.length + (_txComboCtx.showCreate ? 1 : 0);
+    _txComboCtx.focusIdx = Math.min(_txComboCtx.focusIdx + 1, total - 1);
+    _txComboRenderList();
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    _txComboCtx.focusIdx = Math.max(_txComboCtx.focusIdx - 1, 0);
+    _txComboRenderList();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    const i = _txComboCtx.focusIdx;
+    if (i < 0) return;
+    if (i < _txComboCtx.filtered.length) {
+      _txComboCommit(_txComboCtx.filtered[i].id);
+    } else if (_txComboCtx.showCreate) {
+      _txComboCreateAndCommit();
+    }
+  }
+}
+
+function _txComboItemsFor(kind) {
+  if (kind === "category") {
+    return (_txState.categories || []).map((c) => ({
+      id: c.id, label: c.name, code: c.code || "", type: c.type,
+    }));
+  }
+  return (_txState.vendors || []).map((v) => ({
+    id: v.id, label: v.display_name, code: "", type: "",
+  }));
+}
+
+function _txComboRenderList() {
+  const listEl = document.getElementById("tx-combo-list");
+  if (!listEl || !_txComboCtx) return;
+  const { kind, filtered, focusIdx, search, showCreate, selectedId } = _txComboCtx;
+  let html = "";
+  filtered.forEach((it, i) => {
+    const isActive = i === focusIdx;
+    const isSel = it.id === selectedId;
+    html += `<button type="button" class="tx-combo-item${isActive ? " is-active" : ""}${isSel ? " is-selected" : ""}" data-idx="${i}">`
+         +  `<span class="tx-combo-check">${isSel ? "✓" : ""}</span>`
+         +  `<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_escapeHtml(it.label)}</span>`
+         +  (it.code ? `<span class="tx-combo-code">${_escapeHtml(it.code)}</span>` : "")
+         +  `</button>`;
+  });
+  if (showCreate) {
+    const i = filtered.length;
+    const isActive = i === focusIdx;
+    const detected = kind === "category" ? _txDetectCoaType(search) : "";
+    const badgeStyle = detected ? _TX_CAT_TYPE_COLORS[detected] : "";
+    const badgeHtml = detected ? `<span class="tx-combo-type-badge" style="${badgeStyle}">${detected}</span>` : "";
+    html += `<button type="button" class="tx-combo-create${isActive ? " is-active" : ""}" data-idx="${i}" data-create="1">`
+         +  `<span>+ Create "${_escapeHtml(search)}"</span>`
+         +  badgeHtml
+         +  `</button>`;
+  }
+  if (!filtered.length && !showCreate) {
+    html += `<div class="tx-combo-empty">No matches</div>`;
+  }
+  listEl.innerHTML = html;
+  listEl.querySelectorAll(".tx-combo-item").forEach((btn) => {
+    btn.onclick = () => _txComboCommit(filtered[parseInt(btn.dataset.idx, 10)].id);
+  });
+  const createBtn = listEl.querySelector(".tx-combo-create");
+  if (createBtn) createBtn.onclick = _txComboCreateAndCommit;
+}
+
+function _txComboFilter(text) {
+  if (!_txComboCtx) return;
+  _txComboCtx.search = text;
+  _txComboCtx.focusIdx = -1;
+  const q = text.trim().toLowerCase();
+  const items = _txComboItemsFor(_txComboCtx.kind);
+  _txComboCtx.filtered = q
+    ? items.filter((it) => it.label.toLowerCase().includes(q) || (it.code || "").toLowerCase().includes(q))
+    : items;
+  _txComboCtx.showCreate = !!q && !items.some((it) => it.label.toLowerCase() === q);
+  _txComboRenderList();
+}
+
+async function _txComboCommit(id) {
+  const { txId, kind } = _txComboCtx;
+  _closeTxCombo();
+  const patch = kind === "category" ? { category_id: id } : { vendor_id: id };
+  try {
+    await apiPatch(`/api/transactions/${txId}`, patch);
+    await txReload();
+  } catch (e) { showToast("Update failed: " + (e.message || e), "error"); }
+}
+
+async function _txComboCreateAndCommit() {
+  if (!_txComboCtx) return;
+  const { kind, search, txId } = _txComboCtx;
+  const text = (search || "").trim();
+  if (!text) return;
+
+  const listEl = document.getElementById("tx-combo-list");
+  if (listEl) listEl.innerHTML = `<div class="tx-combo-empty">Creating “${_escapeHtml(text)}”…</div>`;
+
+  try {
+    if (kind === "category") {
+      const type = _txDetectCoaType(text);
+      const code = _txNextCoaCode(type, _txState.categories || []);
+      await apiPost(`/api/coa/${selectedCompanyId}`, {
+        name: text, code, type, is_active: true,
+      });
+      // Re-fetch categories to pick up the mirrored category row
+      const r = await apiGet(`/api/transactions/categories/${selectedCompanyId}`).catch(() => null);
+      if (r && r.categories) {
+        _txState.categories = r.categories;
+      } else {
+        // Fallback: fetch CoA and rebuild categories best-effort
+        try {
+          const resp = await apiGet(`/api/coa/${selectedCompanyId}`);
+          _coaState.accounts = resp.accounts || [];
+          // If there's no dedicated endpoint, trigger a tx-categories refresh via existing loader
+          if (typeof _txLoadCategories === "function") await _txLoadCategories();
+        } catch {}
+      }
+      const newCat = (_txState.categories || []).find((c) => (c.name || "").toLowerCase() === text.toLowerCase());
+      if (newCat) {
+        await _txComboCommit(newCat.id);
+        showToast(`Created category "${text}".`, "success");
+      } else {
+        showToast(`Created "${text}" but couldn't auto-select. Refresh and retry.`, "info");
+        _closeTxCombo();
+      }
+    } else {
+      const r = await apiPost(`/api/vendors/${selectedCompanyId}`, { display_name: text });
+      const newId = r.vendor?.id || r.id;
+      const resp = await apiGet(`/api/vendors/${selectedCompanyId}`);
+      _txState.vendors = resp.vendors || [];
+      _txState._vendorsLoaded = true;
+      if (newId) {
+        await _txComboCommit(newId);
+        showToast(`Created vendor "${text}".`, "success");
+      } else {
+        _closeTxCombo();
+      }
+    }
+  } catch (e) {
+    showToast("Create failed: " + (e.message || e), "error");
+    _closeTxCombo();
+  }
+}
+
 async function _txBeginInlineEdit(event, txId, kind) {
   event.stopPropagation();
-  const cell = event.currentTarget;
-  if (cell.querySelector("input")) return;   // already editing
+  _closeTxCombo();
+  const cellEl = event.currentTarget;
   if (kind === "vendor") await _txEnsureVendorsLoaded();
-  _txEnsureInlineDatalists();
 
   const row = document.querySelector(`tr[data-tx-id="${txId}"]`);
-  const content = cell.querySelector(".tx-editable-content");
-  const currentLabel = content ? content.textContent.replace(/\s*split\s*$/i, "").trim() : "";
-  const datalistId = kind === "category" ? "tx-inline-category-options" : "tx-inline-vendor-options";
-  const placeholder = kind === "category" ? "Type to search…" : "Type to search or create…";
+  const selectedId = kind === "category"
+    ? (row?.dataset.hasCategory === "1" ? _txCurrentId(txId, "category_id") : null)
+    : (row?.dataset.hasVendor === "1"   ? _txCurrentId(txId, "vendor_id")   : null);
 
-  // Save original HTML so we can restore on cancel
-  const origHtml = cell.innerHTML;
-
-  const input = document.createElement("input");
-  input.className = "tx-inline-input form-input form-input-sm";
-  input.setAttribute("list", datalistId);
-  input.style.cssText = "width:100%;padding:4px 6px;font-size:var(--text-sm);";
-  input.placeholder = placeholder;
-  input.value = currentLabel && currentLabel !== "Uncategorized" && currentLabel !== "—" ? currentLabel : "";
-  cell.innerHTML = "";
-  cell.appendChild(input);
-  input.focus();
-  input.select();
-
-  const commit = async () => {
-    const text = (input.value || "").trim();
-    const source = kind === "category" ? (_txState.categories || []) : (_txState.vendors || []);
-    const keyLower = text.toLowerCase();
-    const labelKey = kind === "category" ? "name" : "display_name";
-    let matched = source.find((o) => (o[labelKey] || "").toLowerCase() === keyLower);
-
-    if (!text) {
-      // Clear
-      const patch = kind === "category" ? { clear_category: true } : { clear_vendor: true };
-      try {
-        await apiPatch(`/api/transactions/${txId}`, patch);
-        await txReload();
-      } catch (e) {
-        showToast("Update failed: " + (e.message || e), "error");
-        cell.innerHTML = origHtml;
-      }
-      return;
-    }
-
-    if (!matched && kind === "vendor") {
-      // Quick-create vendor inline
-      if (!confirm(`Vendor "${text}" doesn't exist. Create it?`)) {
-        cell.innerHTML = origHtml;
-        return;
-      }
-      try {
-        const r = await apiPost(`/api/vendors/${selectedCompanyId}`, { display_name: text });
-        const newId = r.vendor?.id || r.id;
-        const resp = await apiGet(`/api/vendors/${selectedCompanyId}`);
-        _txState.vendors = resp.vendors || [];
-        _txState._vendorsLoaded = true;
-        _txEnsureInlineDatalists();
-        matched = _txState.vendors.find((v) => v.id === newId)
-                || _txState.vendors.find((v) => (v.display_name || "").toLowerCase() === keyLower);
-      } catch (e) {
-        showToast("Create failed: " + (e.message || e), "error");
-        cell.innerHTML = origHtml;
-        return;
-      }
-    }
-
-    if (!matched) {
-      if (kind === "category") showToast(`"${text}" is not a category. Add one in Chart of Accounts first.`, "info");
-      cell.innerHTML = origHtml;
-      return;
-    }
-
-    const patch = kind === "category"
-      ? { category_id: matched.id }
-      : { vendor_id: matched.id };
-    try {
-      await apiPatch(`/api/transactions/${txId}`, patch);
-      await txReload();
-    } catch (e) {
-      showToast("Update failed: " + (e.message || e), "error");
-      cell.innerHTML = origHtml;
-    }
+  const items = _txComboItemsFor(kind);
+  _txComboCtx = {
+    txId, kind, cellEl, selectedId,
+    filtered: items, focusIdx: -1, search: "", showCreate: false,
   };
 
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") { e.preventDefault(); cell.innerHTML = origHtml; }
-    if (e.key === "Enter")  { e.preventDefault(); commit(); }
-  });
-  input.addEventListener("blur", () => {
-    // Give click-on-datalist-suggestion time to set value first
-    setTimeout(commit, 150);
-  });
+  const pop = document.createElement("div");
+  pop.className = "tx-combo";
+  pop.id = "tx-combo";
+  pop.innerHTML = `
+    <div class="tx-combo-search">
+      <input type="text" id="tx-combo-input" placeholder="${kind === "category" ? "Search or create category…" : "Search or create vendor…"}">
+    </div>
+    <div class="tx-combo-list" id="tx-combo-list"></div>
+  `;
+  document.body.appendChild(pop);
+
+  // Position below the cell
+  const r = cellEl.getBoundingClientRect();
+  pop.style.visibility = "hidden";
+  pop.style.top = "0"; pop.style.left = "0";
+  const popH = pop.offsetHeight, popW = pop.offsetWidth;
+  const preferBelow = window.innerHeight - r.bottom > popH + 8;
+  pop.style.top = (preferBelow ? r.bottom + 4 : Math.max(8, r.top - popH - 4)) + "px";
+  pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - popW - 8)) + "px";
+  pop.style.visibility = "visible";
+
+  const input = document.getElementById("tx-combo-input");
+  input.addEventListener("input", (e) => _txComboFilter(e.target.value));
+  input.focus();
+  _txComboRenderList();
+
+  setTimeout(() => {
+    document.addEventListener("mousedown", _txComboOutsideClick, true);
+    document.addEventListener("keydown", _txComboKeydown, true);
+  }, 0);
+}
+
+function _txCurrentId(txId, field) {
+  const t = (_txState.txs || []).find((x) => x.id === txId);
+  return t ? (t[field] || null) : null;
 }
 
 // Vendor picker — reuses the category picker modal with different data.
