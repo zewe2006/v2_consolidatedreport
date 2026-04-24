@@ -1426,8 +1426,11 @@ function renderTransactionDetail(data) {
 
 async function _refreshDrillModal() {
   if (currentTxnDetail?.vendor_id) {
-    // Re-run via vendor helper
     await openVendorTransactions(currentTxnDetail.vendor_id, currentTxnDetail.vendor_name);
+    return;
+  }
+  if (currentTxnDetail?.register_account_name && currentTxnDetail?.register_company_id) {
+    await openAccountRegister("", currentTxnDetail.register_account_name);
     return;
   }
   if (currentTxnDetail?.account_name) {
@@ -6140,11 +6143,41 @@ function _coaRender() {
     <td><strong>${_escapeHtml(a.name)}</strong></td>
     <td><span class="badge" style="background:${typeColor[a.type] || "#888"}22;color:${typeColor[a.type] || "#888"};">${a.type}</span></td>
     <td style="text-align:right;font-variant-numeric:tabular-nums;">${formatCurrency(a.ytd_activity)}</td>
-    <td style="text-align:right;">
+    <td style="text-align:right;white-space:nowrap;">
+      <button class="btn btn-sm btn-ghost" onclick="openAccountRegister('${a.id}','${a.name.replace(/'/g, "\\'")}')" title="View and edit all transactions for this account">Register</button>
       <button class="btn btn-sm btn-ghost" onclick="openCoaEditModal('${a.id}')">Edit</button>
       <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="coaArchive('${a.id}')">Archive</button>
     </td>
   </tr>`).join("");
+}
+
+async function openAccountRegister(coaId, accountName) {
+  const modal = document.getElementById("txn-detail-modal");
+  const loading = document.getElementById("txn-detail-loading");
+  const table = document.getElementById("txn-detail-table");
+  document.getElementById("txn-detail-title").textContent = `Register — ${accountName}`;
+  document.getElementById("txn-detail-badge").textContent = `Account: ${accountName}`;
+  document.getElementById("txn-detail-date-range").textContent = "All activity";
+  loading.classList.remove("hidden");
+  table.innerHTML = "";
+  modal.classList.add("active");
+  try {
+    const data = await apiPost("/api/reports/transaction-detail", {
+      account_name: accountName,
+      company_id: selectedCompanyId,
+      start_date: null, end_date: null, date_macro: null,
+      accounting_method: "Accrual",
+    });
+    // Tag as register mode so _refreshDrillModal re-uses this path on edit/delete.
+    currentTxnDetail = Object.assign({}, data, {
+      register_account_name: accountName,
+      register_company_id: selectedCompanyId,
+    });
+    loading.classList.add("hidden");
+    renderTransactionDetail(currentTxnDetail);
+  } catch (e) {
+    loading.innerHTML = `<p style="color:var(--color-error);padding:var(--space-4);">Error loading register: ${e.message}</p>`;
+  }
 }
 
 let _coaEditId = null;
