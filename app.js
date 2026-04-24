@@ -4735,9 +4735,11 @@ function txChipSelectBank(bankId) {
 
 function txChipSelectAccount(accountId) {
   document.getElementById("tx-filter-bank").value = "";
-  // Account filter takes precedence in our backend params
-  document.getElementById("tx-filter-account").value = accountId;
+  // Rebuild the account dropdown FIRST (it wipes any pre-set value), then
+  // assign the account id we want selected. Otherwise the rebuild clobbers it
+  // and the backend gets account_id="" → returns all transactions.
   _txRenderAccountFilter();
+  document.getElementById("tx-filter-account").value = accountId;
   _txState.offset = 0;
   txReload();
   _txRenderBanksSummary();
