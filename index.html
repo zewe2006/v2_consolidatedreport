@@ -1472,10 +1472,16 @@
       <div class="card mb-4">
         <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
           <span class="card-title" id="journal-page-title">Journal Entries</span>
-          <button class="btn btn-primary btn-sm" onclick="openJournalEditModal()" type="button">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
-            New Entry
-          </button>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-secondary btn-sm" onclick="openJournalImportModal()" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+              Import
+            </button>
+            <button class="btn btn-primary btn-sm" onclick="openJournalEditModal()" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              New Entry
+            </button>
+          </div>
         </div>
         <p class="text-muted" style="font-size:var(--text-sm);padding:0 var(--space-1) var(--space-3);">
           Manual journal entries (opening balances, adjustments, non-bank transactions). Must balance: debits = credits.
@@ -2241,6 +2247,49 @@
     </div>
     <div id="xfer-results" style="flex:1;overflow-y:auto;font-size:var(--text-sm);"></div>
     <div id="xfer-error" style="display:none;color:var(--color-error);font-size:var(--text-sm);margin-top:8px;"></div>
+  </div>
+</div>
+
+<!-- ======== MODAL: Import Journal Entries ======== -->
+<div id="journal-import-modal" class="modal-overlay">
+  <div class="modal-content" style="max-width:900px;max-height:88vh;display:flex;flex-direction:column;">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:var(--text-lg);">Import Journal Entries</h3>
+      <button class="modal-close" onclick="closeJournalImportModal()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--color-text-secondary);">&times;</button>
+    </div>
+    <div style="font-size:var(--text-sm);color:var(--color-text-secondary);margin-bottom:10px;">
+      Paste CSV or upload a file. Each row is one line of a journal entry. Rows that share the same
+      <strong>Date</strong> + <strong>Memo</strong> are grouped into the same entry. Each entry must balance
+      (debits = credits). Accounts can be referenced by <strong>code</strong> (e.g. <code>1000</code>) or
+      <strong>name</strong> (e.g. <code>Cash on Hand</code>) or full <code>code name</code>.
+    </div>
+    <details style="margin-bottom:10px;font-size:var(--text-xs);">
+      <summary style="cursor:pointer;color:var(--color-text-secondary);">Sample format</summary>
+      <pre style="margin:6px 0;padding:10px;background:var(--color-bg-muted);border-radius:6px;font-size:11px;overflow-x:auto;">Date,Memo,Account,Description,Debit,Credit
+2025-01-01,Opening balances,1000,,50000,
+2025-01-01,Opening balances,3000,Owner contribution,,50000
+2025-01-15,January rent,6700 Rent,Suite 101,3000,
+2025-01-15,January rent,1000,Payment,,3000</pre>
+    </details>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
+      <input type="file" id="journal-import-file" accept=".csv,text/csv" style="font-size:var(--text-sm);">
+      <span style="font-size:var(--text-xs);color:var(--color-text-secondary);">or paste below</span>
+    </div>
+    <textarea id="journal-import-text" rows="7" class="form-input" style="font-family:monospace;font-size:12px;margin-bottom:10px;" placeholder="Date,Memo,Account,Description,Debit,Credit&#10;2025-01-01,Opening balances,1000,Cash,50000,&#10;2025-01-01,Opening balances,3000,Owner contribution,,50000"></textarea>
+    <div style="display:flex;gap:8px;margin-bottom:10px;">
+      <button class="btn btn-primary btn-sm" id="journal-import-parse-btn" onclick="journalImportParse()" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        Parse &amp; Preview
+      </button>
+      <button class="btn btn-primary btn-sm" id="journal-import-confirm-btn" onclick="journalImportConfirm()" type="button" style="display:none;background:var(--color-success);">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+        Confirm &amp; Create
+      </button>
+      <button class="btn btn-ghost btn-sm" id="journal-import-back-btn" onclick="journalImportBack()" type="button" style="display:none;">&larr; Back</button>
+      <button class="btn btn-secondary btn-sm" onclick="closeJournalImportModal()" type="button" style="margin-left:auto;">Cancel</button>
+    </div>
+    <div id="journal-import-error" style="display:none;color:var(--color-error);font-size:var(--text-sm);margin-bottom:10px;"></div>
+    <div id="journal-import-preview" style="flex:1;overflow-y:auto;font-size:var(--text-sm);"></div>
   </div>
 </div>
 

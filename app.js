@@ -5590,40 +5590,69 @@ function _txRender(txs) {
 }
 
 
-// Vendor picker — reuses the category picker modal with different data
-let _vendorPickerState = { txId: null, vendors: [] };
+// Vendor picker — reuses the category picker modal with different data.
+// When opened from a transaction, pre-fills search with the merchant name and
+// offers a "Create '<merchant>'" action at the top for one-click auto-create.
+let _vendorPickerState = { txId: null, vendors: [], merchantName: "" };
 
 async function openVendorPicker(txId) {
   const picker = document.getElementById("category-picker-modal");
-  // Load vendors if not cached
   try {
     const r = await apiGet(`/api/vendors/${selectedCompanyId}`);
-    _vendorPickerState = { txId, vendors: r.vendors || [] };
+    // Pull merchant_name from the row so we can suggest it as the new vendor name
+    const row = document.querySelector(`tr[data-tx-id="${txId}"]`);
+    const merchant = row ? (row.querySelectorAll("td")[2].querySelector("div")?.textContent?.trim() || "") : "";
+    _vendorPickerState = { txId, vendors: r.vendors || [], merchantName: merchant };
   } catch (e) {
-    showToast("Failed to load vendors: " + e.message, "error");
+    showToast(friendlyError(e), "error");
     return;
   }
-  // Re-skin the category picker into a vendor picker
-  const list = document.getElementById("cat-picker-list");
   const search = document.getElementById("cat-picker-search");
-  search.value = ""; search.placeholder = "Search vendors...";
-  picker.querySelector(".modal-header h3").textContent = "Pick a vendor";
+  search.value = _vendorPickerState.merchantName || "";
+  search.placeholder = "Search or create vendor...";
+  picker.querySelector(".modal-header h3").textContent = "Pick or create a vendor";
   _renderVendorPickerList();
-  // Override the picker's clear + search behaviors to target vendor endpoints
   search.oninput = _renderVendorPickerList;
   picker.classList.add("active"); picker.style.display = "flex";
+  // Focus the search so user can immediately type/accept
+  setTimeout(() => search.focus(), 50);
 }
 
 function _renderVendorPickerList() {
-  const q = (document.getElementById("cat-picker-search").value || "").toLowerCase();
-  const rows = (_vendorPickerState.vendors || []).filter((v) => !q || (v.display_name || "").toLowerCase().includes(q));
+  const q = (document.getElementById("cat-picker-search").value || "").trim();
+  const qLower = q.toLowerCase();
+  const rows = (_vendorPickerState.vendors || []).filter((v) => !qLower || (v.display_name || "").toLowerCase().includes(qLower));
+  const exactMatch = rows.find((v) => (v.display_name || "").toLowerCase() === qLower);
   const body = document.getElementById("cat-picker-list");
-  if (!rows.length) { body.innerHTML = '<div style="padding:12px;color:var(--color-text-muted);text-align:center;">No vendors match. <a href="#vendors" onclick="navigateTo(\'vendors\');return false;">Create one →</a></div>'; return; }
-  body.innerHTML = rows.map((v) => `<div style="padding:8px 12px;border-radius:6px;cursor:pointer;" onmouseover="this.style.background='var(--color-bg-muted)'" onmouseout="this.style.background='transparent'" onclick="vendorPickerSelect('${v.id}')">
+
+  // Build the "Create new vendor" affordance at top
+  let createBlock = "";
+  if (q && !exactMatch) {
+    const safe = q.replace(/'/g, "\\'");
+    createBlock = `<div style="padding:10px 12px;margin-bottom:4px;border-radius:6px;border:1px dashed var(--color-accent);background:oklch(from var(--color-accent) l c h / 0.08);cursor:pointer;"
+        onmouseover="this.style.background='oklch(from var(--color-accent) l c h / 0.15)'"
+        onmouseout="this.style.background='oklch(from var(--color-accent) l c h / 0.08)'"
+        onclick="vendorPickerCreateAndApply('${safe}')">
+      <span style="color:var(--color-accent);font-weight:600;">+ Create "${_escapeHtml(q)}"</span>
+      <span style="font-size:var(--text-xs);color:var(--color-text-secondary);margin-left:8px;">new vendor</span>
+    </div>`;
+  }
+
+  if (!rows.length) {
+    body.innerHTML = (createBlock || "") +
+      (q ? "" : '<div style="padding:12px;color:var(--color-text-muted);text-align:center;font-size:var(--text-sm);">Type a vendor name to create one.</div>');
+    _overrideVendorClearBtn();
+    return;
+  }
+
+  body.innerHTML = createBlock + rows.map((v) => `<div style="padding:8px 12px;border-radius:6px;cursor:pointer;" onmouseover="this.style.background='var(--color-bg-muted)'" onmouseout="this.style.background='transparent'" onclick="vendorPickerSelect('${v.id}')">
     <strong>${_escapeHtml(v.display_name)}</strong>
     ${v.email ? `<span style="color:var(--color-text-secondary);font-size:var(--text-xs);margin-left:8px;">${_escapeHtml(v.email)}</span>` : ""}
   </div>`).join("");
-  // Override clear button behavior
+  _overrideVendorClearBtn();
+}
+
+function _overrideVendorClearBtn() {
   const clearBtn = Array.from(document.querySelectorAll("#category-picker-modal button"))
     .find((b) => /clear/i.test(b.textContent));
   if (clearBtn) clearBtn.onclick = vendorPickerClear;
@@ -5637,7 +5666,26 @@ async function vendorPickerSelect(vendorId) {
     closeCategoryPicker();
     _resetCategoryPickerDefaults();
     await txReload();
-  } catch (e) { showToast("Failed: " + e.message, "error"); }
+  } catch (e) { showToast(friendlyError(e), "error"); }
+}
+
+async function vendorPickerCreateAndApply(displayName) {
+  const txId = _vendorPickerState.txId;
+  if (!txId || !displayName.trim()) return;
+  try {
+    const r = await apiPost(`/api/vendors/${selectedCompanyId}`, {
+      display_name: displayName.trim(),
+    });
+    const newVendorId = r.vendor?.id;
+    if (!newVendorId) throw new Error("Vendor not created");
+    await apiPatch(`/api/transactions/${txId}`, { vendor_id: newVendorId });
+    showToast(`Created vendor "${displayName}" and linked`, "success");
+    closeCategoryPicker();
+    _resetCategoryPickerDefaults();
+    // Refresh in-memory vendors cache for subsequent picks
+    _contactsState.rows = [];  // force reload next time
+    await txReload();
+  } catch (e) { showToast(friendlyError(e), "error"); }
 }
 
 async function vendorPickerClear() {
@@ -5648,7 +5696,7 @@ async function vendorPickerClear() {
     closeCategoryPicker();
     _resetCategoryPickerDefaults();
     await txReload();
-  } catch (e) { showToast("Failed: " + e.message, "error"); }
+  } catch (e) { showToast(friendlyError(e), "error"); }
 }
 
 // Reset the picker back to category mode so the next category click works
@@ -6560,6 +6608,309 @@ function _updateJournalBalance() {
   document.getElementById("journal-balance").innerHTML = `Dr ${td.toFixed(2)} / Cr ${tc.toFixed(2)} ${ok ? '<span style="color:var(--color-success);">✓</span>' : '<span style="color:var(--color-error);">unbalanced</span>'}`;
   document.getElementById("journal-save-btn").disabled = !ok;
 }
+
+// =====================================================================
+//  JOURNAL ENTRY — CSV Import
+// =====================================================================
+
+let _journalImportState = { parsed: null };
+
+function openJournalImportModal() {
+  if (!selectedCompanyId) { showToast("Pick a company first.", "error"); return; }
+  const company = _getSelectedCompany();
+  if (!company || company.source !== "manual") { showToast("Journal import is for manual companies.", "error"); return; }
+  document.getElementById("journal-import-text").value = "";
+  document.getElementById("journal-import-file").value = "";
+  document.getElementById("journal-import-preview").innerHTML = "";
+  document.getElementById("journal-import-error").style.display = "none";
+  document.getElementById("journal-import-parse-btn").style.display = "inline-flex";
+  document.getElementById("journal-import-confirm-btn").style.display = "none";
+  document.getElementById("journal-import-back-btn").style.display = "none";
+  _journalImportState.parsed = null;
+
+  // Wire file input once per open
+  const fileEl = document.getElementById("journal-import-file");
+  fileEl.onchange = (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => { document.getElementById("journal-import-text").value = ev.target.result; };
+    reader.readAsText(f);
+  };
+
+  const m = document.getElementById("journal-import-modal");
+  m.classList.add("active"); m.style.display = "flex";
+}
+
+function closeJournalImportModal() {
+  const m = document.getElementById("journal-import-modal");
+  m.classList.remove("active"); m.style.display = "none";
+  _journalImportState.parsed = null;
+}
+
+function journalImportBack() {
+  document.getElementById("journal-import-parse-btn").style.display = "inline-flex";
+  document.getElementById("journal-import-confirm-btn").style.display = "none";
+  document.getElementById("journal-import-back-btn").style.display = "none";
+  document.getElementById("journal-import-preview").innerHTML = "";
+  _journalImportState.parsed = null;
+}
+
+// --- CSV parser (handles quoted fields with commas + escaped quotes) ---
+function _parseCsv(text) {
+  const rows = [];
+  let i = 0, field = "", row = [], inQuote = false;
+  const n = text.length;
+  while (i < n) {
+    const ch = text[i];
+    if (inQuote) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+        inQuote = false; i++; continue;
+      }
+      field += ch; i++; continue;
+    }
+    if (ch === '"') { inQuote = true; i++; continue; }
+    if (ch === ",") { row.push(field); field = ""; i++; continue; }
+    if (ch === "\r") { i++; continue; }
+    if (ch === "\n") { row.push(field); rows.push(row); row = []; field = ""; i++; continue; }
+    field += ch; i++;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter((r) => r.some((c) => (c || "").trim() !== ""));
+}
+
+function _normalizeHeader(h) {
+  return (h || "").trim().toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+}
+
+function _parseNum(s) {
+  if (s === null || s === undefined || s === "") return 0;
+  const cleaned = String(s).replace(/[\$,]/g, "").trim();
+  if (!cleaned) return 0;
+  const n = parseFloat(cleaned);
+  return isFinite(n) ? n : 0;
+}
+
+async function journalImportParse() {
+  const errEl = document.getElementById("journal-import-error");
+  const previewEl = document.getElementById("journal-import-preview");
+  errEl.style.display = "none";
+  previewEl.innerHTML = "";
+
+  const text = document.getElementById("journal-import-text").value.trim();
+  if (!text) { errEl.textContent = "Paste CSV text or upload a file."; errEl.style.display = "block"; return; }
+
+  const rows = _parseCsv(text);
+  if (rows.length < 2) { errEl.textContent = "Need a header row plus at least one data row."; errEl.style.display = "block"; return; }
+
+  const header = rows[0].map(_normalizeHeader);
+  const find = (...names) => {
+    for (const n of names) { const i = header.indexOf(n); if (i !== -1) return i; }
+    return -1;
+  };
+  const idxDate    = find("date", "transaction_date", "txn_date");
+  const idxMemo    = find("memo", "description", "reference", "note");
+  const idxAccount = find("account", "account_code", "account_name", "coa", "gl");
+  const idxDesc    = find("line_description", "line_memo", "detail");
+  const idxDebit   = find("debit", "dr", "debit_amount");
+  const idxCredit  = find("credit", "cr", "credit_amount");
+  const idxAmount  = find("amount", "value");   // optional: signed amount column
+
+  if (idxDate < 0 || idxAccount < 0) {
+    errEl.textContent = `CSV must have at least a Date and Account column. Found: ${header.join(", ")}`;
+    errEl.style.display = "block"; return;
+  }
+
+  // Load CoA for account resolution
+  let coa = [];
+  try {
+    const r = await apiGet(`/api/coa/${selectedCompanyId}`);
+    coa = r.accounts || [];
+  } catch (e) { errEl.textContent = "Failed to load CoA: " + friendlyError(e); errEl.style.display = "block"; return; }
+  const byCode = new Map(coa.filter((c) => c.is_active).map((c) => [String(c.code).toLowerCase(), c]));
+  const byName = new Map(coa.filter((c) => c.is_active).map((c) => [String(c.name).toLowerCase(), c]));
+
+  const resolveAccount = (raw) => {
+    const s = String(raw || "").trim();
+    if (!s) return null;
+    // Try exact code match
+    const m1 = byCode.get(s.toLowerCase());
+    if (m1) return m1;
+    // Try exact name match
+    const m2 = byName.get(s.toLowerCase());
+    if (m2) return m2;
+    // Try "code name" pattern — take first token as code
+    const firstToken = s.split(/\s+/)[0];
+    const m3 = byCode.get(firstToken.toLowerCase());
+    if (m3) return m3;
+    // Last resort: case-insensitive "contains" match on name
+    const lc = s.toLowerCase();
+    const m4 = coa.find((c) => c.is_active && c.name.toLowerCase() === lc);
+    if (m4) return m4;
+    return null;
+  };
+
+  // Parse each data row into a line
+  const lines = [];
+  const errors = [];
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r];
+    const dateRaw = (row[idxDate] || "").trim();
+    if (!dateRaw) continue;  // skip blank rows
+    // Normalize date: accept YYYY-MM-DD, M/D/YYYY, etc. Convert to YYYY-MM-DD.
+    let isoDate = dateRaw;
+    if (/^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(dateRaw)) {
+      const [m, d, y] = dateRaw.split("/");
+      const yyyy = y.length === 2 ? (parseInt(y, 10) > 50 ? "19" + y : "20" + y) : y;
+      isoDate = `${yyyy}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    }
+    const memo = (row[idxMemo] || "").trim();
+    const acctRaw = (row[idxAccount] || "").trim();
+    const acct = resolveAccount(acctRaw);
+    if (!acct) {
+      errors.push(`Row ${r + 1}: unknown account "${acctRaw}"`);
+      continue;
+    }
+    let debit  = idxDebit  >= 0 ? _parseNum(row[idxDebit])  : 0;
+    let credit = idxCredit >= 0 ? _parseNum(row[idxCredit]) : 0;
+    if (!debit && !credit && idxAmount >= 0) {
+      // Single signed Amount column: positive = debit, negative = credit (common)
+      const v = _parseNum(row[idxAmount]);
+      if (v > 0) debit = v; else if (v < 0) credit = -v;
+    }
+    if (debit === 0 && credit === 0) {
+      errors.push(`Row ${r + 1}: no debit or credit amount`);
+      continue;
+    }
+    lines.push({
+      row: r + 1,
+      date: isoDate,
+      memo: memo || null,
+      coa_account_id: acct.id,
+      coa_label: `${acct.code} ${acct.name}`,
+      description: (idxDesc >= 0 ? (row[idxDesc] || "").trim() : "") || null,
+      debit, credit,
+    });
+  }
+
+  // Group by date+memo
+  const groupKey = (l) => `${l.date}||${l.memo || ""}`;
+  const groups = new Map();
+  for (const l of lines) {
+    const k = groupKey(l);
+    if (!groups.has(k)) groups.set(k, { date: l.date, memo: l.memo, lines: [] });
+    groups.get(k).lines.push(l);
+  }
+
+  // Validate balance per group
+  const entries = [];
+  for (const g of groups.values()) {
+    const td = g.lines.reduce((s, l) => s + l.debit, 0);
+    const tc = g.lines.reduce((s, l) => s + l.credit, 0);
+    g.total_debit  = td;
+    g.total_credit = tc;
+    g.balanced = Math.abs(td - tc) < 0.005 && td > 0;
+    if (g.lines.length < 2) g.balanced = false;
+    entries.push(g);
+  }
+
+  _journalImportState.parsed = entries;
+
+  if (!entries.length && !errors.length) {
+    errEl.textContent = "No usable rows found.";
+    errEl.style.display = "block";
+    return;
+  }
+
+  // Render preview
+  const balanced = entries.filter((e) => e.balanced).length;
+  const unbalanced = entries.filter((e) => !e.balanced);
+
+  const errBlock = errors.length
+    ? `<div style="padding:10px;background:oklch(0.95 0.08 30);color:var(--color-error);border-radius:6px;font-size:var(--text-xs);margin-bottom:10px;">
+         <strong>${errors.length} row error${errors.length === 1 ? "" : "s"}:</strong>
+         <ul style="margin:4px 0 0 16px;">${errors.slice(0, 10).map((e) => `<li>${_escapeHtml(e)}</li>`).join("")}${errors.length > 10 ? `<li>… and ${errors.length - 10} more</li>` : ""}</ul>
+       </div>`
+    : "";
+
+  previewEl.innerHTML = `
+    <div style="margin-bottom:10px;font-size:var(--text-sm);">
+      <strong>${entries.length}</strong> entries parsed ·
+      <span style="color:var(--color-success);">${balanced} balanced</span>
+      ${unbalanced.length ? ` · <span style="color:var(--color-error);">${unbalanced.length} unbalanced</span>` : ""}
+    </div>
+    ${errBlock}
+    ${entries.map((e, i) => `
+      <div style="border:1px solid ${e.balanced ? "var(--color-border)" : "var(--color-error)"};border-radius:6px;padding:10px;margin-bottom:8px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:var(--text-sm);">
+          <div><strong>${formatDate(e.date)}</strong>${e.memo ? ` · ${_escapeHtml(e.memo)}` : ""}</div>
+          <div>
+            ${e.balanced
+              ? '<span class="badge badge-success">Balanced</span>'
+              : `<span class="badge badge-error">Off by ${formatNumber(Math.abs(e.total_debit - e.total_credit))}</span>`}
+          </div>
+        </div>
+        <table class="data-table" style="width:100%;font-size:var(--text-xs);">
+          <thead><tr><th>Account</th><th>Description</th><th style="text-align:right;">Debit</th><th style="text-align:right;">Credit</th></tr></thead>
+          <tbody>${e.lines.map((l) => `<tr>
+            <td>${_escapeHtml(l.coa_label)}</td>
+            <td>${_escapeHtml(l.description || "")}</td>
+            <td style="text-align:right;">${l.debit ? formatNumber(l.debit) : ""}</td>
+            <td style="text-align:right;">${l.credit ? formatNumber(l.credit) : ""}</td>
+          </tr>`).join("")}</tbody>
+        </table>
+      </div>
+    `).join("")}`;
+
+  document.getElementById("journal-import-parse-btn").style.display = "none";
+  document.getElementById("journal-import-confirm-btn").style.display = "inline-flex";
+  document.getElementById("journal-import-back-btn").style.display = "inline-flex";
+
+  if (unbalanced.length) {
+    // Still let user proceed — but disable confirm
+    document.getElementById("journal-import-confirm-btn").disabled = true;
+    errEl.innerHTML = `<strong>${unbalanced.length} entr${unbalanced.length === 1 ? "y is" : "ies are"} unbalanced.</strong> Fix them or go back and edit the CSV.`;
+    errEl.style.display = "block";
+  } else {
+    document.getElementById("journal-import-confirm-btn").disabled = false;
+  }
+}
+
+async function journalImportConfirm() {
+  const entries = _journalImportState.parsed;
+  if (!entries?.length) return;
+  const balanced = entries.filter((e) => e.balanced);
+  if (!balanced.length) return;
+  const btn = document.getElementById("journal-import-confirm-btn");
+  btn.disabled = true; btn.textContent = "Creating...";
+  let ok = 0, fail = 0;
+  const errEl = document.getElementById("journal-import-error");
+  errEl.style.display = "none";
+  for (const e of balanced) {
+    try {
+      await apiPost(`/api/journal/${selectedCompanyId}`, {
+        date: e.date,
+        memo: e.memo || null,
+        lines: e.lines.map((l) => ({
+          coa_account_id: l.coa_account_id,
+          debit:  l.debit || 0,
+          credit: l.credit || 0,
+          description: l.description || null,
+        })),
+      });
+      ok++;
+    } catch (err) {
+      fail++;
+      console.warn("JE import failed:", err);
+    }
+  }
+  btn.disabled = false; btn.textContent = "Confirm & Create";
+  showToast(`Created ${ok} journal entries${fail ? `, ${fail} failed` : ""}`, ok ? "success" : "error");
+  closeJournalImportModal();
+  await journalReload();
+}
+
 
 async function journalSave() {
   const errEl = document.getElementById("journal-error");
