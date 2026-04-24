@@ -5139,67 +5139,125 @@ function _txRenderBanksSummary() {
   }
   const totalAccounts = accts.length;
   const totalBalance = accts.reduce((s, a) => s + (parseFloat(a.current_balance) || 0), 0);
-  const lastSync = items.map((it) => it.last_synced_at).filter(Boolean).sort().reverse()[0];
-  const syncedAgo = lastSync ? _timeAgo(new Date(lastSync)) : "never";
 
-  // Current filter state to render an "active" chip outline
+  // Financials-style grouped chip layout ----------------------------------
   const activeBankId = document.getElementById("tx-filter-bank")?.value || "";
   const activeAcctId = document.getElementById("tx-filter-account")?.value || "";
+  const allActive = !activeBankId && !activeAcctId;
 
-  const allChip = `<button type="button" onclick="txChipSelectAll()" title="Show transactions from all banks"
-      style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:6px;font-size:var(--text-xs);font-family:inherit;cursor:pointer;
-             background:${!activeBankId && !activeAcctId ? "var(--color-accent)" : "var(--color-bg-muted)"};
-             color:${!activeBankId && !activeAcctId ? "white" : "var(--color-text-primary)"};
-             border:1px solid ${!activeBankId && !activeAcctId ? "var(--color-accent)" : "var(--color-border)"};">
+  // Group Plaid items by primary account type → label.
+  // Only two visible groups: BANK (depository + QBO imports) and CREDIT CARD.
+  // Loans and investments are intentionally hidden — user doesn't want them.
+  const typeToGroup = (t) => {
+    const s = (t || "").toLowerCase();
+    if (s === "depository") return { label: "BANK",        order: 1 };
+    if (s === "credit")     return { label: "CREDIT CARD", order: 2 };
+    return null;   // hide loans, investments, anything else
+  };
+  const groups = {};   // label → { order, rows: [{ chip_html }] }
+  const addRow = (label, order, html) => {
+    if (!groups[label]) groups[label] = { order, rows: [] };
+    groups[label].rows.push(html);
+  };
+
+  const statusDot = (status) => {
+    const ok = status === "good" || !status;
+    const warn = status === "login_required" || status === "pending_expiration";
+    const color = ok ? "#10b981" : (warn ? "#f59e0b" : "#ef4444");
+    return `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};flex-shrink:0;"></span>`;
+  };
+
+  const syncIcon = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-1px;"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>`;
+
+  const chip = ({ id, label, sub, status, lastSync, onClick, onSync, active, bgVariant }) => {
+    const selected = active;
+    const bg = selected ? "var(--color-accent)" : (bgVariant || "var(--color-surface)");
+    const fg = selected ? "white" : "var(--color-text-primary)";
+    const border = selected ? "var(--color-accent)" : "var(--color-border)";
+    return `<button type="button" onclick="${onClick}" title="${_escapeHtml(label)}"
+        style="display:inline-flex;align-items:center;gap:8px;padding:6px 10px 6px 12px;
+               background:${bg};color:${fg};border:1px solid ${border};
+               border-radius:999px;font-size:var(--text-xs);cursor:pointer;font-family:inherit;white-space:nowrap;">
+      ${selected ? "" : statusDot(status)}
+      <strong>${_escapeHtml(label)}</strong>
+      <span style="opacity:0.8;">${_escapeHtml(sub)}</span>
+      ${lastSync ? `<span style="opacity:0.65;">· synced ${_timeAgo(new Date(lastSync))}</span>` : ""}
+      ${onSync ? `<span onclick="event.stopPropagation();${onSync}" title="Sync now" style="display:inline-flex;align-items:center;padding:2px;opacity:0.65;cursor:pointer;">${syncIcon}</span>` : ""}
+    </button>`;
+  };
+
+  // Per-item chips (skip groups that typeToGroup returns null for)
+  for (const it of items) {
+    const accs = accts.filter((a) => a.plaid_item_id === it.id);
+    const typeCounts = {};
+    for (const a of accs) { const t = (a.type || "").toLowerCase(); typeCounts[t] = (typeCounts[t] || 0) + 1; }
+    const primary = Object.entries(typeCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "depository";
+    const g = typeToGroup(primary);
+    if (!g) continue;   // loan / investment / other — don't show
+    const sub = `${accs.length} acct${accs.length === 1 ? "" : "s"}`;
+    addRow(g.label, g.order, chip({
+      id: it.id,
+      label: it.institution_name || "Bank",
+      sub,
+      status: it.status,
+      lastSync: it.last_synced_at,
+      onClick: `txChipSelectBank('${it.id}')`,
+      onSync: `syncPlaidCompany('${selectedCompanyId}','${(_getSelectedCompany()?.name || "").replace(/'/g, "\\'")}')`,
+      active: activeBankId === it.id,
+    }));
+  }
+
+  // QBO Import placeholders → merge into the BANK group (per user preference).
+  const placeholders = accts.filter((a) => !a.plaid_item_id);
+  for (const p of placeholders) {
+    const safeName = (p.name || "").replace(/'/g, "\\'");
+    addRow("BANK", 1,
+      `<span style="display:inline-flex;align-items:center;gap:4px;
+                    background:${activeAcctId === p.id ? "var(--color-accent)" : "oklch(0.95 0.04 250)"};
+                    color:${activeAcctId === p.id ? "white" : "#0f1d3d"};
+                    border:1px solid ${activeAcctId === p.id ? "var(--color-accent)" : "oklch(0.85 0.08 250)"};
+                    border-radius:999px;font-size:var(--text-xs);padding-left:10px;">
+        <button type="button" onclick="txChipSelectAccount('${p.id}')" title="Filter to this import"
+            style="display:inline-flex;align-items:center;gap:6px;padding:6px 4px 6px 0;background:transparent;color:inherit;border:none;cursor:pointer;font-family:inherit;font-size:inherit;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+          <strong>${_escapeHtml(p.name)}</strong>
+        </button>
+        <button title="Delete this QBO import" onclick="txDeleteQboImport('${p.id}','${safeName}')"
+            style="background:transparent;border:none;color:${activeAcctId === p.id ? "white" : "var(--color-error)"};font-size:16px;cursor:pointer;padding:0 8px 0 4px;line-height:1;" type="button">&times;</button>
+      </span>`);
+  }
+
+  const allChip = `<button type="button" onclick="txChipSelectAll()" title="Show all accounts"
+      style="display:inline-flex;align-items:center;gap:6px;padding:6px 14px;
+             background:${allActive ? "var(--color-text)" : "var(--color-surface)"};
+             color:${allActive ? "var(--color-text-inverse, white)" : "var(--color-text-primary)"};
+             border:1px solid ${allActive ? "var(--color-text)" : "var(--color-border)"};
+             border-radius:999px;font-size:var(--text-xs);cursor:pointer;font-family:inherit;font-weight:600;">
       All banks
     </button>`;
 
-  const itemsHtml = items.map((it) => {
-    const accs = accts.filter((a) => a.plaid_item_id === it.id);
-    const issue = it.status && it.status !== "good";
-    const active = activeBankId === it.id;
-    const bg = active ? "var(--color-accent)" : (issue ? "oklch(0.95 0.08 60)" : "var(--color-bg-muted)");
-    const fg = active ? "white" : "var(--color-text-primary)";
-    const border = active ? "var(--color-accent)" : "var(--color-border)";
-    return `<button type="button" onclick="txChipSelectBank('${it.id}')" title="Filter transactions to ${_escapeHtml(it.institution_name || "this bank")}"
-        style="display:inline-flex;align-items:center;gap:8px;padding:4px 10px;background:${bg};color:${fg};border:1px solid ${border};border-radius:6px;font-size:var(--text-xs);cursor:pointer;font-family:inherit;">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M6 15h4"/></svg>
-      <strong>${_escapeHtml(it.institution_name || "Bank")}</strong>
-      <span style="opacity:0.85;">${accs.length} account${accs.length === 1 ? "" : "s"}</span>
-      ${issue && !active ? `<span class="badge badge-warning" style="font-size:10px;">${_escapeHtml(it.status)}</span>` : ""}
-    </button>`;
-  }).join("");
-
-  // Also account for the synthetic "QBO Import" placeholder accounts (no plaid_item_id).
-  // Filter by the placeholder's account_id (since they have no plaid_item).
-  const placeholders = accts.filter((a) => !a.plaid_item_id);
-  const placeholderHtml = placeholders.map((p) => {
-    const safeName = (p.name || "").replace(/'/g, "\\'");
-    const active = activeAcctId === p.id;
-    const bg = active ? "var(--color-accent)" : "oklch(0.95 0.04 250)";
-    const fg = active ? "white" : "#0f1d3d";
-    const border = active ? "var(--color-accent)" : "oklch(0.85 0.08 250)";
-    return `<span style="display:inline-flex;align-items:center;gap:4px;background:${bg};color:${fg};border:1px solid ${border};border-radius:6px;font-size:var(--text-xs);">
-      <button type="button" onclick="txChipSelectAccount('${p.id}')" title="Filter transactions to this QBO import"
-          style="display:inline-flex;align-items:center;gap:6px;padding:4px 4px 4px 10px;background:transparent;color:inherit;border:none;cursor:pointer;font-family:inherit;font-size:inherit;">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-        <strong>${_escapeHtml(p.name)}</strong>
-      </button>
-      <button title="Delete this QBO import (removes all its transactions)" onclick="txDeleteQboImport('${p.id}','${safeName}')" style="background:transparent;border:none;color:${active ? "white" : "var(--color-error)"};font-size:16px;cursor:pointer;padding:0 6px 0 2px;line-height:1;" type="button">&times;</button>
-    </span>`;
-  }).join("");
+  // Render: Financials-style layout — per-group label on left, chips middle, action right
+  const sortedGroups = Object.entries(groups).sort((a, b) => a[1].order - b[1].order);
+  const groupRows = sortedGroups.map(([label, g], idx) => `
+    <div style="display:flex;gap:12px;align-items:flex-start;padding:8px 0;${idx ? "border-top:1px solid var(--color-border);" : ""}">
+      <div style="font-size:10px;font-weight:700;letter-spacing:0.08em;color:var(--color-text-secondary);min-width:60px;padding-top:8px;">${label}</div>
+      <div style="flex:1;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+        ${idx === 0 ? allChip : ""}
+        ${g.rows.join("")}
+      </div>
+      ${idx === 0 ? `<div style="flex-shrink:0;">
+        <button class="btn btn-sm btn-secondary" onclick="navigateTo('bank-accounts')" type="button" title="Manage bank connections">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;"><path d="M12 5v14M5 12h14"/></svg>
+          Connect bank
+        </button>
+      </div>` : ""}
+    </div>`).join("");
 
   panel.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-        ${allChip}
-        ${itemsHtml || '<span style="color:var(--color-text-muted);font-size:var(--text-sm);">No live bank connected.</span>'}
-        ${placeholderHtml}
-      </div>
-      <div style="font-size:var(--text-xs);color:var(--color-text-secondary);text-align:right;">
-        ${totalAccounts} account${totalAccounts === 1 ? "" : "s"} · total balance <strong style="color:var(--color-text-primary);">${totalBalance.toFixed(2)}</strong>
-        <br>Synced ${syncedAgo}
-        · <a href="#bank-accounts" onclick="navigateTo('bank-accounts');return false;" style="color:var(--color-accent);">Manage</a>
+    <div style="padding:0;">
+      ${groupRows || `<div style="padding:12px;color:var(--color-text-muted);font-size:var(--text-sm);">No bank connected yet. <a href="#bank-accounts" onclick="navigateTo('bank-accounts');return false;">Connect one →</a></div>`}
+      <div style="border-top:1px solid var(--color-border);padding:6px 0 0;font-size:var(--text-xs);color:var(--color-text-secondary);display:flex;justify-content:space-between;">
+        <span>${totalAccounts} account${totalAccounts === 1 ? "" : "s"} · total balance <strong style="color:var(--color-text-primary);">${totalBalance.toFixed(2)}</strong></span>
       </div>
     </div>`;
   panel.style.display = "block";
@@ -5369,7 +5427,7 @@ async function txReload() {
 function _txRender(txs) {
   const body = document.getElementById("tx-body");
   if (!txs.length) {
-    body.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--color-text-muted);">No transactions match these filters.</td></tr>';
+    body.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--color-text-muted);">No transactions match these filters.</td></tr>';
     return;
   }
   body.innerHTML = txs.map((t) => {
@@ -5378,15 +5436,18 @@ function _txRender(txs) {
     const acct = t.account ? `${_escapeHtml(t.account.name)}${t.account.mask ? " ···" + t.account.mask : ""}` : "—";
     const catName = t.category ? t.category.name : (t.is_transfer ? "Transfer" : "Uncategorized");
     const catClass = t.category ? "" : (t.is_transfer ? "color:var(--color-text-secondary);font-style:italic;" : "color:var(--color-error);");
+    const vendorName = t.vendor ? t.vendor.display_name : "";
+    const vendorCell = vendorName ? _escapeHtml(vendorName) : '<span style="color:var(--color-text-muted);">—</span>';
     const merch = t.merchant_name || t.description || "—";
     const descLine = t.merchant_name && t.description && t.merchant_name !== t.description
       ? `<div style="font-size:var(--text-xs);color:var(--color-text-secondary);">${_escapeHtml(t.description)}</div>` : "";
     const isSplit = !!t.split_parent_id;
-    return `<tr data-tx-id="${t.id}">
+    return `<tr data-tx-id="${t.id}" data-is-transfer="${t.is_transfer ? "1" : "0"}" data-has-category="${t.category_id ? "1" : "0"}" data-has-vendor="${t.vendor_id ? "1" : "0"}">
       <td><input type="checkbox" class="tx-row-check" value="${t.id}"></td>
       <td style="font-size:var(--text-xs);white-space:nowrap;">${t.date || ""}${t.pending ? ' <span class="badge badge-warning" style="font-size:10px;">pending</span>' : ""}</td>
       <td><div style="font-weight:500;">${_escapeHtml(merch)}</div>${descLine}</td>
       <td style="font-size:var(--text-xs);">${acct}</td>
+      <td style="cursor:pointer;font-size:var(--text-xs);" onclick="openVendorPicker('${t.id}')" title="Click to set vendor">${vendorCell}</td>
       <td style="${catClass}cursor:pointer;" onclick="openCategoryPicker('${t.id}', '${_escapeHtml(catName).replace(/'/g, "\\'")}')">
         ${_escapeHtml(catName)}${isSplit ? ' <span class="badge badge-neutral" style="font-size:10px;">split</span>' : ""}
       </td>
@@ -5396,6 +5457,79 @@ function _txRender(txs) {
       </td>
     </tr>`;
   }).join("");
+}
+
+
+// Vendor picker — reuses the category picker modal with different data
+let _vendorPickerState = { txId: null, vendors: [] };
+
+async function openVendorPicker(txId) {
+  const picker = document.getElementById("category-picker-modal");
+  // Load vendors if not cached
+  try {
+    const r = await apiGet(`/api/vendors/${selectedCompanyId}`);
+    _vendorPickerState = { txId, vendors: r.vendors || [] };
+  } catch (e) {
+    showToast("Failed to load vendors: " + e.message, "error");
+    return;
+  }
+  // Re-skin the category picker into a vendor picker
+  const list = document.getElementById("cat-picker-list");
+  const search = document.getElementById("cat-picker-search");
+  search.value = ""; search.placeholder = "Search vendors...";
+  picker.querySelector(".modal-header h3").textContent = "Pick a vendor";
+  _renderVendorPickerList();
+  // Override the picker's clear + search behaviors to target vendor endpoints
+  search.oninput = _renderVendorPickerList;
+  picker.classList.add("active"); picker.style.display = "flex";
+}
+
+function _renderVendorPickerList() {
+  const q = (document.getElementById("cat-picker-search").value || "").toLowerCase();
+  const rows = (_vendorPickerState.vendors || []).filter((v) => !q || (v.display_name || "").toLowerCase().includes(q));
+  const body = document.getElementById("cat-picker-list");
+  if (!rows.length) { body.innerHTML = '<div style="padding:12px;color:var(--color-text-muted);text-align:center;">No vendors match. <a href="#vendors" onclick="navigateTo(\'vendors\');return false;">Create one →</a></div>'; return; }
+  body.innerHTML = rows.map((v) => `<div style="padding:8px 12px;border-radius:6px;cursor:pointer;" onmouseover="this.style.background='var(--color-bg-muted)'" onmouseout="this.style.background='transparent'" onclick="vendorPickerSelect('${v.id}')">
+    <strong>${_escapeHtml(v.display_name)}</strong>
+    ${v.email ? `<span style="color:var(--color-text-secondary);font-size:var(--text-xs);margin-left:8px;">${_escapeHtml(v.email)}</span>` : ""}
+  </div>`).join("");
+  // Override clear button behavior
+  const clearBtn = Array.from(document.querySelectorAll("#category-picker-modal button"))
+    .find((b) => /clear/i.test(b.textContent));
+  if (clearBtn) clearBtn.onclick = vendorPickerClear;
+}
+
+async function vendorPickerSelect(vendorId) {
+  const txId = _vendorPickerState.txId;
+  if (!txId) return;
+  try {
+    await apiPatch(`/api/transactions/${txId}`, { vendor_id: vendorId });
+    closeCategoryPicker();
+    _resetCategoryPickerDefaults();
+    await txReload();
+  } catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+
+async function vendorPickerClear() {
+  const txId = _vendorPickerState.txId;
+  if (!txId) return;
+  try {
+    await apiPatch(`/api/transactions/${txId}`, { clear_vendor: true });
+    closeCategoryPicker();
+    _resetCategoryPickerDefaults();
+    await txReload();
+  } catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+
+// Reset the picker back to category mode so the next category click works
+function _resetCategoryPickerDefaults() {
+  const picker = document.getElementById("category-picker-modal");
+  picker.querySelector(".modal-header h3").textContent = "Pick a category";
+  const search = document.getElementById("cat-picker-search");
+  search.placeholder = "Search categories...";
+  search.oninput = renderCategoryPickerList;
+  const clearBtn = Array.from(picker.querySelectorAll("button")).find((b) => /clear/i.test(b.textContent));
+  if (clearBtn) clearBtn.onclick = categoryPickerClear;
 }
 
 function txPage(delta) {
@@ -5463,22 +5597,92 @@ function txExportCsv() {
   URL.revokeObjectURL(url);
 }
 
-// --- Transaction actions menu (simple prompt-based for v1) ---
+// --- Transaction actions popover ---
+
 function txActionsMenu(txId, event) {
   event.stopPropagation();
-  const choice = prompt(
-    "Actions: split / transfer / untransfer / rule / uncategorize / invoice / bill\nType one:",
-  );
-  if (!choice) return;
-  const c = choice.trim().toLowerCase();
-  if (c === "split") return openSplitModal(txId);
-  if (c === "transfer") return _txMarkTransfer(txId, true);
-  if (c === "untransfer") return _txMarkTransfer(txId, false);
-  if (c === "uncategorize") return _txClearCategory(txId);
-  if (c === "rule") return _txCreateRuleFrom(txId);
-  if (c === "invoice") return txApplyToInvoice(txId);
-  if (c === "bill") return txApplyToBill(txId);
-  showToast("Unknown action", "error");
+  _openTxPopover(txId, event.currentTarget);
+}
+
+function _openTxPopover(txId, anchorEl) {
+  // Close any existing popover first
+  _closeTxPopover();
+
+  const row = document.querySelector(`tr[data-tx-id="${txId}"]`);
+  const isTransfer   = row?.dataset.isTransfer === "1";
+  const hasCategory  = row?.dataset.hasCategory === "1";
+  const hasVendor    = row?.dataset.hasVendor === "1";
+
+  const run = (fn) => () => { _closeTxPopover(); fn(); };
+
+  const items = [
+    { label: "Split transaction",                onClick: run(() => openSplitModal(txId)) },
+    { label: isTransfer ? "Unmark transfer" : "Mark as transfer",
+      onClick: run(() => _txMarkTransfer(txId, !isTransfer)) },
+    hasCategory ? { label: "Clear category",     onClick: run(() => _txClearCategory(txId)) } : null,
+    { label: "Set vendor…",                      onClick: run(() => openVendorPicker(txId)) },
+    hasVendor ? { label: "Clear vendor",         onClick: run(() => _txClearVendor(txId)) } : null,
+    { label: "Create rule from merchant",        onClick: run(() => _txCreateRuleFrom(txId)) },
+    null,   // divider
+    { label: "Apply to invoice…",                onClick: run(() => txApplyToInvoice(txId)) },
+    { label: "Apply to bill…",                   onClick: run(() => txApplyToBill(txId)) },
+  ];
+
+  const pop = document.createElement("div");
+  pop.className = "tx-popover";
+  pop.id = "tx-actions-popover";
+  pop.innerHTML = items.map((it) => {
+    if (it === null) return '<hr>';
+    if (!it) return "";
+    return `<button type="button">${_escapeHtml(it.label)}</button>`;
+  }).join("");
+  document.body.appendChild(pop);
+
+  // Wire onClick for each visible button (in the same order we filtered)
+  const visibleItems = items.filter((x) => x);
+  const buttons = pop.querySelectorAll("button");
+  let bIdx = 0;
+  for (const it of visibleItems) {
+    if (it === null) continue;
+    buttons[bIdx++].onclick = it.onClick;
+  }
+
+  // Position below the anchor, flipped if too close to viewport bottom
+  const rect = anchorEl.getBoundingClientRect();
+  pop.style.visibility = "hidden";
+  pop.style.top = "0px"; pop.style.left = "0px";
+  pop.style.display = "block";
+  const popH = pop.offsetHeight;
+  const popW = pop.offsetWidth;
+  const spaceBelow = window.innerHeight - rect.bottom;
+  const top = spaceBelow > popH + 8 ? rect.bottom + 4 : rect.top - popH - 4;
+  const left = Math.min(rect.right - popW, window.innerWidth - popW - 8);
+  pop.style.top = Math.max(8, top) + "px";
+  pop.style.left = Math.max(8, left) + "px";
+  pop.style.visibility = "visible";
+
+  // Dismiss handlers
+  setTimeout(() => {
+    document.addEventListener("click", _txPopoverOutsideClick, { once: false });
+    document.addEventListener("keydown", _txPopoverKeydown, { once: false });
+  }, 0);
+}
+
+function _txPopoverOutsideClick(e) {
+  const pop = document.getElementById("tx-actions-popover");
+  if (!pop) return;
+  if (!pop.contains(e.target)) _closeTxPopover();
+}
+
+function _txPopoverKeydown(e) {
+  if (e.key === "Escape") _closeTxPopover();
+}
+
+function _closeTxPopover() {
+  const pop = document.getElementById("tx-actions-popover");
+  if (pop) pop.remove();
+  document.removeEventListener("click", _txPopoverOutsideClick);
+  document.removeEventListener("keydown", _txPopoverKeydown);
 }
 
 async function _txMarkTransfer(txId, mark) {
@@ -5493,6 +5697,14 @@ async function _txClearCategory(txId) {
   try {
     await apiPatch(`/api/transactions/${txId}`, { clear_category: true });
     showToast("Category cleared", "success");
+    await txReload();
+  } catch (e) { showToast("Failed: " + e.message, "error"); }
+}
+
+async function _txClearVendor(txId) {
+  try {
+    await apiPatch(`/api/transactions/${txId}`, { clear_vendor: true });
+    showToast("Vendor cleared", "success");
     await txReload();
   } catch (e) { showToast("Failed: " + e.message, "error"); }
 }
@@ -5527,6 +5739,8 @@ function closeCategoryPicker() {
   document.getElementById("category-picker-modal").classList.remove("active");
   document.getElementById("category-picker-modal").style.display = "none";
   _catPickerState = { txId: null, current: "" };
+  _vendorPickerState = { txId: null, vendors: [] };
+  if (typeof _resetCategoryPickerDefaults === "function") _resetCategoryPickerDefaults();
 }
 
 function renderCategoryPickerList() {
@@ -5803,9 +6017,13 @@ async function rulesInit() {
   if (!company || company.source !== "manual") { body.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--color-text-muted);">Rules apply to manual + Plaid companies only.</td></tr>'; return; }
   document.getElementById("rules-page-title").textContent = `Categorization Rules — ${company.name}`;
 
-  // Preload accounts + categories for dropdowns in the rule form
+  // Preload accounts + categories + vendors for dropdowns in the rule form
   if (!_txState.categories.length) await _txLoadCategories();
   if (!_txState.accounts.length) await _txLoadAccounts();
+  try {
+    const r = await apiGet(`/api/vendors/${selectedCompanyId}`);
+    _rulesState.vendors = r.vendors || [];
+  } catch (e) { _rulesState.vendors = []; }
   await rulesReload();
 }
 
@@ -5835,6 +6053,10 @@ function _rulesRender() {
     if (r.action?.set_category_id) {
       const cat = _txState.categories.find((c) => c.id === r.action.set_category_id);
       action.push(cat ? `→ ${_escapeHtml(cat.name)}` : "→ (unknown)");
+    }
+    if (r.action?.set_vendor_id) {
+      const vend = (_rulesState.vendors || []).find((v) => v.id === r.action.set_vendor_id);
+      action.push(vend ? `vendor: ${_escapeHtml(vend.display_name)}` : "vendor: (unknown)");
     }
     if (r.action?.mark_transfer) action.push("mark transfer");
     return `<tr>
@@ -5904,6 +6126,13 @@ function openRuleEditModal(id) {
   catSel.innerHTML = '<option value="">(don\'t set a category)</option>' +
     (_txState.categories || []).map((c) => `<option value="${c.id}" ${r?.action?.set_category_id === c.id ? "selected" : ""}>${_escapeHtml(c.code ? c.code + " " : "")}${_escapeHtml(c.name)}</option>`).join("");
 
+  // Vendor dropdown
+  const vendSel = document.getElementById("rule-set-vendor");
+  if (vendSel) {
+    vendSel.innerHTML = '<option value="">(don\'t set a vendor)</option>' +
+      (_rulesState.vendors || []).map((v) => `<option value="${v.id}" ${r?.action?.set_vendor_id === v.id ? "selected" : ""}>${_escapeHtml(v.display_name)}</option>`).join("");
+  }
+
   document.getElementById("rule-error").style.display = "none";
   document.getElementById("rule-preview-count").textContent = "";
   document.getElementById("rule-edit-modal").classList.add("active");
@@ -5957,9 +6186,11 @@ async function ruleSave() {
   const action = {};
   const setCat = document.getElementById("rule-set-category").value;
   if (setCat) action.set_category_id = setCat;
+  const setVend = document.getElementById("rule-set-vendor")?.value;
+  if (setVend) action.set_vendor_id = setVend;
   if (document.getElementById("rule-mark-transfer").checked) action.mark_transfer = true;
-  if (!action.set_category_id && !action.mark_transfer) {
-    errEl.textContent = "Set a category or mark as transfer."; errEl.style.display = "block"; return;
+  if (!action.set_category_id && !action.set_vendor_id && !action.mark_transfer) {
+    errEl.textContent = "Set a category, a vendor, or mark as transfer."; errEl.style.display = "block"; return;
   }
   const body = {
     name, priority: parseInt(document.getElementById("rule-priority").value || "100", 10),

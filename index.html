@@ -292,21 +292,9 @@
   <!-- Main Content Area -->
   <main class="main" id="main-content">
 
-    <!-- ======== TRIAL BANNER ======== -->
-    <div id="trial-banner" style="display:none;background:linear-gradient(135deg,#1a56db,#2563eb);color:white;padding:12px 20px;border-radius:10px;margin:0 0 16px 0;display:none;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:14px;">
-      <div style="display:flex;align-items:center;gap:10px;">
-        <span style="font-size:18px;">&#9200;</span>
-        <span id="trial-banner-text"><strong>14 days left</strong> in your free Business trial</span>
-      </div>
-      <button onclick="navigateTo('billing')" style="background:white;color:#1a56db;border:none;padding:6px 16px;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;">Upgrade Now</button>
-    </div>
-    <div id="trial-expired-banner" style="display:none;background:#fef2f2;border:1px solid #fecaca;color:#991b1b;padding:12px 20px;border-radius:10px;margin:0 0 16px 0;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:14px;">
-      <div style="display:flex;align-items:center;gap:10px;">
-        <span style="font-size:18px;">&#9888;</span>
-        <span>Your free trial has ended. Upgrade to Business to unlock all features.</span>
-      </div>
-      <button onclick="navigateTo('billing')" style="background:#1a56db;color:white;border:none;padding:6px 16px;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;">Upgrade Now</button>
-    </div>
+    <!-- Trial banners removed -->
+    <div id="trial-banner" style="display:none !important;"></div>
+    <div id="trial-expired-banner" style="display:none !important;"></div>
 
     <!-- ======== DASHBOARD PAGE ======== -->
     <section id="page-dashboard" class="page-content active">
@@ -1364,13 +1352,14 @@
                 <th class="tx-sort-th" data-sort="date" onclick="txSetSort('date')" style="text-align:left;cursor:pointer;user-select:none;">Date <span class="tx-sort-arrow"></span></th>
                 <th class="tx-sort-th" data-sort="merchant_name" onclick="txSetSort('merchant_name')" style="text-align:left;cursor:pointer;user-select:none;">Merchant / Description <span class="tx-sort-arrow"></span></th>
                 <th style="text-align:left;">Account</th>
+                <th style="text-align:left;">Vendor</th>
                 <th style="text-align:left;">Category</th>
                 <th class="tx-sort-th" data-sort="amount" onclick="txSetSort('amount')" style="text-align:right;cursor:pointer;user-select:none;">Amount <span class="tx-sort-arrow"></span></th>
                 <th style="text-align:right;">Actions</th>
               </tr>
             </thead>
             <tbody id="tx-body">
-              <tr><td colspan="7" style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company in the sidebar to see transactions.</td></tr>
+              <tr><td colspan="8" style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company in the sidebar to see transactions.</td></tr>
             </tbody>
           </table>
         </div>
@@ -2136,11 +2125,19 @@
       </div>
     </div>
     <hr style="border:none;border-top:1px solid var(--color-border);margin:12px 0;">
-    <div class="form-group">
-      <label class="form-label">Then &rarr; Set category</label>
-      <select class="form-select" id="rule-set-category">
-        <option value="">(don't set a category)</option>
-      </select>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Then &rarr; Set category</label>
+        <select class="form-select" id="rule-set-category">
+          <option value="">(don't set a category)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Set vendor (optional)</label>
+        <select class="form-select" id="rule-set-vendor">
+          <option value="">(don't set a vendor)</option>
+        </select>
+      </div>
     </div>
     <div style="display:flex;gap:16px;align-items:center;margin-bottom:12px;font-size:var(--text-sm);">
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
