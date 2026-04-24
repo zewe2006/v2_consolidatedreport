@@ -11,13 +11,17 @@
   --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
 }
 
-/* --- Type Scale --- */
+/* --- Type Scale ---
+   Fixed sizes matching Tailwind (which Financials uses). Earlier `clamp()`
+   caused v2 to render ~1-2px larger than Financials on wide monitors. */
 :root {
-  --text-xs:   clamp(0.75rem,  0.7rem  + 0.25vw, 0.875rem);
-  --text-sm:   clamp(0.875rem, 0.8rem  + 0.35vw, 1rem);
-  --text-base: clamp(1rem,     0.95rem + 0.25vw, 1.125rem);
-  --text-lg:   clamp(1.125rem, 1rem    + 0.75vw, 1.5rem);
-  --text-xl:   clamp(1.5rem,   1.2rem  + 1.25vw, 2.25rem);
+  --text-xxs:  0.625rem;   /* 10px */
+  --text-xs:   0.75rem;    /* 12px */
+  --text-sm:   0.875rem;   /* 14px — default body in table rows */
+  --text-base: 1rem;       /* 16px */
+  --text-lg:   1.125rem;   /* 18px */
+  --text-xl:   1.25rem;    /* 20px — was up to 36px on wide screens */
+  --text-2xl:  1.5rem;     /* 24px */
 }
 
 /* --- Spacing --- */
