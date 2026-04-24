@@ -6464,17 +6464,13 @@ function openRuleEditModal(id) {
   accSel.innerHTML = '<option value="">Any account</option>' +
     (_txState.accounts || []).map((a) => `<option value="${a.id}" ${r?.match?.account_id === a.id ? "selected" : ""}>${_escapeHtml(a.name)}${a.mask ? " ···" + a.mask : ""}</option>`).join("");
 
-  // Category dropdown
-  const catSel = document.getElementById("rule-set-category");
-  catSel.innerHTML = '<option value="">(don\'t set a category)</option>' +
-    (_txState.categories || []).map((c) => `<option value="${c.id}" ${r?.action?.set_category_id === c.id ? "selected" : ""}>${_escapeHtml(c.code ? c.code + " " : "")}${_escapeHtml(c.name)}</option>`).join("");
+  // Category combobox (type-to-filter via native datalist)
+  _ruleRenderComboOptions("category");
+  _ruleSetComboValue("category", r?.action?.set_category_id || "");
 
-  // Vendor dropdown (with quick + New Vendor sentinel)
-  const vendSel = document.getElementById("rule-set-vendor");
-  if (vendSel) {
-    _ruleRenderVendorOptions(r?.action?.set_vendor_id || "");
-    vendSel.onchange = _ruleVendorChanged;
-  }
+  // Vendor combobox (type-to-filter + quick "create new" when no match)
+  _ruleRenderComboOptions("vendor");
+  _ruleSetComboValue("vendor", r?.action?.set_vendor_id || "");
 
   document.getElementById("rule-error").style.display = "none";
   document.getElementById("rule-preview-count").textContent = "";
@@ -6482,22 +6478,98 @@ function openRuleEditModal(id) {
   document.getElementById("rule-edit-modal").style.display = "flex";
 }
 
-function _ruleRenderVendorOptions(selectedId) {
-  const sel = document.getElementById("rule-set-vendor");
-  if (!sel) return;
-  sel.innerHTML = '<option value="">(don\'t set a vendor)</option>'
-    + (_rulesState.vendors || []).map((v) => `<option value="${v.id}" ${selectedId === v.id ? "selected" : ""}>${_escapeHtml(v.display_name)}</option>`).join("")
-    + '<option value="__new__" style="font-weight:600;">+ New Vendor…</option>';
-  if (selectedId) sel.value = selectedId;
+// ---- Rule editor comboboxes (type-to-filter via native datalist) ----
+// Both the category and vendor pickers are <input list="..."> elements
+// backed by a hidden <input> that stores the resolved id. Labels include
+// the code/name for categories and display_name for vendors. On input
+// change we resolve back to an id; if nothing matches, vendor mode
+// offers a quick-create, category mode clears.
+
+function _ruleComboSource(kind) {
+  if (kind === "category") {
+    const cats = _txState.categories || [];
+    return cats.map((c) => ({
+      id: c.id,
+      label: (c.code ? c.code + " " : "") + c.name,
+    }));
+  }
+  const vs = _rulesState.vendors || [];
+  return vs.map((v) => ({ id: v.id, label: v.display_name }));
 }
 
-function _ruleVendorChanged() {
-  const sel = document.getElementById("rule-set-vendor");
-  if (sel.value !== "__new__") return;
-  sel.value = "";
-  _rulesState.pendingVendorRefresh = true;
-  _contactsState.kind = "vendor";
-  openVendorEdit(null);
+function _ruleRenderComboOptions(kind) {
+  const dl = document.getElementById(kind === "category" ? "rule-category-options" : "rule-vendor-options");
+  if (!dl) return;
+  const src = _ruleComboSource(kind);
+  dl.innerHTML = src.map((o) => `<option value="${_escapeHtml(o.label)}"></option>`).join("");
+}
+
+function _ruleSetComboValue(kind, id) {
+  const input = document.getElementById(kind === "category" ? "rule-set-category-input" : "rule-set-vendor-input");
+  const hidden = document.getElementById(kind === "category" ? "rule-set-category" : "rule-set-vendor");
+  if (!input || !hidden) return;
+  const src = _ruleComboSource(kind);
+  const match = src.find((o) => o.id === id);
+  input.value = match ? match.label : "";
+  hidden.value = id || "";
+}
+
+async function _ruleComboChanged(kind) {
+  const input = document.getElementById(kind === "category" ? "rule-set-category-input" : "rule-set-vendor-input");
+  const hidden = document.getElementById(kind === "category" ? "rule-set-category" : "rule-set-vendor");
+  const text = (input.value || "").trim();
+  if (!text) { hidden.value = ""; return; }
+  const src = _ruleComboSource(kind);
+  // Exact match (case-insensitive)
+  const exact = src.find((o) => o.label.toLowerCase() === text.toLowerCase());
+  if (exact) { hidden.value = exact.id; return; }
+  // No exact match yet — user may still be typing. Leave hidden blank and
+  // react only when the user tabs away or presses Enter. We detect "commit"
+  // by binding once below.
+  hidden.value = "";
+  // Lazy-attach a commit handler. Using blur for UX.
+  if (!input.dataset.commitBound) {
+    input.dataset.commitBound = "1";
+    input.addEventListener("blur", () => _ruleComboCommit(kind));
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); _ruleComboCommit(kind); }
+    });
+  }
+}
+
+async function _ruleComboCommit(kind) {
+  const input = document.getElementById(kind === "category" ? "rule-set-category-input" : "rule-set-vendor-input");
+  const hidden = document.getElementById(kind === "category" ? "rule-set-category" : "rule-set-vendor");
+  const text = (input.value || "").trim();
+  if (!text) { hidden.value = ""; return; }
+  const src = _ruleComboSource(kind);
+  const exact = src.find((o) => o.label.toLowerCase() === text.toLowerCase());
+  if (exact) { hidden.value = exact.id; return; }
+  if (kind === "vendor") {
+    if (confirm(`Vendor "${text}" doesn't exist yet. Create it now?`)) {
+      try {
+        const r = await apiPost(`/api/vendors/${selectedCompanyId}`, { display_name: text });
+        const newId = r.vendor?.id || r.id;
+        if (newId) {
+          // Refresh list
+          const resp = await apiGet(`/api/vendors/${selectedCompanyId}`);
+          _rulesState.vendors = resp.vendors || [];
+          _ruleRenderComboOptions("vendor");
+          _ruleSetComboValue("vendor", newId);
+          showToast(`Created vendor "${text}".`, "success");
+          return;
+        }
+      } catch (e) {
+        showToast("Create failed: " + (e.message || e), "error");
+      }
+    }
+    // Revert input
+    _ruleSetComboValue("vendor", "");
+  } else {
+    // Categories: can't quick-create (need type, code). Revert input.
+    showToast(`"${text}" is not a category. Use Chart of Accounts to add one.`, "info");
+    _ruleSetComboValue("category", "");
+  }
 }
 
 function closeRuleEditModal() {
@@ -7682,13 +7754,14 @@ async function contactSave() {
       } catch (e) { /* best-effort */ }
       _docState.pendingPartyRefresh = false;
     }
-    // Same pattern for the Rule editor vendor dropdown.
+    // Same pattern for the Rule editor vendor combobox.
     if (_rulesState && _rulesState.pendingVendorRefresh && kind === "vendor") {
       try {
         const resp = await apiGet(`/api/vendors/${selectedCompanyId}`);
         _rulesState.vendors = resp.vendors || [];
         const match = _rulesState.vendors.find((v) => (v.display_name || "").trim() === name.trim());
-        _ruleRenderVendorOptions(match?.id || "");
+        _ruleRenderComboOptions("vendor");
+        _ruleSetComboValue("vendor", match?.id || "");
       } catch (e) { /* best-effort */ }
       _rulesState.pendingVendorRefresh = false;
     }
