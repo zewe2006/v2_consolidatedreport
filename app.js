@@ -4634,31 +4634,57 @@ function _txRenderBanksSummary() {
   const lastSync = items.map((it) => it.last_synced_at).filter(Boolean).sort().reverse()[0];
   const syncedAgo = lastSync ? _timeAgo(new Date(lastSync)) : "never";
 
+  // Current filter state to render an "active" chip outline
+  const activeBankId = document.getElementById("tx-filter-bank")?.value || "";
+  const activeAcctId = document.getElementById("tx-filter-account")?.value || "";
+
+  const allChip = `<button type="button" onclick="txChipSelectAll()" title="Show transactions from all banks"
+      style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:6px;font-size:var(--text-xs);font-family:inherit;cursor:pointer;
+             background:${!activeBankId && !activeAcctId ? "var(--color-accent)" : "var(--color-bg-muted)"};
+             color:${!activeBankId && !activeAcctId ? "white" : "var(--color-text-primary)"};
+             border:1px solid ${!activeBankId && !activeAcctId ? "var(--color-accent)" : "var(--color-border)"};">
+      All banks
+    </button>`;
+
   const itemsHtml = items.map((it) => {
     const accs = accts.filter((a) => a.plaid_item_id === it.id);
     const issue = it.status && it.status !== "good";
-    return `<div style="display:flex;align-items:center;gap:8px;padding:4px 10px;background:${issue ? "oklch(0.95 0.08 60)" : "var(--color-bg-muted)"};border-radius:6px;font-size:var(--text-xs);">
+    const active = activeBankId === it.id;
+    const bg = active ? "var(--color-accent)" : (issue ? "oklch(0.95 0.08 60)" : "var(--color-bg-muted)");
+    const fg = active ? "white" : "var(--color-text-primary)";
+    const border = active ? "var(--color-accent)" : "var(--color-border)";
+    return `<button type="button" onclick="txChipSelectBank('${it.id}')" title="Filter transactions to ${_escapeHtml(it.institution_name || "this bank")}"
+        style="display:inline-flex;align-items:center;gap:8px;padding:4px 10px;background:${bg};color:${fg};border:1px solid ${border};border-radius:6px;font-size:var(--text-xs);cursor:pointer;font-family:inherit;">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M6 15h4"/></svg>
       <strong>${_escapeHtml(it.institution_name || "Bank")}</strong>
-      <span style="color:var(--color-text-secondary);">${accs.length} account${accs.length === 1 ? "" : "s"}</span>
-      ${issue ? `<span class="badge badge-warning" style="font-size:10px;">${_escapeHtml(it.status)}</span>` : ""}
-    </div>`;
+      <span style="opacity:0.85;">${accs.length} account${accs.length === 1 ? "" : "s"}</span>
+      ${issue && !active ? `<span class="badge badge-warning" style="font-size:10px;">${_escapeHtml(it.status)}</span>` : ""}
+    </button>`;
   }).join("");
 
-  // Also account for the synthetic "QBO Import" placeholder accounts (no plaid_item_id)
+  // Also account for the synthetic "QBO Import" placeholder accounts (no plaid_item_id).
+  // Filter by the placeholder's account_id (since they have no plaid_item).
   const placeholders = accts.filter((a) => !a.plaid_item_id);
   const placeholderHtml = placeholders.map((p) => {
     const safeName = (p.name || "").replace(/'/g, "\\'");
-    return `<div style="display:inline-flex;align-items:center;gap:6px;padding:4px 6px 4px 10px;background:oklch(0.95 0.04 250);border-radius:6px;font-size:var(--text-xs);">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-      <strong>${_escapeHtml(p.name)}</strong>
-      <button title="Delete this QBO import (removes all its transactions)" onclick="txDeleteQboImport('${p.id}','${safeName}')" style="background:transparent;border:none;color:var(--color-error);font-size:16px;cursor:pointer;padding:0 4px;line-height:1;" type="button">&times;</button>
-    </div>`;
+    const active = activeAcctId === p.id;
+    const bg = active ? "var(--color-accent)" : "oklch(0.95 0.04 250)";
+    const fg = active ? "white" : "#0f1d3d";
+    const border = active ? "var(--color-accent)" : "oklch(0.85 0.08 250)";
+    return `<span style="display:inline-flex;align-items:center;gap:4px;background:${bg};color:${fg};border:1px solid ${border};border-radius:6px;font-size:var(--text-xs);">
+      <button type="button" onclick="txChipSelectAccount('${p.id}')" title="Filter transactions to this QBO import"
+          style="display:inline-flex;align-items:center;gap:6px;padding:4px 4px 4px 10px;background:transparent;color:inherit;border:none;cursor:pointer;font-family:inherit;font-size:inherit;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        <strong>${_escapeHtml(p.name)}</strong>
+      </button>
+      <button title="Delete this QBO import (removes all its transactions)" onclick="txDeleteQboImport('${p.id}','${safeName}')" style="background:transparent;border:none;color:${active ? "white" : "var(--color-error)"};font-size:16px;cursor:pointer;padding:0 6px 0 2px;line-height:1;" type="button">&times;</button>
+    </span>`;
   }).join("");
 
   panel.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        ${allChip}
         ${itemsHtml || '<span style="color:var(--color-text-muted);font-size:var(--text-sm);">No live bank connected.</span>'}
         ${placeholderHtml}
       </div>
@@ -4689,6 +4715,34 @@ function _txRenderAccountFilter() {
     scoped.map((a) => `<option value="${a.id}">${_escapeHtml(a.name)}${a.mask ? " ···" + a.mask : ""}</option>`).join("");
 }
 
+function txChipSelectAll() {
+  document.getElementById("tx-filter-bank").value = "";
+  document.getElementById("tx-filter-account").value = "";
+  _txRenderAccountFilter();
+  _txState.offset = 0;
+  txReload();
+  _txRenderBanksSummary();
+}
+
+function txChipSelectBank(bankId) {
+  document.getElementById("tx-filter-bank").value = bankId;
+  document.getElementById("tx-filter-account").value = "";
+  _txRenderAccountFilter();
+  _txState.offset = 0;
+  txReload();
+  _txRenderBanksSummary();
+}
+
+function txChipSelectAccount(accountId) {
+  document.getElementById("tx-filter-bank").value = "";
+  // Account filter takes precedence in our backend params
+  document.getElementById("tx-filter-account").value = accountId;
+  _txRenderAccountFilter();
+  _txState.offset = 0;
+  txReload();
+  _txRenderBanksSummary();
+}
+
 async function txDeleteQboImport(placeholderId, label) {
   const msg = `Delete "${label}"?\n\nThis removes the placeholder account AND every QBO-imported transaction attached to it from this company.\n\nAuto-created CoA accounts stay — remove them individually from the Chart of Accounts page if needed.\n\nType DELETE to confirm.`;
   const answer = prompt(msg);
@@ -4712,6 +4766,7 @@ function txBankChanged() {
   if (acctSel) acctSel.value = "";
   _txRenderAccountFilter();
   txReload();
+  _txRenderBanksSummary();
 }
 
 function txDebouncedReload() {
@@ -5926,7 +5981,7 @@ async function runQboImportPreview() {
     const newList = (r.new_coas || []).slice(0, 25);
     const newHtml = newList.length
       ? `<ul style="margin:6px 0 0 16px;font-size:var(--text-xs);max-height:180px;overflow-y:auto;">
-           ${newList.map((u) => `<li><code>${_escapeHtml(u.coa_code || "")}</code> ${_escapeHtml(u.qbo_name)} <span style="color:var(--color-text-secondary);">(${_escapeHtml(u.coa_type)})</span></li>`).join("")}
+           ${newList.map((u) => `<li><code>${_escapeHtml(u.coa_code || "")}</code> ${_escapeHtml(u.qbo_name)} <span style="color:#5a6478;">(${_escapeHtml(u.coa_type)})</span></li>`).join("")}
            ${r.new_coa_count > newList.length ? `<li>… and ${r.new_coa_count - newList.length} more</li>` : ""}
          </ul>`
       : '<div style="margin-top:6px;color:var(--color-success);">Every QBO account name already has an exact match — no new CoA rows will be created.</div>';
@@ -5940,7 +5995,7 @@ async function runQboImportPreview() {
         <div><strong>QBO accounts found:</strong> ${r.qbo_account_count} total · ${r.existing_match_count} already mapped · ${r.new_coa_count} new to create</div>
       </div>
       ${r.new_coa_count ? `<div style="margin-top:10px;"><strong>New CoA accounts that will be created:</strong>${newHtml}</div>` : newHtml}
-      <div style="margin-top:10px;font-size:var(--text-xs);color:var(--color-text-secondary);">
+      <div style="margin-top:10px;font-size:var(--text-xs);color:#5a6478;">
         Nothing has been written yet. Review, then click <strong>Confirm &amp; Run Import</strong> below — or
         <strong>Change options</strong> to tweak the date range.
       </div>`;
@@ -5986,7 +6041,7 @@ async function runQboImportConfirm() {
     const createdHtml = createdList.length
       ? `<div style="margin-top:8px;"><strong>${r.created_accounts_count} new CoA account${r.created_accounts_count === 1 ? "" : "s"}</strong> created:
            <ul style="margin:4px 0 0 16px;font-size:var(--text-xs);">
-             ${createdList.map((u) => `<li><code>${_escapeHtml(u.coa_code || "")}</code> ${_escapeHtml(u.qbo_name)} <span style="color:var(--color-text-secondary);">(${_escapeHtml(u.coa_type)})</span></li>`).join("")}
+             ${createdList.map((u) => `<li><code>${_escapeHtml(u.coa_code || "")}</code> ${_escapeHtml(u.qbo_name)} <span style="color:#5a6478;">(${_escapeHtml(u.coa_type)})</span></li>`).join("")}
              ${r.created_accounts_count > createdList.length ? `<li>… and ${r.created_accounts_count - createdList.length} more</li>` : ""}
            </ul></div>`
       : '<div style="margin-top:8px;color:var(--color-success);">No new CoA rows needed.</div>';
@@ -5996,7 +6051,7 @@ async function runQboImportConfirm() {
       <div><strong>${r.imported.toLocaleString()}</strong> transactions imported from
         <strong>${_escapeHtml(r.source_company)}</strong> into
         <strong>${_escapeHtml(r.dest_company)}</strong> across ${r.months_processed} month${r.months_processed === 1 ? "" : "s"}.</div>
-      <div style="font-size:var(--text-xs);color:var(--color-text-secondary);margin-top:2px;">Skipped ${r.skipped.toLocaleString()} rows (no account / no amount / no date).</div>
+      <div style="font-size:var(--text-xs);color:#3a4a3a;margin-top:2px;">Skipped ${r.skipped.toLocaleString()} rows (no account / no amount / no date).</div>
       ${createdHtml}
       <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px;">
         <button class="btn btn-sm btn-primary" onclick="setSelectedCompany('${form.dest_manual_company_id}');navigateTo('transactions');closeQboImportModal();" type="button">Open Transactions</button>
