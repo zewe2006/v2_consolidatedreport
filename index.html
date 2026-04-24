@@ -158,6 +158,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
           <span>Invoices</span>
         </a></li>
+        <li><a href="#ar-aging" data-page="ar-aging">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          <span>AR Aging</span>
+        </a></li>
       </ul>
     </div>
 
@@ -172,6 +176,10 @@
         <li><a href="#bills" data-page="bills">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M12 18v-6M9 15h6"/></svg>
           <span>Bills</span>
+        </a></li>
+        <li><a href="#ap-aging" data-page="ap-aging">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          <span>AP Aging</span>
         </a></li>
       </ul>
     </div>
@@ -1287,6 +1295,10 @@
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
               Re-run Rules
             </button>
+            <button class="btn btn-secondary btn-sm" onclick="openTransferDetect()" type="button" title="Find transaction pairs that are transfers between accounts or companies">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 16V4M7 4L3 8M7 4l4 4M17 8v12M17 20l-4-4M17 20l4-4"/></svg>
+              Detect Transfers
+            </button>
             <button class="btn btn-secondary btn-sm" onclick="txSync()" type="button">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 4v6h6M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
               Sync Now
@@ -1606,6 +1618,36 @@
             <tbody id="bills-body"><tr><td colspan="8" style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company in the sidebar.</td></tr></tbody>
           </table>
         </div>
+      </div>
+    </section>
+
+    <!-- ======== AR AGING PAGE ======== -->
+    <section id="page-ar-aging" class="page-content">
+      <div class="card mb-4">
+        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+          <span class="card-title" id="ar-aging-page-title">AR Aging</span>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <label style="font-size:var(--text-xs);">As of</label>
+            <input class="form-input form-input-sm" type="date" id="ar-aging-as-of" onchange="arAgingReload()" style="width:160px;">
+            <button class="btn btn-secondary btn-sm" onclick="arAgingExportCsv()" type="button">Export CSV</button>
+          </div>
+        </div>
+        <div id="ar-aging-body" style="padding:0 var(--space-1);"></div>
+      </div>
+    </section>
+
+    <!-- ======== AP AGING PAGE ======== -->
+    <section id="page-ap-aging" class="page-content">
+      <div class="card mb-4">
+        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+          <span class="card-title" id="ap-aging-page-title">AP Aging</span>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <label style="font-size:var(--text-xs);">As of</label>
+            <input class="form-input form-input-sm" type="date" id="ap-aging-as-of" onchange="apAgingReload()" style="width:160px;">
+            <button class="btn btn-secondary btn-sm" onclick="apAgingExportCsv()" type="button">Export CSV</button>
+          </div>
+        </div>
+        <div id="ap-aging-body" style="padding:0 var(--space-1);"></div>
       </div>
     </section>
 
@@ -2155,6 +2197,39 @@
       <button class="btn btn-primary" id="journal-save-btn" onclick="journalSave()" type="button">Save Entry</button>
       <button class="btn btn-secondary" onclick="closeJournalEditModal()" type="button">Cancel</button>
     </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: Transfer Detection ======== -->
+<div id="transfer-detect-modal" class="modal-overlay">
+  <div class="modal-content" style="max-width:1000px;max-height:88vh;display:flex;flex-direction:column;">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:var(--text-lg);">Detect Transfers</h3>
+      <button class="modal-close" onclick="closeTransferDetect()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--color-text-secondary);">&times;</button>
+    </div>
+    <div style="font-size:var(--text-sm);color:var(--color-text-secondary);margin-bottom:12px;">
+      Scans transactions across all your manual companies for pairs (outflow ↔ inflow of equal amount, within a few days)
+      that are likely transfers. Confirmed pairs get flagged <strong>is_transfer = true</strong> and drop out of P&amp;L.
+    </div>
+    <div class="form-row" style="margin-bottom:8px;">
+      <div class="form-group"><label class="form-label">From</label>
+        <input class="form-input" type="date" id="xfer-date-from"></div>
+      <div class="form-group"><label class="form-label">To</label>
+        <input class="form-input" type="date" id="xfer-date-to"></div>
+      <div class="form-group"><label class="form-label">Window (days)</label>
+        <input class="form-input" type="number" id="xfer-window" value="3"></div>
+      <div class="form-group" style="display:flex;align-items:end;">
+        <label style="display:flex;align-items:center;gap:6px;font-size:var(--text-sm);">
+          <input type="checkbox" id="xfer-same-co-only"> Same company only
+        </label>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;">
+      <button class="btn btn-primary btn-sm" id="xfer-scan-btn" onclick="transferScan()" type="button">Scan for pairs</button>
+      <div id="xfer-summary" style="font-size:var(--text-sm);color:var(--color-text-secondary);"></div>
+    </div>
+    <div id="xfer-results" style="flex:1;overflow-y:auto;font-size:var(--text-sm);"></div>
+    <div id="xfer-error" style="display:none;color:var(--color-error);font-size:var(--text-sm);margin-top:8px;"></div>
   </div>
 </div>
 

@@ -442,6 +442,8 @@ function navigateTo(page) {
     vendors: "Vendors",
     invoices: "Invoices",
     bills: "Bills",
+    "ar-aging": "AR Aging",
+    "ap-aging": "AP Aging",
   });
   document.getElementById("page-title").textContent = allTitles[page] || "Dashboard";
   location.hash = page;
@@ -482,6 +484,8 @@ function navigateTo(page) {
   if (page === "vendors") vendorsInit();
   if (page === "invoices") invoicesInit();
   if (page === "bills") billsInit();
+  if (page === "ar-aging") arAgingInit();
+  if (page === "ap-aging") apAgingInit();
 }
 
 window.addEventListener("hashchange", () => {
@@ -7319,6 +7323,273 @@ async function paymentSave() {
     errEl.textContent = "Failed: " + (e.message || "unknown");
     errEl.style.display = "block";
   }
+}
+
+
+// =====================================================================
+//  AR / AP AGING
+// =====================================================================
+
+async function arAgingInit() { return _agingInit("ar"); }
+async function apAgingInit() { return _agingInit("ap"); }
+async function arAgingReload() { return _agingLoad("ar"); }
+async function apAgingReload() { return _agingLoad("ap"); }
+
+async function _agingInit(kind) {
+  const body = document.getElementById(`${kind}-aging-body`);
+  if (!selectedCompanyId) { body.innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company.</div>'; return; }
+  const company = _getSelectedCompany();
+  if (!company || company.source !== "manual") { body.innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">Aging is only for manual companies.</div>'; return; }
+  document.getElementById(`${kind}-aging-page-title`).textContent = `${kind.toUpperCase()} Aging — ${company.name}`;
+  const asOf = document.getElementById(`${kind}-aging-as-of`);
+  if (!asOf.value) asOf.value = new Date().toISOString().slice(0, 10);
+  await _agingLoad(kind);
+}
+
+async function _agingLoad(kind) {
+  const body = document.getElementById(`${kind}-aging-body`);
+  body.innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">Loading...</div>';
+  const asOf = document.getElementById(`${kind}-aging-as-of`).value || new Date().toISOString().slice(0, 10);
+  const url = `/api/reports/${kind}-aging/${selectedCompanyId}?as_of=${asOf}`;
+  try {
+    const r = await apiGet(url);
+    _agingRender(kind, r);
+  } catch (e) {
+    body.innerHTML = `<div style="text-align:center;padding:24px;color:var(--color-error);">${_escapeHtml(e.message)}</div>`;
+  }
+}
+
+function _agingRender(kind, r) {
+  const body = document.getElementById(`${kind}-aging-body`);
+  const parties = r.parties || [];
+  const t = r.totals || {};
+  const label = kind === "ar" ? "Customer" : "Vendor";
+  if (!parties.length) {
+    body.innerHTML = `<div style="text-align:center;padding:24px;color:var(--color-text-muted);">No open ${kind === "ar" ? "invoices" : "bills"} as of ${r.as_of}. 🎉</div>`;
+    return;
+  }
+  const fmt = (v) => v ? parseFloat(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—";
+  body.innerHTML = `
+    <table class="data-table" style="width:100%;font-size:var(--text-sm);">
+      <thead><tr>
+        <th style="text-align:left;">${label}</th>
+        <th style="text-align:right;">Current</th>
+        <th style="text-align:right;">1–30</th>
+        <th style="text-align:right;">31–60</th>
+        <th style="text-align:right;">61–90</th>
+        <th style="text-align:right;">90+</th>
+        <th style="text-align:right;">Total</th>
+      </tr></thead>
+      <tbody>
+        ${parties.map((p) => `<tr>
+          <td><strong>${_escapeHtml(p.party_name)}</strong></td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;">${fmt(p.current)}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;">${fmt(p.d1_30)}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;">${fmt(p.d31_60)}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;">${fmt(p.d61_90)}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;${p.d90_plus > 0 ? "color:var(--color-error);" : ""}">${fmt(p.d90_plus)}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600;">${fmt(p.total)}</td>
+        </tr>`).join("")}
+        <tr style="border-top:2px solid var(--color-border);">
+          <td><strong>TOTAL</strong></td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;"><strong>${fmt(t.current)}</strong></td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;"><strong>${fmt(t.d1_30)}</strong></td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;"><strong>${fmt(t.d31_60)}</strong></td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;"><strong>${fmt(t.d61_90)}</strong></td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;${t.d90_plus > 0 ? "color:var(--color-error);" : ""}"><strong>${fmt(t.d90_plus)}</strong></td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;font-size:var(--text-md);"><strong>${fmt(t.total)}</strong></td>
+        </tr>
+      </tbody>
+    </table>
+    <details style="margin-top:12px;">
+      <summary style="cursor:pointer;font-size:var(--text-sm);color:var(--color-text-secondary);">Show documents by age</summary>
+      <div style="margin-top:8px;">
+        ${parties.map((p) => `<div style="margin-top:10px;">
+          <div style="font-weight:600;font-size:var(--text-sm);">${_escapeHtml(p.party_name)}</div>
+          <table class="data-table" style="width:100%;font-size:var(--text-xs);margin-top:4px;">
+            <thead><tr><th>Date</th><th>Due</th><th>#</th><th style="text-align:center;">Age</th><th style="text-align:right;">Total</th><th style="text-align:right;">Balance</th></tr></thead>
+            <tbody>${p.docs.map((d) => `<tr>
+              <td>${d.date}</td>
+              <td>${d.due_date || "—"}</td>
+              <td>${_escapeHtml(d.number || "—")}</td>
+              <td style="text-align:center;${d.days_overdue > 0 ? "color:var(--color-warning);" : ""}">${d.days_overdue > 0 ? d.days_overdue + "d" : "current"}</td>
+              <td style="text-align:right;">${fmt(d.total)}</td>
+              <td style="text-align:right;">${fmt(d.balance)}</td>
+            </tr>`).join("")}</tbody>
+          </table>
+        </div>`).join("")}
+      </div>
+    </details>
+    <div style="margin-top:8px;font-size:var(--text-xs);color:var(--color-text-muted);">As of ${r.as_of}</div>`;
+}
+
+function arAgingExportCsv() { return _agingExport("ar"); }
+function apAgingExportCsv() { return _agingExport("ap"); }
+
+async function _agingExport(kind) {
+  const asOf = document.getElementById(`${kind}-aging-as-of`).value || new Date().toISOString().slice(0, 10);
+  try {
+    const r = await apiGet(`/api/reports/${kind}-aging/${selectedCompanyId}?as_of=${asOf}`);
+    const header = [kind === "ar" ? "Customer" : "Vendor", "Current", "1-30", "31-60", "61-90", "90+", "Total"];
+    const lines = [header.join(",")];
+    for (const p of r.parties || []) {
+      const row = [p.party_name, p.current, p.d1_30, p.d31_60, p.d61_90, p.d90_plus, p.total]
+        .map((v) => `"${String(v).replace(/"/g, '""')}"`);
+      lines.push(row.join(","));
+    }
+    const t = r.totals || {};
+    lines.push(["TOTAL", t.current, t.d1_30, t.d31_60, t.d61_90, t.d90_plus, t.total]
+      .map((v) => `"${v}"`).join(","));
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `${kind}-aging-${asOf}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) { showToast("Export failed: " + e.message, "error"); }
+}
+
+
+// =====================================================================
+//  TRANSFER DETECTION
+// =====================================================================
+
+let _xferPairs = [];
+
+function openTransferDetect() {
+  const today = new Date();
+  const from = new Date(today);
+  from.setDate(from.getDate() - 90);
+  document.getElementById("xfer-date-from").value = from.toISOString().slice(0, 10);
+  document.getElementById("xfer-date-to").value = today.toISOString().slice(0, 10);
+  document.getElementById("xfer-window").value = "3";
+  document.getElementById("xfer-same-co-only").checked = false;
+  document.getElementById("xfer-summary").textContent = "";
+  document.getElementById("xfer-results").innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">Click <strong>Scan for pairs</strong> to find transfers.</div>';
+  document.getElementById("xfer-error").style.display = "none";
+  const m = document.getElementById("transfer-detect-modal");
+  m.classList.add("active"); m.style.display = "flex";
+}
+function closeTransferDetect() {
+  const m = document.getElementById("transfer-detect-modal");
+  m.classList.remove("active"); m.style.display = "none";
+}
+
+async function transferScan() {
+  const errEl = document.getElementById("xfer-error");
+  errEl.style.display = "none";
+  const btn = document.getElementById("xfer-scan-btn");
+  const results = document.getElementById("xfer-results");
+  const summary = document.getElementById("xfer-summary");
+  btn.disabled = true; btn.textContent = "Scanning...";
+  results.innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">Scanning transactions...</div>';
+  try {
+    const r = await apiPost("/api/transfers/detect", {
+      date_from: document.getElementById("xfer-date-from").value,
+      date_to: document.getElementById("xfer-date-to").value,
+      date_window_days: parseInt(document.getElementById("xfer-window").value || "3", 10),
+      same_company_only: document.getElementById("xfer-same-co-only").checked,
+    });
+    _xferPairs = r.pairs || [];
+    summary.textContent = `Scanned ${r.scanned.toLocaleString()} txns (${r.outflows_scanned} outflows · ${r.inflows_scanned} inflows) → ${_xferPairs.length} suggested pair${_xferPairs.length === 1 ? "" : "s"}`;
+    _renderTransferResults();
+  } catch (e) {
+    errEl.textContent = "Scan failed: " + e.message;
+    errEl.style.display = "block";
+    results.innerHTML = "";
+  } finally {
+    btn.disabled = false; btn.textContent = "Scan for pairs";
+  }
+}
+
+function _renderTransferResults() {
+  const results = document.getElementById("xfer-results");
+  if (!_xferPairs.length) {
+    results.innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">No transfer pairs detected in this window.</div>';
+    return;
+  }
+  results.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <div style="font-size:var(--text-xs);color:var(--color-text-secondary);">
+        Each pair: one outflow matched with one inflow of equal amount. Confirming marks both as transfer (drops from P&L).
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="transferConfirmAll()" type="button">Confirm all (${_xferPairs.length})</button>
+    </div>
+    <table class="data-table" style="width:100%;font-size:var(--text-sm);">
+      <thead><tr>
+        <th>Date</th>
+        <th style="text-align:right;">Amount</th>
+        <th>Out of</th>
+        <th>Into</th>
+        <th style="text-align:center;">Score</th>
+        <th style="text-align:right;">Actions</th>
+      </tr></thead>
+      <tbody>${_xferPairs.map((p, i) => {
+        const amt = Math.abs(parseFloat(p.outflow.amount)).toFixed(2);
+        const intercoTag = p.is_intercompany ? ' <span class="badge badge-neutral" style="font-size:10px;">inter-co</span>' : "";
+        const dateLabel = p.days_diff ? `${p.outflow.date} → ${p.inflow.date} (${p.days_diff}d)` : p.outflow.date;
+        return `<tr data-pair-idx="${i}">
+          <td>${dateLabel}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;"><strong>${amt}</strong></td>
+          <td>
+            <div><strong>${_escapeHtml(p.outflow.company_name || "")}</strong>${intercoTag}</div>
+            <div style="font-size:var(--text-xs);color:var(--color-text-secondary);">${_escapeHtml(p.outflow.merchant || "—")}</div>
+          </td>
+          <td>
+            <div><strong>${_escapeHtml(p.inflow.company_name || "")}</strong></div>
+            <div style="font-size:var(--text-xs);color:var(--color-text-secondary);">${_escapeHtml(p.inflow.merchant || "—")}</div>
+          </td>
+          <td style="text-align:center;font-variant-numeric:tabular-nums;">${p.score}</td>
+          <td style="text-align:right;">
+            <button class="btn btn-sm btn-primary" onclick="transferConfirmOne(${i})" type="button">Confirm</button>
+            <button class="btn btn-sm btn-ghost" onclick="transferSkipOne(${i})" type="button">Skip</button>
+          </td>
+        </tr>`;
+      }).join("")}</tbody>
+    </table>`;
+}
+
+async function transferConfirmOne(idx) {
+  const p = _xferPairs[idx];
+  if (!p) return;
+  try {
+    await apiPost("/api/transfers/confirm", {
+      outflow_id: p.outflow.id,
+      inflow_id:  p.inflow.id,
+    });
+    // Remove from list
+    _xferPairs.splice(idx, 1);
+    _renderTransferResults();
+    showToast("Transfer confirmed", "success");
+    // Refresh transactions page in the background
+    if ((location.hash || "").includes("transactions")) txReload();
+  } catch (e) {
+    showToast("Failed: " + e.message, "error");
+  }
+}
+
+function transferSkipOne(idx) {
+  _xferPairs.splice(idx, 1);
+  _renderTransferResults();
+}
+
+async function transferConfirmAll() {
+  if (!_xferPairs.length) return;
+  if (!confirm(`Confirm all ${_xferPairs.length} suggested transfer pairs?`)) return;
+  let ok = 0, fail = 0;
+  for (const p of [..._xferPairs]) {
+    try {
+      await apiPost("/api/transfers/confirm", {
+        outflow_id: p.outflow.id,
+        inflow_id:  p.inflow.id,
+      });
+      ok++;
+    } catch (e) { fail++; }
+  }
+  _xferPairs = [];
+  _renderTransferResults();
+  document.getElementById("xfer-summary").textContent = `Confirmed ${ok}${fail ? `, ${fail} failed` : ""}`;
+  showToast(`Confirmed ${ok} transfers`, "success");
+  if ((location.hash || "").includes("transactions")) txReload();
 }
 
 
