@@ -1315,11 +1315,11 @@
             <thead>
               <tr>
                 <th style="width:28px;"><input type="checkbox" id="tx-select-all" onchange="txToggleAll(this.checked)"></th>
-                <th style="text-align:left;">Date</th>
-                <th style="text-align:left;">Merchant / Description</th>
+                <th class="tx-sort-th" data-sort="date" onclick="txSetSort('date')" style="text-align:left;cursor:pointer;user-select:none;">Date <span class="tx-sort-arrow"></span></th>
+                <th class="tx-sort-th" data-sort="merchant_name" onclick="txSetSort('merchant_name')" style="text-align:left;cursor:pointer;user-select:none;">Merchant / Description <span class="tx-sort-arrow"></span></th>
                 <th style="text-align:left;">Account</th>
                 <th style="text-align:left;">Category</th>
-                <th style="text-align:right;">Amount</th>
+                <th class="tx-sort-th" data-sort="amount" onclick="txSetSort('amount')" style="text-align:right;cursor:pointer;user-select:none;">Amount <span class="tx-sort-arrow"></span></th>
                 <th style="text-align:right;">Actions</th>
               </tr>
             </thead>

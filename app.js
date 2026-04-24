@@ -4577,6 +4577,7 @@ document.addEventListener("click", (e) => {
 let _txState = {
   limit: 50, offset: 0, has_more: false,
   categories: [], accounts: [], items: [],
+  sort_col: "date", sort_dir: "desc",
 };
 let _txDebounceTimer = null;
 
@@ -4593,6 +4594,7 @@ async function txInit() {
   }
   document.getElementById("tx-page-title").textContent = `Transactions — ${company.name}`;
   _txState.offset = 0;
+  _txRenderSortArrows();
   await Promise.all([_txLoadCategories(), _txLoadAccounts()]);
   await txReload();
 }
@@ -4762,6 +4764,33 @@ async function txDeleteQboImport(placeholderId, label) {
   } catch (e) { showToast("Failed: " + (e.message || "unknown"), "error"); }
 }
 
+function txSetSort(col) {
+  if (_txState.sort_col === col) {
+    _txState.sort_dir = _txState.sort_dir === "asc" ? "desc" : "asc";
+  } else {
+    _txState.sort_col = col;
+    _txState.sort_dir = col === "date" || col === "amount" ? "desc" : "asc";
+  }
+  _txState.offset = 0;
+  _txRenderSortArrows();
+  txReload();
+}
+
+function _txRenderSortArrows() {
+  document.querySelectorAll(".tx-sort-th").forEach((th) => {
+    const col = th.dataset.sort;
+    const arrow = th.querySelector(".tx-sort-arrow");
+    if (!arrow) return;
+    if (col === _txState.sort_col) {
+      arrow.textContent = _txState.sort_dir === "asc" ? " ▲" : " ▼";
+      arrow.style.opacity = "1";
+    } else {
+      arrow.textContent = " ⇅";
+      arrow.style.opacity = "0.35";
+    }
+  });
+}
+
 function txBankChanged() {
   // Rebuild account options to match the selected bank and reset account picker
   const acctSel = document.getElementById("tx-filter-account");
@@ -4799,6 +4828,7 @@ async function txReload() {
   const params = new URLSearchParams({
     limit: String(_txState.limit),
     offset: String(_txState.offset),
+    sort: `${_txState.sort_col}.${_txState.sort_dir}`,
   });
   const search = document.getElementById("tx-filter-search").value.trim();
   if (search) params.set("search", search);
