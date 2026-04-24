@@ -558,54 +558,66 @@ html, body {
   position: sticky;
   left: 0;
   z-index: 1;
-  background: #fff;
+  background: var(--color-surface);
+  color: var(--color-text);
   min-width: 200px;
   white-space: nowrap;
 }
 .by-company-table tbody tr:hover td:first-child {
-  background: #f0f5ff;
+  background: var(--color-surface-offset);
 }
 .by-company-table .co-col {
   min-width: 100px;
   max-width: 130px;
+  color: var(--color-text);
 }
 .by-company-table .total-col {
   min-width: 110px;
-  background: #f0f4ff;
+  background: var(--color-primary-highlight);
+  color: var(--color-text);
   font-weight: 600;
 }
 .by-company-table .total-col-val {
-  background: #f0f4ff;
+  background: var(--color-primary-highlight);
+  color: var(--color-text);
   font-weight: 600;
 }
 .by-company-table tbody td {
   padding: 5px 6px;
+  color: var(--color-text);
 }
 .by-company-table .section-header td {
   position: sticky;
   left: 0;
-  background: var(--color-surface);
+  background: var(--color-surface-offset);
+  color: var(--color-text);
+  font-weight: 700;
 }
 .by-company-table .total-row td {
   border-top: 2px solid var(--color-border);
   font-weight: 600;
+  color: var(--color-text);
 }
 .by-company-table .total-row td:first-child {
-  background: #fff;
+  background: var(--color-surface-offset);
+  color: var(--color-text);
 }
 .by-company-table .total-row:hover td:first-child {
-  background: #f0f5ff;
+  background: var(--color-surface-dynamic);
 }
 /* Grouped comparison headers */
 .by-company-table .by-co-group-header th {
   text-align: center;
   border-bottom: 1px solid var(--color-border);
+  color: var(--color-text);
 }
 .by-company-table .co-col-group {
   background: var(--color-surface);
+  color: var(--color-text);
 }
 .by-company-table .total-col-group {
-  background: #f0f4ff;
+  background: var(--color-primary-highlight);
+  color: var(--color-text);
   font-weight: 600;
 }
 .by-company-table .sub-hdr {
