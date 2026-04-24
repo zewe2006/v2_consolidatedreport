@@ -7470,6 +7470,9 @@ function _fillContactForm(existing) {
 function closeContactEdit() {
   document.getElementById("contact-edit-modal").classList.remove("active");
   document.getElementById("contact-edit-modal").style.display = "none";
+  // Clear any Bill/Invoice refresh-awaiting flag so a later unrelated save
+  // doesn't accidentally trigger party reload.
+  if (_docState) _docState.pendingPartyRefresh = false;
 }
 
 async function contactSave() {
@@ -7506,6 +7509,21 @@ async function contactSave() {
       await apiPatch(url, body);
     } else {
       await apiPost(url, body);
+    }
+    // If the Bill/Invoice editor is awaiting a party refresh, reload its
+    // dropdown and auto-select the contact we just saved (or the newest one).
+    let newlyCreatedId = null;
+    if (_docState.pendingPartyRefresh) {
+      try {
+        await _docLoadParties(_docState.kind);
+        // If this was a new save (no editing id previously), the list is sorted
+        // alphabetically — match by display_name to find the new row.
+        const match = _docState.parties.find((p) => (p.display_name || "").trim() === name.trim());
+        newlyCreatedId = match?.id || null;
+        _docRenderPartyOptions(newlyCreatedId);
+        if (newlyCreatedId) docPartyChanged();
+      } catch (e) { /* best-effort */ }
+      _docState.pendingPartyRefresh = false;
     }
     closeContactEdit();
     if (kind === "customer") await customersReload(); else await vendorsReload();
@@ -7697,9 +7715,7 @@ async function _openDocEdit(kind, id) {
 
   document.getElementById("doc-edit-title").textContent = (id ? "Edit " : "New ") + (kind === "invoice" ? "Invoice" : "Bill");
   document.getElementById("doc-edit-party-label").textContent = kind === "invoice" ? "Customer" : "Vendor";
-  const partySel = document.getElementById("doc-party");
-  partySel.innerHTML = '<option value="">— select —</option>' +
-    _docState.parties.map((p) => `<option value="${p.id}">${_escapeHtml(p.display_name)}</option>`).join("");
+  _docRenderPartyOptions();
 
   // Status options
   const statuses = kind === "invoice" ? _INVOICE_STATUSES : _BILL_STATUSES;
@@ -7747,8 +7763,31 @@ function _suggestDocNumber(kind) {
   return prefix + String(next).padStart(4, "0");
 }
 
-function docPartyChanged() {
-  const party = _docState.parties.find((p) => p.id === document.getElementById("doc-party").value);
+function _docRenderPartyOptions(selectedId) {
+  const partySel = document.getElementById("doc-party");
+  const kind = _docState.kind;
+  const label = kind === "invoice" ? "Customer" : "Vendor";
+  partySel.innerHTML = '<option value="">— select —</option>'
+    + _docState.parties.map((p) => `<option value="${p.id}">${_escapeHtml(p.display_name)}</option>`).join("")
+    + `<option value="__new__" style="font-weight:600;">+ New ${label}…</option>`;
+  if (selectedId) partySel.value = selectedId;
+}
+
+async function docPartyChanged() {
+  const sel = document.getElementById("doc-party");
+  if (sel.value === "__new__") {
+    // Open the contact editor; on save, refresh dropdown and auto-select.
+    const kind = _docState.kind;
+    sel.value = "";  // clear the sentinel immediately
+    _docState.pendingPartyRefresh = true;
+    if (kind === "invoice") {
+      openCustomerEdit(null);
+    } else {
+      openVendorEdit(null);
+    }
+    return;
+  }
+  const party = _docState.parties.find((p) => p.id === sel.value);
   if (party && party.terms_days) {
     const date = document.getElementById("doc-date").value || new Date().toISOString().slice(0, 10);
     const due = new Date(date + "T00:00:00");
