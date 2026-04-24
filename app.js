@@ -5552,10 +5552,10 @@ function _txRender(txs) {
       <td style="font-size:var(--text-xs);white-space:nowrap;">${formatDate(t.date)}${t.pending ? ' <span class="badge badge-warning" style="font-size:var(--text-xxs, 0.625rem);">pending</span>' : ""}</td>
       <td><div style="font-weight:500;">${_escapeHtml(merch)}</div>${descLine}</td>
       <td style="font-size:var(--text-xs);">${acct}</td>
-      <td class="tx-editable" onclick="openVendorPicker('${t.id}')" title="Click to set vendor">
+      <td class="tx-editable" onclick="_txBeginInlineEdit(event, '${t.id}', 'vendor')" title="Click to set vendor">
         <span class="tx-editable-content" style="font-size:var(--text-xs);">${vendorCell}</span>${pencil}
       </td>
-      <td class="tx-editable" style="${catClass}" onclick="openCategoryPicker('${t.id}', '${_escapeHtml(catName).replace(/'/g, "\\'")}')">
+      <td class="tx-editable" style="${catClass}" onclick="_txBeginInlineEdit(event, '${t.id}', 'category')" title="Click to set category">
         <span class="tx-editable-content">${_escapeHtml(catName)}${isSplit ? ' <span class="badge badge-neutral" style="font-size:var(--text-xxs, 0.625rem);">split</span>' : ""}</span>${pencil}
       </td>
       <td style="text-align:right;color:${color};font-variant-numeric:tabular-nums;">${formatNumber(amount)}</td>
@@ -5566,6 +5566,141 @@ function _txRender(txs) {
   }).join("");
 }
 
+
+// ---- Inline row-level type-to-filter editing (Transactions table) ----
+// Click a Category or Vendor cell → the cell's content swaps for an
+// <input list=…> combobox with native autocomplete. Pick or type → PATCH
+// the transaction and re-render in place. Escape cancels.
+
+// Ensure the shared datalists exist once, and refresh their options.
+function _txEnsureInlineDatalists() {
+  if (!document.getElementById("tx-inline-category-options")) {
+    const dl = document.createElement("datalist");
+    dl.id = "tx-inline-category-options";
+    document.body.appendChild(dl);
+  }
+  if (!document.getElementById("tx-inline-vendor-options")) {
+    const dl = document.createElement("datalist");
+    dl.id = "tx-inline-vendor-options";
+    document.body.appendChild(dl);
+  }
+  const catDl = document.getElementById("tx-inline-category-options");
+  catDl.innerHTML = (_txState.categories || [])
+    .map((c) => `<option value="${_escapeHtml(c.name)}"></option>`)
+    .join("");
+  const vDl = document.getElementById("tx-inline-vendor-options");
+  const vendors = (_txState.vendors || []);
+  vDl.innerHTML = vendors
+    .map((v) => `<option value="${_escapeHtml(v.display_name)}"></option>`)
+    .join("");
+}
+
+// Make sure _txState.vendors is populated the first time we need it.
+async function _txEnsureVendorsLoaded() {
+  if (_txState.vendors && _txState.vendors.length >= 0 && _txState._vendorsLoaded) return;
+  try {
+    const r = await apiGet(`/api/vendors/${selectedCompanyId}`);
+    _txState.vendors = r.vendors || [];
+    _txState._vendorsLoaded = true;
+  } catch (e) { _txState.vendors = []; }
+}
+
+async function _txBeginInlineEdit(event, txId, kind) {
+  event.stopPropagation();
+  const cell = event.currentTarget;
+  if (cell.querySelector("input")) return;   // already editing
+  if (kind === "vendor") await _txEnsureVendorsLoaded();
+  _txEnsureInlineDatalists();
+
+  const row = document.querySelector(`tr[data-tx-id="${txId}"]`);
+  const content = cell.querySelector(".tx-editable-content");
+  const currentLabel = content ? content.textContent.replace(/\s*split\s*$/i, "").trim() : "";
+  const datalistId = kind === "category" ? "tx-inline-category-options" : "tx-inline-vendor-options";
+  const placeholder = kind === "category" ? "Type to search…" : "Type to search or create…";
+
+  // Save original HTML so we can restore on cancel
+  const origHtml = cell.innerHTML;
+
+  const input = document.createElement("input");
+  input.className = "tx-inline-input form-input form-input-sm";
+  input.setAttribute("list", datalistId);
+  input.style.cssText = "width:100%;padding:4px 6px;font-size:var(--text-sm);";
+  input.placeholder = placeholder;
+  input.value = currentLabel && currentLabel !== "Uncategorized" && currentLabel !== "—" ? currentLabel : "";
+  cell.innerHTML = "";
+  cell.appendChild(input);
+  input.focus();
+  input.select();
+
+  const commit = async () => {
+    const text = (input.value || "").trim();
+    const source = kind === "category" ? (_txState.categories || []) : (_txState.vendors || []);
+    const keyLower = text.toLowerCase();
+    const labelKey = kind === "category" ? "name" : "display_name";
+    let matched = source.find((o) => (o[labelKey] || "").toLowerCase() === keyLower);
+
+    if (!text) {
+      // Clear
+      const patch = kind === "category" ? { clear_category: true } : { clear_vendor: true };
+      try {
+        await apiPatch(`/api/transactions/${txId}`, patch);
+        await txReload();
+      } catch (e) {
+        showToast("Update failed: " + (e.message || e), "error");
+        cell.innerHTML = origHtml;
+      }
+      return;
+    }
+
+    if (!matched && kind === "vendor") {
+      // Quick-create vendor inline
+      if (!confirm(`Vendor "${text}" doesn't exist. Create it?`)) {
+        cell.innerHTML = origHtml;
+        return;
+      }
+      try {
+        const r = await apiPost(`/api/vendors/${selectedCompanyId}`, { display_name: text });
+        const newId = r.vendor?.id || r.id;
+        const resp = await apiGet(`/api/vendors/${selectedCompanyId}`);
+        _txState.vendors = resp.vendors || [];
+        _txState._vendorsLoaded = true;
+        _txEnsureInlineDatalists();
+        matched = _txState.vendors.find((v) => v.id === newId)
+                || _txState.vendors.find((v) => (v.display_name || "").toLowerCase() === keyLower);
+      } catch (e) {
+        showToast("Create failed: " + (e.message || e), "error");
+        cell.innerHTML = origHtml;
+        return;
+      }
+    }
+
+    if (!matched) {
+      if (kind === "category") showToast(`"${text}" is not a category. Add one in Chart of Accounts first.`, "info");
+      cell.innerHTML = origHtml;
+      return;
+    }
+
+    const patch = kind === "category"
+      ? { category_id: matched.id }
+      : { vendor_id: matched.id };
+    try {
+      await apiPatch(`/api/transactions/${txId}`, patch);
+      await txReload();
+    } catch (e) {
+      showToast("Update failed: " + (e.message || e), "error");
+      cell.innerHTML = origHtml;
+    }
+  };
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); cell.innerHTML = origHtml; }
+    if (e.key === "Enter")  { e.preventDefault(); commit(); }
+  });
+  input.addEventListener("blur", () => {
+    // Give click-on-datalist-suggestion time to set value first
+    setTimeout(commit, 150);
+  });
+}
 
 // Vendor picker — reuses the category picker modal with different data.
 // When opened from a transaction, pre-fills search with the merchant name and
