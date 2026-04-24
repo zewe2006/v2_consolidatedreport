@@ -1307,13 +1307,16 @@
         <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
           <span class="card-title" id="coa-page-title">Chart of Accounts</span>
           <div style="display:flex;gap:8px;">
-            <select class="form-select form-select-sm" id="coa-filter-type" onchange="coaReload()" style="width:160px;">
+            <select class="form-select form-select-sm" id="coa-filter-type" onchange="coaReload()" style="width:180px;">
               <option value="">All types</option>
               <option value="asset">Asset</option>
               <option value="liability">Liability</option>
               <option value="equity">Equity</option>
               <option value="income">Income</option>
+              <option value="sub:cogs">Cost of Goods Sold</option>
               <option value="expense">Expense</option>
+              <option value="sub:other_income">Other Income</option>
+              <option value="sub:other_expense">Other Expense</option>
             </select>
             <input class="form-input form-input-sm" type="search" id="coa-filter-search" placeholder="Search code or name" oninput="coaDebouncedReload()" style="width:220px;">
             <button class="btn btn-primary btn-sm" onclick="openCoaEditModal(null)" type="button">

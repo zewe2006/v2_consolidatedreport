@@ -6144,7 +6144,17 @@ function _coaRender() {
   const search = (document.getElementById("coa-filter-search").value || "").toLowerCase();
   const rows = _coaState.accounts.filter((a) => {
     if (!a.is_active) return false;
-    if (typeFilter && a.type !== typeFilter) return false;
+    if (typeFilter) {
+      if (typeFilter.startsWith("sub:")) {
+        if ((a.subtype || "") !== typeFilter.slice(4)) return false;
+      } else {
+        if (a.type !== typeFilter) return false;
+        // Plain type filters exclude subtyped rows so "Expense" doesn't
+        // also show Cost of Goods Sold / Other Expense entries.
+        if (typeFilter === "expense" && ["cogs", "other_expense"].includes(a.subtype)) return false;
+        if (typeFilter === "income"  && a.subtype === "other_income") return false;
+      }
+    }
     if (search && !(a.name.toLowerCase().includes(search) || a.code.includes(search))) return false;
     return true;
   });
