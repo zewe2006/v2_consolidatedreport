@@ -6773,7 +6773,43 @@ async function ruleSave() {
     }
     closeRuleEditModal();
     await rulesReload();
+    await _rulePromptApplyToPlaid(body);
   } catch (e) { errEl.textContent = "Failed: " + (e.message || "unknown"); errEl.style.display = "block"; }
+}
+
+// After save, count Plaid-auto-categorized transactions that match this
+// rule and offer to apply the rule to them in one click. QBO-imported and
+// user-touched rows are never included — this is purely for overriding
+// Plaid's default PFC guess with the user's new rule.
+async function _rulePromptApplyToPlaid(body) {
+  try {
+    const preview = await apiPost("/api/rules/preview", {
+      company_id: selectedCompanyId,
+      match: body.match,
+      scope: "plaid_only",
+    });
+    const n = preview.matches || 0;
+    if (!n) {
+      showToast("Rule saved.", "success");
+      return;
+    }
+    const ok = confirm(
+      `Rule saved.\n\n` +
+      `This rule matches ${n} Plaid-auto-categorized transaction${n === 1 ? "" : "s"}. ` +
+      `Apply the rule to those rows now?\n\n` +
+      `Only Plaid-auto rows are affected. QBO-imported and manually categorized rows stay as they are.`
+    );
+    if (!ok) {
+      showToast("Rule saved. Existing Plaid-categorized rows left unchanged.", "success");
+      return;
+    }
+    const res = await apiPost(
+      `/api/rules/${selectedCompanyId}/recategorize?scope=plaid_only`, {},
+    );
+    showToast(`Applied: ${res.rule || 0} row${(res.rule || 0) === 1 ? "" : "s"} re-categorized.`, "success");
+  } catch (e) {
+    showToast("Rule saved, but applying it failed: " + (e.message || e), "error");
+  }
 }
 
 
