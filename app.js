@@ -1358,11 +1358,13 @@ function renderTransactionDetail(data) {
 
   // Filter to columns that actually have data
   const activeCols = colMap.filter(c => txns.some(t => t[c.key] && t[c.key] !== ""));
+  const hasEditable = txns.some(t => t.editable && t.id);
 
   let html = '<table class="data-table txn-detail-table"><thead><tr>';
   for (const col of activeCols) {
     html += `<th${col.numeric ? ' class="num"' : ''}>${col.label}</th>`;
   }
+  if (hasEditable) html += '<th style="width:110px;">Actions</th>';
   html += '</tr></thead><tbody>';
 
   let totalDebit = 0, totalCredit = 0, totalAmount = 0;
@@ -1392,11 +1394,22 @@ function renderTransactionDetail(data) {
         html += `<td>${val}</td>`;
       }
     }
+    if (hasEditable) {
+      if (txn.editable && txn.id) {
+        html += `<td style="white-space:nowrap;">`
+             +  `<button class="btn btn-sm btn-ghost" onclick="drillEditTxn('${txn.id}')" title="Change category">Edit</button> `
+             +  `<button class="btn btn-sm btn-ghost" onclick="drillDeleteTxn('${txn.id}')" title="Delete transaction" style="color:var(--color-error);">Delete</button>`
+             +  `</td>`;
+      } else {
+        html += '<td></td>';
+      }
+    }
     html += '</tr>';
   }
 
   // Footer totals
-  html += '<tr class="total-row"><td colspan="' + activeCols.filter(c => !c.numeric).length + '" style="text-align:right;font-weight:600;">Total (' + txns.length + ' transactions)</td>';
+  let summaryColspan = activeCols.filter(c => !c.numeric).length;
+  html += '<tr class="total-row"><td colspan="' + summaryColspan + '" style="text-align:right;font-weight:600;">Total (' + txns.length + ' transactions)</td>';
   for (const col of activeCols) {
     if (!col.numeric) continue;
     if (col.key === "Debit") html += `<td class="num">${fmt(totalDebit)}</td>`;
@@ -1404,10 +1417,66 @@ function renderTransactionDetail(data) {
     else if (col.key === "Amount") html += `<td class="num">${fmt(totalAmount)}</td>`;
     else html += '<td></td>';
   }
+  if (hasEditable) html += '<td></td>';
   html += '</tr>';
 
   html += '</tbody></table>';
   el.innerHTML = html;
+}
+
+async function drillDeleteTxn(txnId) {
+  if (!confirm("Delete this transaction? This cannot be undone.")) return;
+  try {
+    await apiDelete(`/api/transactions/${txnId}`);
+    showToast("Deleted.", "success");
+    // Re-run the drill-down query so the table refreshes without closing the modal
+    if (currentTxnDetail?.account_name) {
+      const ctx = _getActiveReportContext();
+      const data = await apiPost("/api/reports/transaction-detail", {
+        account_name: currentTxnDetail.account_name,
+        company_id: ctx.company_id || "all",
+        company_ids: ctx.company_ids || null,
+        start_date: ctx.start_date || null,
+        end_date: ctx.end_date || null,
+        date_macro: ctx.date_macro || null,
+        accounting_method: ctx.accounting_method || "Accrual",
+      });
+      currentTxnDetail = data;
+      renderTransactionDetail(data);
+    }
+  } catch (e) {
+    showToast("Delete failed: " + (e.message || e), "error");
+  }
+}
+
+async function drillEditTxn(txnId) {
+  // Reuse the main Transactions page inline category picker if available.
+  // Otherwise fall back to a simple prompt.
+  if (typeof openCategoryPicker === "function") {
+    openCategoryPicker(txnId, async (catId) => {
+      try {
+        await apiPatch(`/api/transactions/${txnId}`, { category_id: catId });
+        showToast("Category updated.", "success");
+        // Refresh drill-down
+        if (currentTxnDetail?.account_name) {
+          const ctx = _getActiveReportContext();
+          const data = await apiPost("/api/reports/transaction-detail", {
+            account_name: currentTxnDetail.account_name,
+            company_id: ctx.company_id || "all",
+            company_ids: ctx.company_ids || null,
+            start_date: ctx.start_date || null,
+            end_date: ctx.end_date || null,
+            date_macro: ctx.date_macro || null,
+            accounting_method: ctx.accounting_method || "Accrual",
+          });
+          currentTxnDetail = data;
+          renderTransactionDetail(data);
+        }
+      } catch (e) { showToast("Update failed: " + (e.message || e), "error"); }
+    });
+  } else {
+    showToast("Open the Transactions page to edit this row.", "info");
+  }
 }
 
 function exportTransactionDetail() {
