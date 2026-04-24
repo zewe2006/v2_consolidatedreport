@@ -6419,10 +6419,29 @@ async function rulesDelete(id) {
 }
 
 async function rulesRecategorize() {
-  if (!confirm("Re-run rules on all uncategorized transactions?")) return;
+  const scope = prompt(
+    "Re-run rules on which transactions?\n\n" +
+    "Type one of:\n" +
+    "  uncategorized  \u2014 only rows with no category yet (default)\n" +
+    "  non_user       \u2014 also override Plaid / QBO-imported rows (lets new\n" +
+    "                   rules re-classify existing activity)\n" +
+    "  all            \u2014 also re-run against rows previously set by a rule",
+    "non_user"
+  );
+  if (!scope) return;
+  const validScopes = ["uncategorized", "non_user", "all"];
+  if (!validScopes.includes(scope.trim())) {
+    showToast("Scope must be one of: " + validScopes.join(", "), "error");
+    return;
+  }
   try {
-    const res = await apiPost(`/api/rules/${selectedCompanyId}/recategorize`, {});
-    showToast(`Categorized: ${res.rule || 0} by rule · ${res.plaid || 0} by Plaid · ${res.skipped || 0} still uncategorized`, "success");
+    const res = await apiPost(
+      `/api/rules/${selectedCompanyId}/recategorize?scope=${scope.trim()}`, {},
+    );
+    showToast(
+      `Categorized: ${res.rule || 0} by rule · ${res.plaid || 0} by Plaid · ${res.skipped || 0} skipped`,
+      "success",
+    );
   } catch (e) { showToast("Failed: " + e.message, "error"); }
 }
 
@@ -6450,17 +6469,35 @@ function openRuleEditModal(id) {
   catSel.innerHTML = '<option value="">(don\'t set a category)</option>' +
     (_txState.categories || []).map((c) => `<option value="${c.id}" ${r?.action?.set_category_id === c.id ? "selected" : ""}>${_escapeHtml(c.code ? c.code + " " : "")}${_escapeHtml(c.name)}</option>`).join("");
 
-  // Vendor dropdown
+  // Vendor dropdown (with quick + New Vendor sentinel)
   const vendSel = document.getElementById("rule-set-vendor");
   if (vendSel) {
-    vendSel.innerHTML = '<option value="">(don\'t set a vendor)</option>' +
-      (_rulesState.vendors || []).map((v) => `<option value="${v.id}" ${r?.action?.set_vendor_id === v.id ? "selected" : ""}>${_escapeHtml(v.display_name)}</option>`).join("");
+    _ruleRenderVendorOptions(r?.action?.set_vendor_id || "");
+    vendSel.onchange = _ruleVendorChanged;
   }
 
   document.getElementById("rule-error").style.display = "none";
   document.getElementById("rule-preview-count").textContent = "";
   document.getElementById("rule-edit-modal").classList.add("active");
   document.getElementById("rule-edit-modal").style.display = "flex";
+}
+
+function _ruleRenderVendorOptions(selectedId) {
+  const sel = document.getElementById("rule-set-vendor");
+  if (!sel) return;
+  sel.innerHTML = '<option value="">(don\'t set a vendor)</option>'
+    + (_rulesState.vendors || []).map((v) => `<option value="${v.id}" ${selectedId === v.id ? "selected" : ""}>${_escapeHtml(v.display_name)}</option>`).join("")
+    + '<option value="__new__" style="font-weight:600;">+ New Vendor…</option>';
+  if (selectedId) sel.value = selectedId;
+}
+
+function _ruleVendorChanged() {
+  const sel = document.getElementById("rule-set-vendor");
+  if (sel.value !== "__new__") return;
+  sel.value = "";
+  _rulesState.pendingVendorRefresh = true;
+  _contactsState.kind = "vendor";
+  openVendorEdit(null);
 }
 
 function closeRuleEditModal() {
@@ -7591,9 +7628,10 @@ function _fillContactForm(existing) {
 function closeContactEdit() {
   document.getElementById("contact-edit-modal").classList.remove("active");
   document.getElementById("contact-edit-modal").style.display = "none";
-  // Clear any Bill/Invoice refresh-awaiting flag so a later unrelated save
-  // doesn't accidentally trigger party reload.
-  if (_docState) _docState.pendingPartyRefresh = false;
+  // Clear pending-refresh flags so a later unrelated vendor save doesn't
+  // accidentally trigger a dropdown reload in the bill or rule editors.
+  if (_docState)   _docState.pendingPartyRefresh = false;
+  if (_rulesState) _rulesState.pendingVendorRefresh = false;
 }
 
 async function contactSave() {
@@ -7634,17 +7672,25 @@ async function contactSave() {
     // If the Bill/Invoice editor is awaiting a party refresh, reload its
     // dropdown and auto-select the contact we just saved (or the newest one).
     let newlyCreatedId = null;
-    if (_docState.pendingPartyRefresh) {
+    if (_docState && _docState.pendingPartyRefresh) {
       try {
         await _docLoadParties(_docState.kind);
-        // If this was a new save (no editing id previously), the list is sorted
-        // alphabetically — match by display_name to find the new row.
         const match = _docState.parties.find((p) => (p.display_name || "").trim() === name.trim());
         newlyCreatedId = match?.id || null;
         _docRenderPartyOptions(newlyCreatedId);
         if (newlyCreatedId) docPartyChanged();
       } catch (e) { /* best-effort */ }
       _docState.pendingPartyRefresh = false;
+    }
+    // Same pattern for the Rule editor vendor dropdown.
+    if (_rulesState && _rulesState.pendingVendorRefresh && kind === "vendor") {
+      try {
+        const resp = await apiGet(`/api/vendors/${selectedCompanyId}`);
+        _rulesState.vendors = resp.vendors || [];
+        const match = _rulesState.vendors.find((v) => (v.display_name || "").trim() === name.trim());
+        _ruleRenderVendorOptions(match?.id || "");
+      } catch (e) { /* best-effort */ }
+      _rulesState.pendingVendorRefresh = false;
     }
     closeContactEdit();
     if (kind === "customer") await customersReload(); else await vendorsReload();
