@@ -2160,8 +2160,18 @@
       <button class="modal-close" onclick="closeTransferDetect()" style="background:none;border:none;font-size:var(--text-2xl);cursor:pointer;color:var(--color-text-secondary);">&times;</button>
     </div>
     <div style="font-size:var(--text-sm);color:var(--color-text-secondary);margin-bottom:12px;">
-      Scans transactions across all your manual companies for pairs (outflow ↔ inflow of equal amount, within a few days)
-      that are likely transfers. Confirmed pairs get flagged <strong>is_transfer = true</strong> and drop out of P&amp;L.
+      <p style="margin:0 0 8px 0;">
+        Finds pairs where money <strong>left one bank account</strong> and an equal amount <strong>arrived in another</strong>
+        within a few days — i.e., transfers between your accounts (Chase → Metro, intercompany wires, owner loans).
+      </p>
+      <p style="margin:0 0 8px 0;color:var(--color-text-muted);">
+        Why it matters: a real transfer isn't income or an expense. Confirming a pair tags both rows with
+        <code>is_transfer = true</code> so they drop out of P&amp;L.
+      </p>
+      <p style="margin:0;color:var(--color-text-muted);">
+        Pairs at the <em>same merchant</em> (e.g. both legs say "City Farmers Market") are auto-excluded — those are refunds or
+        coincidences, not transfers. Only suggestions scoring ≥ 0.6 are shown.
+      </p>
     </div>
     <div class="form-row" style="margin-bottom:8px;">
       <div class="form-group"><label class="form-label">From</label>
