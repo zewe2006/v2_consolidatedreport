@@ -487,6 +487,20 @@ function initDefaultDates() {
   set("ic-date", today);
 }
 
+// Emit a rich empty-state cell (drop into <tr><td colspan=N>…</td></tr>).
+// opts: { title, body, cta: { label, onclick } }
+function emptyStateCell(colspan, opts) {
+  const t = (opts && opts.title) || "Nothing here yet";
+  const b = (opts && opts.body)  || "";
+  const cta = opts && opts.cta;
+  const ctaHtml = cta ? `<div style="margin-top:14px;"><button class="btn btn-primary btn-sm" onclick="${cta.onclick}">${cta.label}</button></div>` : "";
+  return `<tr><td colspan="${colspan}" style="text-align:center;padding:40px 16px;color:var(--color-text-muted);">`
+       + `<div style="font-size:var(--text-base);font-weight:600;color:var(--color-text);margin-bottom:6px;">${t}</div>`
+       + (b ? `<div style="font-size:var(--text-sm);max-width:420px;margin:0 auto;">${b}</div>` : "")
+       + ctaHtml
+       + `</td></tr>`;
+}
+
 function applyDateMacro(prefix) {
   if (document.getElementById(`${prefix}-date-macro`).value) {
     const s = document.getElementById(`${prefix}-start-date`);
@@ -494,7 +508,24 @@ function applyDateMacro(prefix) {
     if (s) s.value = "";
     if (e) e.value = "";
   }
+  _autoRunReport(prefix);
 }
+
+// Debounce report reruns when filters change. Only fires if the report
+// has already been run at least once for this page in this session (no
+// accidental fetches on first mount). The explicit "Run Report" button
+// still works as the source of truth.
+const _autoRunState = { pl: false, bs: false, cf: false, timers: {} };
+function _autoRunReport(prefix) {
+  if (!_autoRunState[prefix]) return;
+  clearTimeout(_autoRunState.timers[prefix]);
+  _autoRunState.timers[prefix] = setTimeout(() => {
+    if (prefix === "pl") loadPL();
+    else if (prefix === "bs") loadBS();
+    else if (prefix === "cf") loadCF();
+  }, 250);
+}
+function _markReportRun(prefix) { _autoRunState[prefix] = true; }
 
 // =====================================================================
 //  DASHBOARD
@@ -790,6 +821,7 @@ function extractExpenseCategories(report) {
 // =====================================================================
 
 async function loadPL() {
+  _markReportRun("pl");
   const ld = document.getElementById("pl-loading");
   const wr = document.getElementById("pl-table-wrapper");
   ld.innerHTML = '<div class="loading-spinner" style="margin:0 auto;"></div><p class="mt-4">Loading Profit & Loss...</p>';
@@ -823,6 +855,7 @@ async function loadPL() {
 }
 
 async function loadBS() {
+  _markReportRun("bs");
   const ld = document.getElementById("bs-loading");
   const wr = document.getElementById("bs-table-wrapper");
   ld.innerHTML = '<div class="loading-spinner" style="margin:0 auto;"></div><p class="mt-4">Loading Balance Sheet...</p>';
@@ -864,6 +897,7 @@ async function loadBS() {
 }
 
 async function loadCF() {
+  _markReportRun("cf");
   const ld = document.getElementById("cf-loading");
   const wr = document.getElementById("cf-table-wrapper");
   ld.innerHTML = '<div class="loading-spinner" style="margin:0 auto;"></div><p class="mt-4">Loading Cash Flow...</p>';
@@ -873,6 +907,7 @@ async function loadCF() {
     const sel = getSelectedCompanies("cf");
     const viewEl = document.getElementById("cf-view-mode");
     const byCompany = viewEl ? viewEl.value === "by_company" : false;
+    const summarize = (document.getElementById("cf-summarize")?.value || "") || null;
     const data = await apiPost("/api/reports/cash-flow", {
       start_date: document.getElementById("cf-start-date").value || null,
       end_date: document.getElementById("cf-end-date").value || null,
@@ -881,6 +916,7 @@ async function loadCF() {
       company_id: sel.company_id,
       company_ids: sel.company_ids,
       by_company: byCompany,
+      summarize_column_by: summarize,
     });
     currentReportData.cf = data;
     if (byCompany && data.company_breakdowns) {
@@ -1306,7 +1342,9 @@ async function drillDownAccount(accountName) {
   const loading = document.getElementById("txn-detail-loading");
   const table = document.getElementById("txn-detail-table");
 
-  document.getElementById("txn-detail-title").textContent = `Transaction Detail: ${accountName}`;
+  const _ttl = `Transaction Detail: ${accountName}`;
+  document.getElementById("txn-detail-title").textContent = _ttl;
+  document.getElementById("txn-detail-title").title = _ttl;
   document.getElementById("txn-detail-badge").textContent = `Account: ${accountName}`;
   const dm = ctx.date_macro || "";
   const sd = ctx.start_date || "";
@@ -2572,7 +2610,7 @@ async function loadUsers() {
         : '<span class="badge badge-neutral">Viewer</span>';
       const accessLabel = u.role === "admin"
         ? '<span class="text-muted" style="font-size:var(--text-xs);">All (Admin)</span>'
-        : (companyNames.length ? companyNames.map((n) => `<span class="badge badge-neutral" style="margin:1px;font-size:10px;">${n}</span>`).join(" ") : '<span class="text-muted" style="font-size:var(--text-xs);">None</span>');
+        : (companyNames.length ? companyNames.map((n) => `<span class="badge badge-neutral" style="margin:1px;font-size:var(--text-xxs, 0.625rem);">${n}</span>`).join(" ") : '<span class="text-muted" style="font-size:var(--text-xs);">None</span>');
       const isSelf = u.id === currentUser.id;
       html += `<tr>
         <td>${u.name || "-"}</td>
@@ -2779,7 +2817,7 @@ function clearChat() {
   chatConversation = [];
   const msgs = document.getElementById("chat-messages");
   msgs.innerHTML = `<div class="chat-msg assistant">
-    <div style="background:var(--color-bg-muted);padding:10px 14px;border-radius:12px 12px 12px 4px;font-size:13px;line-height:1.5;max-width:85%;color:var(--color-text-primary);">
+    <div style="background:var(--color-bg-muted);padding:10px 14px;border-radius:12px 12px 12px 4px;font-size:var(--text-sm);line-height:1.5;max-width:85%;color:var(--color-text-primary);">
       Hi! I can help you with:<br>
       <strong>&#8226;</strong> Create intercompany journal entries<br>
       <strong>&#8226;</strong> Pull P&L, Balance Sheet, or Cash Flow reports<br>
@@ -2799,7 +2837,7 @@ function appendChatMsg(role, html) {
   const div = document.createElement("div");
   div.className = `chat-msg ${role}`;
   div.style.cssText = `display:flex;justify-content:${align};`;
-  div.innerHTML = `<div style="background:${bg};color:${color};padding:10px 14px;border-radius:${radius};font-size:13px;line-height:1.5;max-width:85%;word-wrap:break-word;">${html}</div>`;
+  div.innerHTML = `<div style="background:${bg};color:${color};padding:10px 14px;border-radius:${radius};font-size:var(--text-sm);line-height:1.5;max-width:85%;word-wrap:break-word;">${html}</div>`;
   msgs.appendChild(div);
   msgs.scrollTop = msgs.scrollHeight;
   return div;
@@ -2810,7 +2848,7 @@ function showChatTyping() {
   const div = document.createElement("div");
   div.id = "chat-typing";
   div.className = "chat-msg assistant";
-  div.innerHTML = `<div style="background:var(--color-bg-muted);padding:10px 14px;border-radius:12px 12px 12px 4px;font-size:13px;color:var(--color-text-secondary);">
+  div.innerHTML = `<div style="background:var(--color-bg-muted);padding:10px 14px;border-radius:12px 12px 12px 4px;font-size:var(--text-sm);color:var(--color-text-secondary);">
     <span style="display:inline-flex;gap:4px;"><span class="typing-dot">&#9679;</span><span class="typing-dot" style="animation-delay:0.2s;">&#9679;</span><span class="typing-dot" style="animation-delay:0.4s;">&#9679;</span></span>
   </div>`;
   msgs.appendChild(div);
@@ -2885,15 +2923,15 @@ function renderChatReply(reply) {
     try {
       const je = JSON.parse(json.trim());
       return `<div style="margin:8px 0;padding:10px;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:8px;">
-        <div style="font-weight:600;font-size:12px;color:var(--color-accent);margin-bottom:6px;">&#9998; Journal Entry Ready</div>
-        <div style="font-size:12px;margin-bottom:4px;"><strong>Type:</strong> ${escapeHtml(je.entry_type || '')}</div>
-        <div style="font-size:12px;margin-bottom:4px;"><strong>Amount:</strong> $${(je.amount || 0).toLocaleString()}</div>
-        <div style="font-size:12px;margin-bottom:4px;"><strong>Date:</strong> ${escapeHtml(je.date || '')}</div>
-        <div style="font-size:12px;margin-bottom:8px;"><strong>Description:</strong> ${escapeHtml(je.description || '')}</div>
-        <button onclick='executeChatJE(${escapeHtml(JSON.stringify(json.trim()))})' style="padding:6px 14px;background:#1a56db;color:white;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">Create This Entry</button>
+        <div style="font-weight:600;font-size:var(--text-xs);color:var(--color-accent);margin-bottom:6px;">&#9998; Journal Entry Ready</div>
+        <div style="font-size:var(--text-xs);margin-bottom:4px;"><strong>Type:</strong> ${escapeHtml(je.entry_type || '')}</div>
+        <div style="font-size:var(--text-xs);margin-bottom:4px;"><strong>Amount:</strong> $${(je.amount || 0).toLocaleString()}</div>
+        <div style="font-size:var(--text-xs);margin-bottom:4px;"><strong>Date:</strong> ${escapeHtml(je.date || '')}</div>
+        <div style="font-size:var(--text-xs);margin-bottom:8px;"><strong>Description:</strong> ${escapeHtml(je.description || '')}</div>
+        <button onclick='executeChatJE(${escapeHtml(JSON.stringify(json.trim()))})' style="padding:6px 14px;background:#1a56db;color:white;border:none;border-radius:6px;font-size:var(--text-xs);font-weight:600;cursor:pointer;">Create This Entry</button>
       </div>`;
     } catch (e) {
-      return `<pre style="font-size:11px;overflow-x:auto;">${escapeHtml(json)}</pre>`;
+      return `<pre style="font-size:var(--text-xs);overflow-x:auto;">${escapeHtml(json)}</pre>`;
     }
   });
 
@@ -2903,7 +2941,7 @@ function renderChatReply(reply) {
       const rpt = JSON.parse(json.trim());
       const label = { "profit-loss": "P&L", "balance-sheet": "Balance Sheet", "cash-flow": "Cash Flow" }[rpt.report_type] || rpt.report_type;
       return `<div style="margin:8px 0;">
-        <button onclick='executeChatReport(${escapeHtml(JSON.stringify(json.trim()))})' style="padding:8px 16px;background:var(--color-accent);color:white;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">&#128202; Open ${escapeHtml(label)} Report</button>
+        <button onclick='executeChatReport(${escapeHtml(JSON.stringify(json.trim()))})' style="padding:8px 16px;background:var(--color-accent);color:white;border:none;border-radius:6px;font-size:var(--text-xs);font-weight:600;cursor:pointer;">&#128202; Open ${escapeHtml(label)} Report</button>
       </div>`;
     } catch (e) {
       return match;
@@ -2915,7 +2953,7 @@ function renderChatReply(reply) {
     try {
       const nav = JSON.parse(json.trim());
       return `<div style="margin:8px 0;">
-        <button onclick="navigateTo('${escapeHtml(nav.page)}')" style="padding:8px 16px;background:var(--color-accent);color:white;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">&#8594; Go to ${escapeHtml(nav.page)}</button>
+        <button onclick="navigateTo('${escapeHtml(nav.page)}')" style="padding:8px 16px;background:var(--color-accent);color:white;border:none;border-radius:6px;font-size:var(--text-xs);font-weight:600;cursor:pointer;">&#8594; Go to ${escapeHtml(nav.page)}</button>
       </div>`;
     } catch (e) {
       return match;
@@ -2944,7 +2982,7 @@ async function executeChatJE(jsonStr) {
       return;
     }
     const data = await res.json();
-    appendChatMsg("assistant", `<div style="color:var(--color-success);font-weight:600;">&#10003; Journal entry created successfully! (ID: ${data.id.slice(0,8)}...)</div><div style="margin-top:4px;"><button onclick="navigateTo('intercompany')" style="padding:6px 14px;background:var(--color-accent);color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;">View in Journal Entries</button></div>`);
+    appendChatMsg("assistant", `<div style="color:var(--color-success);font-weight:600;">&#10003; Journal entry created successfully! (ID: ${data.id.slice(0,8)}...)</div><div style="margin-top:4px;"><button onclick="navigateTo('intercompany')" style="padding:6px 14px;background:var(--color-accent);color:white;border:none;border-radius:6px;font-size:var(--text-xs);cursor:pointer;">View in Journal Entries</button></div>`);
   } catch (e) {
     appendChatMsg("assistant", `<span style="color:var(--color-error);">Error: ${escapeHtml(e.message)}</span>`);
   }
@@ -4364,7 +4402,7 @@ function docPrint() {
         </div>
       </div>
       <div style="margin:20px 0;">
-        <div style="font-size:12px;color:#666;text-transform:uppercase;">${kind === "invoice" ? "Bill To" : "From"}</div>
+        <div style="font-size:var(--text-xs);color:#666;text-transform:uppercase;">${kind === "invoice" ? "Bill To" : "From"}</div>
         <div><strong>${_escapeHtml(party?.display_name || "")}</strong></div>
         ${party?.company_name ? `<div>${_escapeHtml(party.company_name)}</div>` : ""}
         ${party?.email ? `<div>${_escapeHtml(party.email)}</div>` : ""}
@@ -4387,11 +4425,11 @@ function docPrint() {
       </table>
       <div style="text-align:right;margin-bottom:8px;">Subtotal: <strong>${parseFloat(doc.subtotal || 0).toFixed(2)}</strong></div>
       <div style="text-align:right;margin-bottom:8px;">Tax: <strong>${parseFloat(doc.tax_total || 0).toFixed(2)}</strong></div>
-      <div style="text-align:right;font-size:18px;border-top:2px solid #222;padding-top:8px;">
+      <div style="text-align:right;font-size:var(--text-lg);border-top:2px solid #222;padding-top:8px;">
         <strong>Total: ${parseFloat(doc.total || 0).toFixed(2)}</strong>
       </div>
-      <div style="text-align:right;font-size:14px;color:#c33;margin-top:4px;">Balance: ${parseFloat(doc.balance || 0).toFixed(2)}</div>
-      ${doc.memo ? `<div style="margin-top:24px;padding-top:12px;border-top:1px solid #eee;font-size:13px;"><strong>Memo:</strong> ${_escapeHtml(doc.memo)}</div>` : ""}
+      <div style="text-align:right;font-size:var(--text-sm);color:#c33;margin-top:4px;">Balance: ${parseFloat(doc.balance || 0).toFixed(2)}</div>
+      ${doc.memo ? `<div style="margin-top:24px;padding-top:12px;border-top:1px solid #eee;font-size:var(--text-sm);"><strong>Memo:</strong> ${_escapeHtml(doc.memo)}</div>` : ""}
     </div>
   `;
   window.print();
@@ -4889,7 +4927,7 @@ async function _loadPlaidTransactions() {
           <td style="font-size:var(--text-xs);">${t.date || ""}</td>
           <td style="font-size:var(--text-xs);">${_escapeHtml(acct)}</td>
           <td>${_escapeHtml(merch)}</td>
-          <td style="font-size:var(--text-xs);">${_escapeHtml(cat)}${t.is_transfer ? ' <span class="badge badge-neutral" style="font-size:10px;">transfer</span>' : ""}</td>
+          <td style="font-size:var(--text-xs);">${_escapeHtml(cat)}${t.is_transfer ? ' <span class="badge badge-neutral" style="font-size:var(--text-xxs, 0.625rem);">transfer</span>' : ""}</td>
           <td style="text-align:right;color:${color};font-variant-numeric:tabular-nums;">${displayAmt.toFixed(2)}</td>
         </tr>`;
       }).join("");
@@ -5289,7 +5327,7 @@ function _txRenderBanksSummary() {
           <strong>${_escapeHtml(p.name)}</strong>
         </button>
         <button title="Delete this QBO import" onclick="txDeleteQboImport('${p.id}','${safeName}')"
-            style="background:transparent;border:none;color:${activeAcctId === p.id ? "white" : "var(--color-error)"};font-size:16px;cursor:pointer;padding:0 8px 0 4px;line-height:1;" type="button">&times;</button>
+            style="background:transparent;border:none;color:${activeAcctId === p.id ? "white" : "var(--color-error)"};font-size:var(--text-base);cursor:pointer;padding:0 8px 0 4px;line-height:1;" type="button">&times;</button>
       </span>`);
   }
 
@@ -5306,7 +5344,7 @@ function _txRenderBanksSummary() {
   const sortedGroups = Object.entries(groups).sort((a, b) => a[1].order - b[1].order);
   const groupRows = sortedGroups.map(([label, g], idx) => `
     <div style="display:flex;gap:12px;align-items:flex-start;padding:8px 0;${idx ? "border-top:1px solid var(--color-border);" : ""}">
-      <div style="font-size:10px;font-weight:700;letter-spacing:0.08em;color:var(--color-text-secondary);min-width:60px;padding-top:8px;">${label}</div>
+      <div style="font-size:var(--text-xxs, 0.625rem);font-weight:700;letter-spacing:0.08em;color:var(--color-text-secondary);min-width:60px;padding-top:8px;">${label}</div>
       <div style="flex:1;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
         ${idx === 0 ? allChip : ""}
         ${g.rows.join("")}
@@ -5493,7 +5531,7 @@ async function txReload() {
 function _txRender(txs) {
   const body = document.getElementById("tx-body");
   if (!txs.length) {
-    body.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--color-text-muted);">No transactions match these filters.</td></tr>';
+    body.innerHTML = emptyStateCell(8, {title: "No transactions match these filters", body: "Try widening the date range, clearing search, or removing the category filter."});
     return;
   }
   body.innerHTML = txs.map((t) => {
@@ -5511,14 +5549,14 @@ function _txRender(txs) {
     const pencil = `<span class="inline-edit-pencil" aria-hidden="true">✎</span>`;
     return `<tr data-tx-id="${t.id}" data-is-transfer="${t.is_transfer ? "1" : "0"}" data-has-category="${t.category_id ? "1" : "0"}" data-has-vendor="${t.vendor_id ? "1" : "0"}">
       <td><input type="checkbox" class="tx-row-check" value="${t.id}" onchange="txUpdateBulkBar()"></td>
-      <td style="font-size:var(--text-xs);white-space:nowrap;">${formatDate(t.date)}${t.pending ? ' <span class="badge badge-warning" style="font-size:10px;">pending</span>' : ""}</td>
+      <td style="font-size:var(--text-xs);white-space:nowrap;">${formatDate(t.date)}${t.pending ? ' <span class="badge badge-warning" style="font-size:var(--text-xxs, 0.625rem);">pending</span>' : ""}</td>
       <td><div style="font-weight:500;">${_escapeHtml(merch)}</div>${descLine}</td>
       <td style="font-size:var(--text-xs);">${acct}</td>
       <td class="tx-editable" onclick="openVendorPicker('${t.id}')" title="Click to set vendor">
         <span class="tx-editable-content" style="font-size:var(--text-xs);">${vendorCell}</span>${pencil}
       </td>
       <td class="tx-editable" style="${catClass}" onclick="openCategoryPicker('${t.id}', '${_escapeHtml(catName).replace(/'/g, "\\'")}')">
-        <span class="tx-editable-content">${_escapeHtml(catName)}${isSplit ? ' <span class="badge badge-neutral" style="font-size:10px;">split</span>' : ""}</span>${pencil}
+        <span class="tx-editable-content">${_escapeHtml(catName)}${isSplit ? ' <span class="badge badge-neutral" style="font-size:var(--text-xxs, 0.625rem);">split</span>' : ""}</span>${pencil}
       </td>
       <td style="text-align:right;color:${color};font-variant-numeric:tabular-nums;">${formatNumber(amount)}</td>
       <td style="text-align:right;">
@@ -5892,6 +5930,41 @@ function _closeTxPopover() {
   document.removeEventListener("keydown", _txPopoverKeydown);
 }
 
+// Generic row-action popover. Usage:
+//   <button onclick="rowActionsMenu(event, [{label:'Edit', onClick:'edit(id)'}, null, {label:'Delete', onClick:'del(id)', danger:true}])">⋯</button>
+// items: array of {label, onClick:string, danger?} — null entries render as dividers.
+function rowActionsMenu(event, items) {
+  event.stopPropagation();
+  _closeTxPopover();
+  const pop = document.createElement("div");
+  pop.className = "tx-popover";
+  pop.id = "tx-actions-popover";
+  pop.innerHTML = items.map((it) => {
+    if (it === null) return '<hr>';
+    if (!it) return "";
+    const style = it.danger ? ' style="color:var(--color-error);"' : '';
+    return `<button type="button" onclick="_closeTxPopover();${it.onClick}"${style}>${_escapeHtml(it.label)}</button>`;
+  }).join("");
+  document.body.appendChild(pop);
+
+  const anchor = event.currentTarget;
+  const rect = anchor.getBoundingClientRect();
+  pop.style.visibility = "hidden";
+  pop.style.top = "0px"; pop.style.left = "0px";
+  pop.style.display = "block";
+  const popH = pop.offsetHeight, popW = pop.offsetWidth;
+  const spaceBelow = window.innerHeight - rect.bottom;
+  const top = spaceBelow > popH + 8 ? rect.bottom + 4 : rect.top - popH - 4;
+  const left = Math.min(rect.right - popW, window.innerWidth - popW - 8);
+  pop.style.top = Math.max(8, top) + "px";
+  pop.style.left = Math.max(8, left) + "px";
+  pop.style.visibility = "visible";
+  setTimeout(() => {
+    document.addEventListener("click", _txPopoverOutsideClick, { once: false });
+    document.addEventListener("keydown", _txPopoverKeydown, { once: false });
+  }, 0);
+}
+
 async function _txMarkTransfer(txId, mark) {
   try {
     await apiPatch(`/api/transactions/${txId}`, { is_transfer: mark });
@@ -6158,7 +6231,7 @@ function _coaRender() {
     if (search && !(a.name.toLowerCase().includes(search) || a.code.includes(search))) return false;
     return true;
   });
-  if (!rows.length) { body.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--color-text-muted);">No accounts match.</td></tr>'; return; }
+  if (!rows.length) { body.innerHTML = emptyStateCell(5, {title: "No accounts match this filter", body: "Try clearing the search or switching the type filter back to All."}); return; }
   const typeColor = { asset: "#10b981", liability: "#ef4444", equity: "#8b5cf6", income: "#3b82f6", expense: "#f59e0b" };
   body.innerHTML = rows.map((a) => `<tr>
     <td style="font-family:monospace;font-size:var(--text-sm);">${_escapeHtml(a.code)}</td>
@@ -6167,8 +6240,7 @@ function _coaRender() {
     <td style="text-align:right;font-variant-numeric:tabular-nums;">${formatCurrency(a.ytd_activity)}</td>
     <td style="text-align:right;white-space:nowrap;">
       <button class="btn btn-sm btn-ghost" onclick="openAccountRegister('${a.id}','${a.name.replace(/'/g, "\\'")}')" title="View and edit all transactions for this account">Register</button>
-      <button class="btn btn-sm btn-ghost" onclick="openCoaEditModal('${a.id}')">Edit</button>
-      <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="coaArchive('${a.id}')">Archive</button>
+      <button class="btn btn-sm btn-ghost" onclick='rowActionsMenu(event, [{label:"Edit", onClick:"openCoaEditModal(\u0027${a.id}\u0027)"}, null, {label:"Archive", onClick:"coaArchive(\u0027${a.id}\u0027)", danger:true}])' title="More">⋯</button>
     </td>
   </tr>`).join("");
 }
@@ -6177,7 +6249,9 @@ async function openAccountRegister(coaId, accountName) {
   const modal = document.getElementById("txn-detail-modal");
   const loading = document.getElementById("txn-detail-loading");
   const table = document.getElementById("txn-detail-table");
-  document.getElementById("txn-detail-title").textContent = `Register — ${accountName}`;
+  const _ttl2 = `Register — ${accountName}`;
+  document.getElementById("txn-detail-title").textContent = _ttl2;
+  document.getElementById("txn-detail-title").title = _ttl2;
   document.getElementById("txn-detail-badge").textContent = `Account: ${accountName}`;
   document.getElementById("txn-detail-date-range").textContent = "All activity";
   loading.classList.remove("hidden");
@@ -6290,7 +6364,7 @@ async function rulesReload() {
 function _rulesRender() {
   const body = document.getElementById("rules-body");
   const rules = _rulesState.rules;
-  if (!rules.length) { body.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--color-text-muted);">No rules yet. Click <strong>New Rule</strong> to create one.</td></tr>'; return; }
+  if (!rules.length) { body.innerHTML = emptyStateCell(6, {title: "No categorization rules yet", body: "Rules auto-categorize recurring transactions by merchant, description, or amount.", cta: {label: "+ New Rule", onclick: "openRuleEdit(null)"}}); return; }
   body.innerHTML = rules.map((r) => {
     const parts = [];
     if (r.match?.merchant) parts.push(`merchant contains <em>"${_escapeHtml(r.match.merchant)}"</em>`);
@@ -6495,7 +6569,7 @@ async function journalReload() {
 function _journalRender() {
   const list = document.getElementById("journal-list");
   const entries = _journalState.entries;
-  if (!entries.length) { list.innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">No journal entries yet.</div>'; return; }
+  if (!entries.length) { list.innerHTML = `<div style="text-align:center;padding:40px 16px;color:var(--color-text-muted);"><div style="font-size:var(--text-base);font-weight:600;color:var(--color-text);margin-bottom:6px;">No journal entries yet</div><div style="font-size:var(--text-sm);max-width:420px;margin:0 auto;">Use journal entries to record opening balances, adjustments, and anything not captured from bank feeds.</div><div style="margin-top:14px;"><button class="btn btn-primary btn-sm" onclick="openJournalEntryEdit(null)">+ New Entry</button></div></div>`; return; }
   list.innerHTML = entries.map((e) => {
     const totalDebit = (e.lines || []).reduce((s, l) => s + parseFloat(l.debit || 0), 0);
     return `<div class="card" style="margin-bottom:12px;padding:12px;">
@@ -7465,16 +7539,16 @@ async function customersReload() {
 function _customersRender() {
   const body = document.getElementById("customers-body");
   const rows = _contactsState.rows;
-  if (!rows.length) { body.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--color-text-muted);">No customers yet.</td></tr>'; return; }
+  if (!rows.length) { body.innerHTML = emptyStateCell(6, {title: "No customers yet", body: "Add customers you invoice — stores, wholesale accounts, anyone you bill.", cta: {label: "+ New Customer", onclick: "openCustomerEdit(null)"}}); return; }
   body.innerHTML = rows.map((c) => `<tr>
     <td><strong>${_escapeHtml(c.display_name)}</strong></td>
     <td>${_escapeHtml(c.company_name || "—")}</td>
     <td>${_escapeHtml(c.email || "—")}</td>
     <td>${_escapeHtml(c.phone || "—")}</td>
     <td style="text-align:right;font-variant-numeric:tabular-nums;${(c.balance || 0) > 0 ? "color:var(--color-warning);" : ""}">${formatCurrency(c.balance || 0)}</td>
-    <td style="text-align:right;">
+    <td style="text-align:right;white-space:nowrap;">
       <button class="btn btn-sm btn-ghost" onclick="openCustomerEdit('${c.id}')">Edit</button>
-      <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="customerDelete('${c.id}','${c.display_name.replace(/'/g, "\\'")}')">×</button>
+      <button class="btn btn-sm btn-ghost" onclick='rowActionsMenu(event, [{label:"Archive", onClick:"customerDelete(\u0027${c.id}\u0027,\u0027${c.display_name.replace(/'/g, "\\'")}\u0027)", danger:true}])' title="More">⋯</button>
     </td>
   </tr>`).join("");
 }
@@ -7614,7 +7688,7 @@ async function vendorsReload() {
 function _vendorsRender() {
   const body = document.getElementById("vendors-body");
   const rows = _contactsState.rows;
-  if (!rows.length) { body.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--color-text-muted);">No vendors yet.</td></tr>'; return; }
+  if (!rows.length) { body.innerHTML = emptyStateCell(7, {title: "No vendors yet", body: "Add a vendor for anyone you pay — contractors, suppliers, landlords.", cta: {label: "+ New Vendor", onclick: "openVendorEdit(null)"}}); return; }
   body.innerHTML = rows.map((v) => `<tr>
     <td><strong>${_escapeHtml(v.display_name)}</strong></td>
     <td>${_escapeHtml(v.company_name || "—")}</td>
@@ -7622,10 +7696,9 @@ function _vendorsRender() {
     <td>${_escapeHtml(v.phone || "—")}</td>
     <td style="text-align:center;">${v.is_1099 ? '<span class="badge badge-neutral">1099</span>' : ""}</td>
     <td style="text-align:right;font-variant-numeric:tabular-nums;${(v.balance || 0) > 0 ? "color:var(--color-warning);" : ""}">${formatCurrency(v.balance || 0)}</td>
-    <td style="text-align:right;">
+    <td style="text-align:right;white-space:nowrap;">
       <button class="btn btn-sm btn-ghost" onclick="openVendorTransactions('${v.id}','${v.display_name.replace(/'/g, "\\'")}')" title="View transactions for this vendor">Transactions</button>
-      <button class="btn btn-sm btn-ghost" onclick="openVendorEdit('${v.id}')">Edit</button>
-      <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="vendorDelete('${v.id}','${v.display_name.replace(/'/g, "\\'")}')">×</button>
+      <button class="btn btn-sm btn-ghost" onclick='rowActionsMenu(event, [{label:"Edit", onClick:"openVendorEdit(\u0027${v.id}\u0027)"}, null, {label:"Archive", onClick:"vendorDelete(\u0027${v.id}\u0027,\u0027${v.display_name.replace(/'/g, "\\'")}\u0027)", danger:true}])' title="More">⋯</button>
     </td>
   </tr>`).join("");
 }
@@ -7634,7 +7707,9 @@ async function openVendorTransactions(vendorId, vendorName) {
   const modal = document.getElementById("txn-detail-modal");
   const loading = document.getElementById("txn-detail-loading");
   const table = document.getElementById("txn-detail-table");
-  document.getElementById("txn-detail-title").textContent = `Transactions — ${vendorName}`;
+  const _ttl3 = `Transactions — ${vendorName}`;
+  document.getElementById("txn-detail-title").textContent = _ttl3;
+  document.getElementById("txn-detail-title").title = _ttl3;
   document.getElementById("txn-detail-badge").textContent = `Vendor: ${vendorName}`;
   document.getElementById("txn-detail-date-range").textContent = "";
   loading.classList.remove("hidden");
@@ -8380,7 +8455,7 @@ function _renderTransferResults() {
       </tr></thead>
       <tbody>${_xferPairs.map((p, i) => {
         const amt = Math.abs(parseFloat(p.outflow.amount)).toFixed(2);
-        const intercoTag = p.is_intercompany ? ' <span class="badge badge-neutral" style="font-size:10px;">inter-co</span>' : "";
+        const intercoTag = p.is_intercompany ? ' <span class="badge badge-neutral" style="font-size:var(--text-xxs, 0.625rem);">inter-co</span>' : "";
         const dateLabel = p.days_diff ? `${p.outflow.date} → ${p.inflow.date} (${p.days_diff}d)` : p.outflow.date;
         return `<tr data-pair-idx="${i}">
           <td>${dateLabel}</td>
