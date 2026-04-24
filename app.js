@@ -5691,6 +5691,50 @@ function _kpiCard(label, value, color) {
 //  QBO → MANUAL IMPORT MODAL
 // =====================================================================
 
+let _qboImportPlan = null; // holds the vetted form values after Preview passes
+
+async function qboImportUndo(placeholderAccountId, label, txCount) {
+  const msg = `Delete this import?\n\n"${label}" and ALL ${Number(txCount).toLocaleString()} imported transactions will be removed from the destination company.\n\nThe auto-created CoA rows stay (safe in case other data uses them — delete from Chart of Accounts page if needed).\n\nType UNDO to confirm.`;
+  const answer = prompt(msg);
+  if (answer !== "UNDO") {
+    if (answer !== null) showToast("Canceled — didn't match.", "info");
+    return;
+  }
+  try {
+    await apiDelete(`/api/accounts/${placeholderAccountId}`);
+    showToast("Import deleted", "success");
+    closeQboImportModal();
+    if (typeof loadCompanyList === "function") await loadCompanyList();
+  } catch (e) { showToast("Failed: " + (e.message || "unknown"), "error"); }
+}
+
+async function _qboImportLoadPrevious() {
+  // Look up existing QBO Import placeholder accounts for the currently-selected dest.
+  const destId = document.getElementById("qbo-import-dest").value;
+  const previousEl = document.getElementById("qbo-import-previous");
+  if (!previousEl) return;
+  if (!destId) { previousEl.style.display = "none"; return; }
+  try {
+    const resp = await apiGet(`/api/plaid/accounts/${destId}`);
+    const imports = (resp.accounts || []).filter(
+      (a) => !a.plaid_item_id && (a.name || "").startsWith("QBO Import · "),
+    );
+    if (!imports.length) { previousEl.style.display = "none"; return; }
+    previousEl.innerHTML = `
+      <strong style="font-size:var(--text-sm);">Previous imports for this company:</strong>
+      <ul style="margin:6px 0 0 0;padding:0;list-style:none;font-size:var(--text-sm);">
+        ${imports.map((a) => `<li style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;">
+          <span>${_escapeHtml(a.name)}</span>
+          <button class="btn btn-sm" style="background:var(--color-error);color:white;border:none;" onclick="qboImportUndo('${a.id}','${a.name.replace(/'/g,"\\'")}',0)" type="button">Delete</button>
+        </li>`).join("")}
+      </ul>
+      <div style="font-size:var(--text-xs);color:var(--color-text-secondary);margin-top:4px;">Deleting removes the placeholder account and all its imported transactions. CoA rows stay.</div>`;
+    previousEl.style.display = "block";
+  } catch (e) {
+    previousEl.style.display = "none";
+  }
+}
+
 function openQboImportModal() {
   // Populate source (QBO) + dest (manual) dropdowns
   const srcSel = document.getElementById("qbo-import-src");
@@ -5709,15 +5753,11 @@ function openQboImportModal() {
     qboCompanies.map((c) => `<option value="${c.id}">${_escapeHtml(c.name)}</option>`).join("");
   destSel.innerHTML = '<option value="">Select...</option>' +
     manualCompanies.map((c) => `<option value="${c.id}">${_escapeHtml(c.name)}</option>`).join("");
-  // Default end date = today
   const end = document.getElementById("qbo-import-end");
   if (end && !end.value) end.value = new Date().toISOString().slice(0, 10);
 
-  document.getElementById("qbo-import-error").style.display = "none";
-  document.getElementById("qbo-import-result").style.display = "none";
-  document.getElementById("qbo-import-progress").style.display = "none";
-  const btn = document.getElementById("qbo-import-run-btn");
-  if (btn) btn.disabled = false;
+  _qboImportPlan = null;
+  _qboImportResetUi();
 
   const modal = document.getElementById("qbo-import-modal");
   modal.classList.add("active");
@@ -5728,74 +5768,166 @@ function closeQboImportModal() {
   const modal = document.getElementById("qbo-import-modal");
   modal.classList.remove("active");
   modal.style.display = "none";
+  _qboImportPlan = null;
 }
 
-async function runQboImport() {
-  const errEl = document.getElementById("qbo-import-error");
-  const progEl = document.getElementById("qbo-import-progress");
-  const resultEl = document.getElementById("qbo-import-result");
-  const btn = document.getElementById("qbo-import-run-btn");
-  errEl.style.display = "none";
-  resultEl.style.display = "none";
+function _qboImportResetUi() {
+  document.getElementById("qbo-import-error").style.display = "none";
+  document.getElementById("qbo-import-preview").style.display = "none";
+  document.getElementById("qbo-import-result").style.display = "none";
+  document.getElementById("qbo-import-progress").style.display = "none";
+  document.getElementById("qbo-import-preview-btn").style.display = "inline-flex";
+  document.getElementById("qbo-import-preview-btn").disabled = false;
+  document.getElementById("qbo-import-confirm-btn").style.display = "none";
+  document.getElementById("qbo-import-back-btn").style.display = "none";
+  const prev = document.getElementById("qbo-import-previous");
+  if (prev) prev.style.display = "none";
+  _qboImportSetFormEnabled(true);
+}
 
+function _qboImportSetFormEnabled(enabled) {
+  ["qbo-import-src", "qbo-import-dest", "qbo-import-start",
+   "qbo-import-end", "qbo-import-method"].forEach((id) => {
+    const el = document.getElementById(id); if (el) el.disabled = !enabled;
+  });
+}
+
+function qboImportBackToForm() {
+  _qboImportPlan = null;
+  _qboImportResetUi();
+}
+
+function _qboImportCollect() {
+  const errEl = document.getElementById("qbo-import-error");
+  errEl.style.display = "none";
   const src = document.getElementById("qbo-import-src").value;
   const dest = document.getElementById("qbo-import-dest").value;
   const start = document.getElementById("qbo-import-start").value;
   const end = document.getElementById("qbo-import-end").value;
   const method = document.getElementById("qbo-import-method").value;
-
   if (!src || !dest || !start || !end) {
-    errEl.textContent = "All fields are required.";
-    errEl.style.display = "block";
-    return;
+    errEl.textContent = "All fields are required."; errEl.style.display = "block"; return null;
   }
   if (src === dest) {
-    errEl.textContent = "Source and destination can't be the same company.";
-    errEl.style.display = "block";
-    return;
+    errEl.textContent = "Source and destination can't be the same company."; errEl.style.display = "block"; return null;
   }
+  if (start > end) {
+    errEl.textContent = "Start date is after end date."; errEl.style.display = "block"; return null;
+  }
+  return { source_qbo_company_id: src, dest_manual_company_id: dest,
+           start_date: start, end_date: end, accounting_method: method };
+}
 
-  if (btn) btn.disabled = true;
+async function runQboImportPreview() {
+  const form = _qboImportCollect();
+  if (!form) return;
+  const errEl = document.getElementById("qbo-import-error");
+  const progEl = document.getElementById("qbo-import-progress");
+  const progTextEl = document.getElementById("qbo-import-progress-text");
+  const previewEl = document.getElementById("qbo-import-preview");
+  const previewBtn = document.getElementById("qbo-import-preview-btn");
+
+  if (progTextEl) progTextEl.textContent = "Previewing... checking QBO and building the plan.";
   progEl.style.display = "block";
+  previewBtn.disabled = true;
+  previewEl.style.display = "none";
+
   try {
-    const r = await apiPost("/api/import/qbo-to-manual", {
-      source_qbo_company_id: src,
-      dest_manual_company_id: dest,
-      start_date: start,
-      end_date: end,
-      accounting_method: method,
-    });
+    const r = await apiPost("/api/import/qbo-to-manual", { ...form, preview: true });
     progEl.style.display = "none";
+
+    const newList = (r.new_coas || []).slice(0, 25);
+    const newHtml = newList.length
+      ? `<ul style="margin:6px 0 0 16px;font-size:var(--text-xs);max-height:180px;overflow-y:auto;">
+           ${newList.map((u) => `<li><code>${_escapeHtml(u.coa_code || "")}</code> ${_escapeHtml(u.qbo_name)} <span style="color:var(--color-text-secondary);">(${_escapeHtml(u.coa_type)})</span></li>`).join("")}
+           ${r.new_coa_count > newList.length ? `<li>… and ${r.new_coa_count - newList.length} more</li>` : ""}
+         </ul>`
+      : '<div style="margin-top:6px;color:var(--color-success);">Every QBO account name already has an exact match — no new CoA rows will be created.</div>';
+
+    previewEl.innerHTML = `
+      <strong>Ready to import</strong>
+      <div style="margin-top:6px;">
+        <div><strong>Source:</strong> ${_escapeHtml(r.source_company)}</div>
+        <div><strong>Destination:</strong> ${_escapeHtml(r.dest_company)}</div>
+        <div><strong>Date range:</strong> ${_escapeHtml(r.start_date)} → ${_escapeHtml(r.end_date)} (${r.months_to_process} month${r.months_to_process === 1 ? "" : "s"})</div>
+        <div><strong>QBO accounts found:</strong> ${r.qbo_account_count} total · ${r.existing_match_count} already mapped · ${r.new_coa_count} new to create</div>
+      </div>
+      ${r.new_coa_count ? `<div style="margin-top:10px;"><strong>New CoA accounts that will be created:</strong>${newHtml}</div>` : newHtml}
+      <div style="margin-top:10px;font-size:var(--text-xs);color:var(--color-text-secondary);">
+        Nothing has been written yet. Review, then click <strong>Confirm &amp; Run Import</strong> below — or
+        <strong>Change options</strong> to tweak the date range.
+      </div>`;
+    previewEl.style.display = "block";
+    _qboImportPlan = form;
+    _qboImportSetFormEnabled(false);
+    previewBtn.style.display = "none";
+    document.getElementById("qbo-import-confirm-btn").style.display = "inline-flex";
+    document.getElementById("qbo-import-back-btn").style.display = "inline-flex";
+  } catch (e) {
+    progEl.style.display = "none";
+    previewBtn.disabled = false;
+    errEl.textContent = "Preview failed: " + (e.message || "unknown error");
+    errEl.style.display = "block";
+  }
+}
+
+async function runQboImportConfirm() {
+  if (!_qboImportPlan) return;
+  const form = _qboImportPlan;
+  const errEl = document.getElementById("qbo-import-error");
+  const progEl = document.getElementById("qbo-import-progress");
+  const progTextEl = document.getElementById("qbo-import-progress-text");
+  const previewEl = document.getElementById("qbo-import-preview");
+  const resultEl = document.getElementById("qbo-import-result");
+  const confirmBtn = document.getElementById("qbo-import-confirm-btn");
+  const backBtn = document.getElementById("qbo-import-back-btn");
+
+  errEl.style.display = "none";
+  if (progTextEl) progTextEl.textContent = "Importing... this can take 30–90 seconds depending on date range.";
+  progEl.style.display = "block";
+  confirmBtn.disabled = true;
+  backBtn.disabled = true;
+
+  try {
+    const r = await apiPost("/api/import/qbo-to-manual", { ...form, preview: false });
+    progEl.style.display = "none";
+    confirmBtn.style.display = "none";
+    backBtn.style.display = "none";
+    previewEl.style.display = "none";
+
     const createdList = (r.created_accounts || []).slice(0, 12);
     const createdHtml = createdList.length
-      ? `<div style="margin-top:8px;"><strong>${r.created_accounts_count} new CoA account${r.created_accounts_count === 1 ? "" : "s"}</strong> created to match QBO:
+      ? `<div style="margin-top:8px;"><strong>${r.created_accounts_count} new CoA account${r.created_accounts_count === 1 ? "" : "s"}</strong> created:
            <ul style="margin:4px 0 0 16px;font-size:var(--text-xs);">
              ${createdList.map((u) => `<li><code>${_escapeHtml(u.coa_code || "")}</code> ${_escapeHtml(u.qbo_name)} <span style="color:var(--color-text-secondary);">(${_escapeHtml(u.coa_type)})</span></li>`).join("")}
              ${r.created_accounts_count > createdList.length ? `<li>… and ${r.created_accounts_count - createdList.length} more</li>` : ""}
-           </ul>
-         </div>`
-      : '<div style="margin-top:8px;color:var(--color-success);">All QBO accounts already existed — no new CoA rows needed. 🎉</div>';
+           </ul></div>`
+      : '<div style="margin-top:8px;color:var(--color-success);">No new CoA rows needed.</div>';
 
+    const placeholderLabel = `QBO Import · ${r.source_company}`;
     resultEl.innerHTML = `
       <div><strong>${r.imported.toLocaleString()}</strong> transactions imported from
         <strong>${_escapeHtml(r.source_company)}</strong> into
         <strong>${_escapeHtml(r.dest_company)}</strong> across ${r.months_processed} month${r.months_processed === 1 ? "" : "s"}.</div>
       <div style="font-size:var(--text-xs);color:var(--color-text-secondary);margin-top:2px;">Skipped ${r.skipped.toLocaleString()} rows (no account / no amount / no date).</div>
       ${createdHtml}
-      <div style="margin-top:10px;">
-        <button class="btn btn-sm btn-primary" onclick="setSelectedCompany('${dest}');navigateTo('transactions');closeQboImportModal();" type="button">Open Transactions</button>
-        <button class="btn btn-sm btn-secondary" onclick="setSelectedCompany('${dest}');navigateTo('coa');closeQboImportModal();" type="button">Review Chart of Accounts</button>
+      <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px;">
+        <button class="btn btn-sm btn-primary" onclick="setSelectedCompany('${form.dest_manual_company_id}');navigateTo('transactions');closeQboImportModal();" type="button">Open Transactions</button>
+        <button class="btn btn-sm btn-secondary" onclick="setSelectedCompany('${form.dest_manual_company_id}');navigateTo('coa');closeQboImportModal();" type="button">Review Chart of Accounts</button>
+        <button class="btn btn-sm" style="background:var(--color-error);color:white;border:none;margin-left:auto;" onclick="qboImportUndo('${r.placeholder_account_id}','${placeholderLabel.replace(/'/g,"\\'")}','${r.imported}')" type="button">Delete This Import</button>
       </div>`;
     resultEl.style.display = "block";
     showToast(`Imported ${r.imported.toLocaleString()} transactions`, "success");
-    // Refresh company list so the destination row shows fresh data
     if (typeof loadCompanyList === "function") await loadCompanyList();
   } catch (e) {
     progEl.style.display = "none";
-    errEl.textContent = "Import failed: " + (e.message || "unknown error");
+    confirmBtn.disabled = false;
+    backBtn.disabled = false;
+    errEl.innerHTML = `<div>Import failed: ${_escapeHtml(e.message || "unknown error")}</div>
+      <div style="font-size:var(--text-xs);margin-top:4px;color:var(--color-text-secondary);">
+        Click <strong>Change options</strong> to adjust and try again, or <strong>Cancel</strong> to abort. Rerunning is safe — partial writes are deduped.
+      </div>`;
     errEl.style.display = "block";
-  } finally {
-    if (btn) btn.disabled = false;
   }
 }
 
