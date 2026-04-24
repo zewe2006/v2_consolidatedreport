@@ -250,10 +250,6 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
           <span>Users</span>
         </a></li>
-        <li id="nav-billing" style="display:none;"><a href="#billing" data-page="billing">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
-          <span>Billing</span>
-        </a></li>
         <li id="nav-knowledge-base" style="display:none;"><a href="#knowledge-base" data-page="knowledge-base">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
           <span>Knowledge Base</span>
@@ -1014,70 +1010,6 @@
       <div class="card">
         <div class="card-header"><span class="card-title">Saved Mappings</span></div>
         <div id="account-mappings-list" style="overflow-x:auto;"></div>
-      </div>
-    </section>
-
-    <!-- ============ BILLING PAGE ============ -->
-    <section id="page-billing" class="page-content">
-      <div class="card mb-6">
-        <div class="card-header">
-          <span class="card-title">Billing & Subscription</span>
-        </div>
-        <div id="billing-content" style="padding: 8px 0;">
-          <div id="billing-current-plan" style="display:flex; gap:24px; flex-wrap:wrap; margin-bottom:24px;">
-            <div style="flex:1; min-width:260px; border:1.5px solid var(--color-border); border-radius:var(--radius-lg); padding:24px;">
-              <div style="font-size:var(--text-xs); color:var(--color-text-muted); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:8px;">Current Plan</div>
-              <div id="billing-plan-name" style="font-size:var(--text-xl); font-weight:700;">Loading...</div>
-              <div id="billing-plan-price" style="font-size:var(--text-sm); color:var(--color-text-muted); margin-top:4px;"></div>
-              <div id="billing-plan-status" style="margin-top:12px;"></div>
-            </div>
-            <div style="flex:1; min-width:260px; border:1.5px solid var(--color-border); border-radius:var(--radius-lg); padding:24px;">
-              <div style="font-size:var(--text-xs); color:var(--color-text-muted); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:8px;">Company Limit</div>
-              <div id="billing-company-limit" style="font-size:var(--text-xl); font-weight:700;">—</div>
-              <div id="billing-company-usage" style="font-size:var(--text-sm); color:var(--color-text-muted); margin-top:4px;"></div>
-            </div>
-          </div>
-
-          <!-- Upgrade Card (shown on free plan) -->
-          <div id="billing-upgrade-card" style="display:none; border:2px solid #3b82f6; border-radius:var(--radius-lg); padding:32px; background:linear-gradient(135deg, #eff6ff 0%, #fff 100%); margin-bottom:24px;">
-            <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px;">
-              <div>
-                <h3 style="font-size:var(--text-lg); font-weight:700; margin-bottom:4px;">Upgrade to Business</h3>
-                <p style="font-size:var(--text-sm); color:var(--color-text-muted); max-width:400px;">Up to 50 companies, period comparison, intercompany journals, account mapping, and unlimited team members.</p>
-                <div style="font-size:var(--text-xl); font-weight:700; color:#1d4ed8; margin-top:12px;">$49<span style="font-size:var(--text-sm); font-weight:400; color:var(--color-text-muted);">/month</span></div>
-                <div style="font-size:var(--text-xs); color:var(--color-text-muted);">14-day free trial included</div>
-              </div>
-              <button class="btn btn-primary" onclick="startCheckout()" id="btn-upgrade" style="padding:12px 32px; font-size:var(--text-base);">Upgrade Now</button>
-            </div>
-          </div>
-
-          <!-- Manage Subscription (shown on paid plan) -->
-          <div id="billing-manage-card" style="display:none; margin-bottom:24px;">
-            <button class="btn btn-outline" onclick="openBillingPortal()" style="padding:10px 24px;">Manage Subscription & Payment Method</button>
-          </div>
-
-          <!-- Plan Comparison -->
-          <div class="card">
-            <div class="card-header"><span class="card-title">Plan Comparison</span></div>
-            <div style="overflow-x:auto;">
-              <table class="data-table" style="min-width:500px;">
-                <thead>
-                  <tr><th>Feature</th><th>Starter (Free)</th><th>Business ($49/mo)</th></tr>
-                </thead>
-                <tbody>
-                  <tr><td>Companies</td><td>Up to 3</td><td>Up to 50</td></tr>
-                  <tr><td>P&L, Balance Sheet, Cash Flow</td><td>&#10003;</td><td>&#10003;</td></tr>
-                  <tr><td>Transaction Drill-Down</td><td>&#10003;</td><td>&#10003;</td></tr>
-                  <tr><td>Period Comparison</td><td>—</td><td>&#10003;</td></tr>
-                  <tr><td>Intercompany Journals</td><td>—</td><td>&#10003;</td></tr>
-                  <tr><td>Account Mapping</td><td>—</td><td>&#10003;</td></tr>
-                  <tr><td>Team Members</td><td>1 admin</td><td>Unlimited</td></tr>
-                  <tr><td>Support</td><td>Email</td><td>Priority Email</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
       </div>
     </section>
 
