@@ -493,6 +493,15 @@
             <option value="by_company">By Company</option>
           </select>
         </div>
+        <div class="filter-group">
+          <label>Columns</label>
+          <select id="bs-summarize">
+            <option value="">Total Only</option>
+            <option value="Month">By Month</option>
+            <option value="Quarter">By Quarter</option>
+            <option value="Year">By Year</option>
+          </select>
+        </div>
         <button class="btn btn-primary" onclick="loadBS()">Run Report</button>
         <button class="btn btn-secondary" onclick="exportReport('bs')">Export CSV</button>
       </div>

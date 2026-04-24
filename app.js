@@ -832,14 +832,26 @@ async function loadBS() {
     const sel = getSelectedCompanies("bs");
     const viewEl = document.getElementById("bs-view-mode");
     const byCompany = viewEl ? viewEl.value === "by_company" : false;
+    const summarize = (document.getElementById("bs-summarize")?.value || "") || null;
+    const endVal = document.getElementById("bs-end-date").value || null;
+    // When user picks By Month/Quarter/Year, QBO needs a start_date to know
+    // where to begin the first column. Default to start of same calendar year
+    // as the end date. User can still override by entering bs-start-date
+    // (if that input exists on the page).
+    let startVal = document.getElementById("bs-start-date")?.value || null;
+    if (summarize && endVal && !startVal) {
+      startVal = endVal.slice(0, 4) + "-01-01";
+    }
     const data = await apiPost("/api/reports/balance-sheet", {
-      end_date: document.getElementById("bs-end-date").value || null,
+      start_date: startVal,
+      end_date: endVal,
       date_macro: document.getElementById("bs-date-macro").value || null,
       accounting_method: document.getElementById("bs-method").value,
       compare_prior_year: document.getElementById("bs-compare").value === "prior_year",
       company_id: sel.company_id,
       company_ids: sel.company_ids,
       by_company: byCompany,
+      summarize_column_by: summarize,
     });
     currentReportData.bs = data;
     if (byCompany && data.company_breakdowns) {
