@@ -119,29 +119,30 @@
       </ul>
     </div>
 
-    <!-- Per-company nav (shown only when a company is selected in the switcher) -->
+    <!-- Per-company nav (visible only when a specific manual company is selected).
+         Consolidated from three sections down to two for a tighter sidebar. -->
     <div class="sidebar-section needs-company" id="sidebar-section-company">
-      <div class="sidebar-label">This Company</div>
+      <div class="sidebar-label">Bookkeeping</div>
       <ul class="sidebar-nav">
         <li><a href="#transactions" data-page="transactions">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
           <span>Transactions</span>
         </a></li>
+        <li><a href="#bank-accounts" data-page="bank-accounts">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M6 15h4"/></svg>
+          <span>Bank Accounts</span>
+        </a></li>
+        <li><a href="#rules" data-page="rules">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg>
+          <span>Rules</span>
+        </a></li>
         <li><a href="#coa" data-page="coa">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
           <span>Chart of Accounts</span>
         </a></li>
-        <li><a href="#rules" data-page="rules">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg>
-          <span>Categorization Rules</span>
-        </a></li>
         <li><a href="#manual-journal" data-page="manual-journal">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
           <span>Journal</span>
-        </a></li>
-        <li><a href="#bank-accounts" data-page="bank-accounts">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M6 15h4"/></svg>
-          <span>Bank Accounts</span>
         </a></li>
       </ul>
     </div>
@@ -157,6 +158,14 @@
         <li><a href="#invoices" data-page="invoices">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
           <span>Invoices</span>
+        </a></li>
+        <li><a href="#credit-memos" data-page="credit-memos">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+          <span>Credit Memos</span>
+        </a></li>
+        <li><a href="#recurring" data-page="recurring">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"/><path d="M21 13A9 9 0 1 1 6.7 5.3L21 8"/></svg>
+          <span>Recurring</span>
         </a></li>
         <li><a href="#ar-aging" data-page="ar-aging">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
@@ -1298,11 +1307,11 @@
           </div>
         </div>
 
-        <!-- Filters -->
-        <div style="padding:0 var(--space-1);display:grid;grid-template-columns:1fr 130px 130px 160px 160px 160px auto;gap:8px;align-items:end;margin-bottom:var(--space-3);">
+        <!-- Filters — Bank filter moved to chip row above -->
+        <div style="padding:0 var(--space-1);display:grid;grid-template-columns:1fr 140px 140px 180px 180px auto;gap:8px;align-items:end;margin-bottom:var(--space-3);">
           <div>
-            <label class="form-label" style="font-size:var(--text-xs);">Search merchant or description</label>
-            <input class="form-input" type="search" id="tx-filter-search" placeholder="e.g. Starbucks" oninput="txDebouncedReload()">
+            <label class="form-label" style="font-size:var(--text-xs);">Search merchant, description, or amount</label>
+            <input class="form-input" type="search" id="tx-filter-search" placeholder="e.g. Starbucks or 247.65" oninput="txDebouncedReload()">
           </div>
           <div>
             <label class="form-label" style="font-size:var(--text-xs);">From</label>
@@ -1311,12 +1320,6 @@
           <div>
             <label class="form-label" style="font-size:var(--text-xs);">To</label>
             <input class="form-input" type="date" id="tx-filter-date-to" onchange="txReload()">
-          </div>
-          <div>
-            <label class="form-label" style="font-size:var(--text-xs);">Bank</label>
-            <select class="form-select" id="tx-filter-bank" onchange="txBankChanged()">
-              <option value="">All banks</option>
-            </select>
           </div>
           <div>
             <label class="form-label" style="font-size:var(--text-xs);">Account</label>
@@ -1334,6 +1337,8 @@
             <button class="btn btn-ghost btn-sm" onclick="txResetFilters()" type="button">Clear</button>
           </div>
         </div>
+        <!-- Keep a hidden bank filter so backend integration still works (chip row sets it) -->
+        <select id="tx-filter-bank" style="display:none;"><option value="">All banks</option></select>
         <div style="display:flex;gap:16px;align-items:center;padding:0 var(--space-1);margin-bottom:var(--space-3);font-size:var(--text-sm);">
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
             <input type="checkbox" id="tx-filter-uncat" onchange="txReload()"> Uncategorized only
@@ -1342,6 +1347,15 @@
             <input type="checkbox" id="tx-filter-transfers" onchange="txReload()"> Transfers only
           </label>
           <span id="tx-summary" style="color:var(--color-text-secondary);margin-left:auto;"></span>
+        </div>
+
+        <!-- Bulk actions bar (only visible when rows are selected) -->
+        <div id="tx-bulk-bar" style="display:none;padding:8px 12px;margin:0 var(--space-1) var(--space-3);background:var(--color-primary-highlight);border:1px solid var(--color-accent);border-radius:var(--radius-md);align-items:center;gap:12px;font-size:var(--text-sm);">
+          <strong id="tx-bulk-count">0 selected</strong>
+          <button class="btn btn-sm btn-primary" onclick="txBulkCategorize()" type="button">Categorize…</button>
+          <button class="btn btn-sm btn-secondary" onclick="txBulkMarkTransfer()" type="button">Mark as transfer</button>
+          <button class="btn btn-sm btn-secondary" onclick="txBulkClearCategory()" type="button">Clear category</button>
+          <button class="btn btn-ghost btn-sm" onclick="txBulkClear()" type="button" style="margin-left:auto;">Clear selection</button>
         </div>
 
         <div style="overflow-x:auto;">

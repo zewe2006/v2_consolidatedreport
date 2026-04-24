@@ -1432,6 +1432,39 @@ html, body {
 /* Hide per-company sidebar items when no company is selected */
 .sidebar-section.needs-company.hidden { display: none; }
 
+/* --- Inline-editable cells on tables --- */
+.tx-editable {
+  cursor: pointer;
+  position: relative;
+  transition: background 120ms;
+}
+.tx-editable:hover {
+  background: var(--color-bg-muted);
+}
+.tx-editable .inline-edit-pencil {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity 120ms;
+  color: var(--color-text-secondary);
+  pointer-events: none;
+}
+.tx-editable:hover .inline-edit-pencil {
+  opacity: 1;
+}
+.tx-editable .tx-editable-content {
+  display: inline-block;
+  padding-right: 18px; /* leave room for pencil */
+}
+
+/* --- Sidebar company switcher bottom separator --- */
+.sidebar-company-switcher {
+  box-shadow: 0 1px 0 var(--color-border);
+}
+
 /* --- Transactions ⋯ action popover --- */
 .tx-popover {
   position: fixed;

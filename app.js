@@ -444,6 +444,8 @@ function navigateTo(page) {
     bills: "Bills",
     "ar-aging": "AR Aging",
     "ap-aging": "AP Aging",
+    "credit-memos": "Credit Memos",
+    recurring: "Recurring Invoices",
   });
   document.getElementById("page-title").textContent = allTitles[page] || "Dashboard";
   location.hash = page;
@@ -486,6 +488,8 @@ function navigateTo(page) {
   if (page === "bills") billsInit();
   if (page === "ar-aging") arAgingInit();
   if (page === "ap-aging") apAgingInit();
+  if (page === "credit-memos") openCreditMemoModal();
+  if (page === "recurring") openRecurringModal();
 }
 
 window.addEventListener("hashchange", () => {
@@ -4438,7 +4442,7 @@ function docPrint() {
             <td style="padding:6px 4px;">${_escapeHtml(l.description || "")}</td>
             <td style="text-align:right;padding:6px 4px;">${parseFloat(l.quantity || 0).toFixed(2)}</td>
             <td style="text-align:right;padding:6px 4px;">${parseFloat(l.unit_price || 0).toFixed(2)}</td>
-            <td style="text-align:right;padding:6px 4px;">${parseFloat(l.amount || 0).toFixed(2)}</td>
+            <td style="text-align:right;padding:6px 4px;">${formatCurrency(l.amount)}</td>
           </tr>`).join("")}
         </tbody>
       </table>
@@ -4973,6 +4977,95 @@ function _escapeHtml(s) {
     .replace(/'/g, "&#39;");
 }
 
+// ---------- Shared formatters & helpers ----------
+
+const _CURRENCY_FMT = new Intl.NumberFormat("en-US", {
+  style: "currency", currency: "USD",
+  minimumFractionDigits: 2, maximumFractionDigits: 2,
+});
+
+/** Format a number as USD. Accepts strings or numbers. Returns "—" for null/undefined/NaN. */
+function formatCurrency(n) {
+  if (n === null || n === undefined || n === "") return "—";
+  const x = typeof n === "number" ? n : parseFloat(n);
+  if (!isFinite(x)) return "—";
+  return _CURRENCY_FMT.format(x);
+}
+
+/** Format a number without the currency symbol (for tight columns). */
+function formatNumber(n) {
+  if (n === null || n === undefined || n === "") return "—";
+  const x = typeof n === "number" ? n : parseFloat(n);
+  if (!isFinite(x)) return "—";
+  return x.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/** Format an ISO date (YYYY-MM-DD) as a friendlier label. */
+function formatDate(iso, style = "short") {
+  if (!iso) return "—";
+  try {
+    const d = new Date(iso.slice(0, 10) + "T00:00:00");
+    if (isNaN(d.getTime())) return iso;
+    if (style === "full")  return d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+    if (style === "long")  return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+    if (style === "mdy")   return d.toLocaleDateString("en-US", { month: "numeric", day: "numeric", year: "2-digit" });
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" }); // default: Apr 23
+  } catch (e) { return iso; }
+}
+
+/** Translate an API error into user-friendly text. */
+function friendlyError(e) {
+  if (!e) return "Something went wrong.";
+  const msg = String(e.message || e);
+  if (/401/.test(msg)) return "You need to sign in again.";
+  if (/403/.test(msg)) return "You don't have access to that.";
+  if (/404/.test(msg)) return "Not found.";
+  if (/429/.test(msg)) return "Too many requests — wait a moment and try again.";
+  if (/503/.test(msg)) return "Service is temporarily unavailable. Try again in a minute.";
+  if (/Network error|Failed to fetch/i.test(msg)) return "Can't reach the server. Check your connection.";
+  // Default: trim verbose prefixes
+  return msg.replace(/^API Error:\s*/, "").replace(/^HTTP \d+\s*/, "") || "Something went wrong.";
+}
+
+// ---------- Unified status badge palette ----------
+
+const _STATUS_MAP = {
+  // green — done / good
+  paid:   { label: "Paid",          tone: "success" },
+  good:   { label: "Good",          tone: "success" },
+  active: { label: "Active",        tone: "success" },
+  connected: { label: "Connected",  tone: "success" },
+  applied:   { label: "Applied",    tone: "success" },
+  // amber — in progress / needs attention
+  partially_paid:    { label: "Partially paid",    tone: "warning" },
+  partially_applied: { label: "Partially applied", tone: "warning" },
+  overdue:           { label: "Overdue",           tone: "warning" },
+  syncing:           { label: "Syncing",           tone: "warning" },
+  login_required:    { label: "Login required",    tone: "warning" },
+  pending_expiration:{ label: "Re-auth soon",      tone: "warning" },
+  // red — error / attention-needed
+  error:         { label: "Error",         tone: "error" },
+  auth_expired:  { label: "Re-auth needed", tone: "error" },
+  disconnected: { label: "Disconnected",   tone: "error" },
+  // neutral — default/open
+  draft:   { label: "Draft",   tone: "neutral" },
+  sent:    { label: "Sent",    tone: "neutral" },
+  open:    { label: "Open",    tone: "neutral" },
+  void:    { label: "Void",    tone: "neutral" },
+};
+
+const _TONE_CLASS = {
+  success: "badge-success", warning: "badge-warning",
+  error:   "badge-error",   neutral: "badge-neutral",
+};
+
+function statusBadge(status, fallbackLabel) {
+  if (!status) return "";
+  const entry = _STATUS_MAP[status] || { label: fallbackLabel || status, tone: "neutral" };
+  const cls = _TONE_CLASS[entry.tone] || "badge-neutral";
+  return `<span class="badge ${cls}" style="text-transform:none;">${_escapeHtml(entry.label)}</span>`;
+}
+
 
 // =====================================================================
 //  COMPANY SWITCHER (sidebar)
@@ -5075,6 +5168,34 @@ document.addEventListener("click", (e) => {
   }
 });
 
+// Global keyboard shortcuts:
+//  - Esc: close the top-most open modal (and any popover)
+//  - /:   focus the primary search input on the current page (if any)
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    _closeTxPopover?.();
+    // Close the top-most open modal overlay by reverse DOM order
+    const openModals = Array.from(document.querySelectorAll(".modal-overlay.active"));
+    if (openModals.length) {
+      const top = openModals[openModals.length - 1];
+      top.classList.remove("active");
+      top.style.display = "none";
+    }
+  } else if (e.key === "/" && !/input|textarea|select/i.test((e.target.tagName || ""))) {
+    const page = (location.hash || "").slice(1);
+    const id = ({
+      transactions: "tx-filter-search",
+      customers: "customers-search",
+      vendors: "vendors-search",
+      coa: "coa-filter-search",
+    })[page];
+    if (id) {
+      const el = document.getElementById(id);
+      if (el) { e.preventDefault(); el.focus(); }
+    }
+  }
+});
+
 
 // =====================================================================
 //  TRANSACTIONS PAGE
@@ -5090,12 +5211,18 @@ let _txDebounceTimer = null;
 async function txInit() {
   const body = document.getElementById("tx-body");
   if (!selectedCompanyId) {
-    if (body) body.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company in the sidebar to see transactions.</td></tr>';
+    if (body) body.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--color-text-muted);">
+      <div style="margin-bottom:12px;">Select a company from the sidebar switcher to see its transactions.</div>
+      <button class="btn btn-primary btn-sm" onclick="navigateTo('companies')" type="button">Go to Companies</button>
+    </td></tr>`;
     return;
   }
   const company = _getSelectedCompany();
   if (!company || company.source !== "manual") {
-    if (body) body.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--color-text-muted);">Transactions are only available for manual + Plaid companies. QBO transactions live in QuickBooks.</td></tr>';
+    if (body) body.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--color-text-muted);">
+      Transactions are only available for <strong>Manual + Plaid</strong> companies.
+      QBO companies keep their transactions in QuickBooks.
+    </td></tr>`;
     return;
   }
   document.getElementById("tx-page-title").textContent = `Transactions — ${company.name}`;
@@ -5257,7 +5384,7 @@ function _txRenderBanksSummary() {
     <div style="padding:0;">
       ${groupRows || `<div style="padding:12px;color:var(--color-text-muted);font-size:var(--text-sm);">No bank connected yet. <a href="#bank-accounts" onclick="navigateTo('bank-accounts');return false;">Connect one →</a></div>`}
       <div style="border-top:1px solid var(--color-border);padding:6px 0 0;font-size:var(--text-xs);color:var(--color-text-secondary);display:flex;justify-content:space-between;">
-        <span>${totalAccounts} account${totalAccounts === 1 ? "" : "s"} · total balance <strong style="color:var(--color-text-primary);">${totalBalance.toFixed(2)}</strong></span>
+        <span>${totalAccounts} account${totalAccounts === 1 ? "" : "s"} · total balance <strong style="color:var(--color-text-primary);">${formatCurrency(totalBalance)}</strong></span>
       </div>
     </div>`;
   panel.style.display = "block";
@@ -5442,16 +5569,19 @@ function _txRender(txs) {
     const descLine = t.merchant_name && t.description && t.merchant_name !== t.description
       ? `<div style="font-size:var(--text-xs);color:var(--color-text-secondary);">${_escapeHtml(t.description)}</div>` : "";
     const isSplit = !!t.split_parent_id;
+    const pencil = `<span class="inline-edit-pencil" aria-hidden="true">✎</span>`;
     return `<tr data-tx-id="${t.id}" data-is-transfer="${t.is_transfer ? "1" : "0"}" data-has-category="${t.category_id ? "1" : "0"}" data-has-vendor="${t.vendor_id ? "1" : "0"}">
-      <td><input type="checkbox" class="tx-row-check" value="${t.id}"></td>
-      <td style="font-size:var(--text-xs);white-space:nowrap;">${t.date || ""}${t.pending ? ' <span class="badge badge-warning" style="font-size:10px;">pending</span>' : ""}</td>
+      <td><input type="checkbox" class="tx-row-check" value="${t.id}" onchange="txUpdateBulkBar()"></td>
+      <td style="font-size:var(--text-xs);white-space:nowrap;">${formatDate(t.date)}${t.pending ? ' <span class="badge badge-warning" style="font-size:10px;">pending</span>' : ""}</td>
       <td><div style="font-weight:500;">${_escapeHtml(merch)}</div>${descLine}</td>
       <td style="font-size:var(--text-xs);">${acct}</td>
-      <td style="cursor:pointer;font-size:var(--text-xs);" onclick="openVendorPicker('${t.id}')" title="Click to set vendor">${vendorCell}</td>
-      <td style="${catClass}cursor:pointer;" onclick="openCategoryPicker('${t.id}', '${_escapeHtml(catName).replace(/'/g, "\\'")}')">
-        ${_escapeHtml(catName)}${isSplit ? ' <span class="badge badge-neutral" style="font-size:10px;">split</span>' : ""}
+      <td class="tx-editable" onclick="openVendorPicker('${t.id}')" title="Click to set vendor">
+        <span class="tx-editable-content" style="font-size:var(--text-xs);">${vendorCell}</span>${pencil}
       </td>
-      <td style="text-align:right;color:${color};font-variant-numeric:tabular-nums;">${amount.toFixed(2)}</td>
+      <td class="tx-editable" style="${catClass}" onclick="openCategoryPicker('${t.id}', '${_escapeHtml(catName).replace(/'/g, "\\'")}')">
+        <span class="tx-editable-content">${_escapeHtml(catName)}${isSplit ? ' <span class="badge badge-neutral" style="font-size:10px;">split</span>' : ""}</span>${pencil}
+      </td>
+      <td style="text-align:right;color:${color};font-variant-numeric:tabular-nums;">${formatNumber(amount)}</td>
       <td style="text-align:right;">
         <button class="btn btn-sm btn-ghost" onclick="txActionsMenu('${t.id}', event)" title="More">⋯</button>
       </td>
@@ -5542,6 +5672,96 @@ function txPage(delta) {
 
 function txToggleAll(checked) {
   document.querySelectorAll(".tx-row-check").forEach((el) => { el.checked = checked; });
+  txUpdateBulkBar();
+}
+
+function _txSelectedIds() {
+  return Array.from(document.querySelectorAll(".tx-row-check:checked")).map((el) => el.value);
+}
+
+function txUpdateBulkBar() {
+  const ids = _txSelectedIds();
+  const bar = document.getElementById("tx-bulk-bar");
+  const count = document.getElementById("tx-bulk-count");
+  if (!bar) return;
+  if (ids.length === 0) {
+    bar.style.display = "none";
+  } else {
+    bar.style.display = "flex";
+    count.textContent = `${ids.length} selected`;
+  }
+}
+
+function txBulkClear() {
+  document.querySelectorAll(".tx-row-check").forEach((el) => { el.checked = false; });
+  const selAll = document.getElementById("tx-select-all");
+  if (selAll) selAll.checked = false;
+  txUpdateBulkBar();
+}
+
+async function txBulkCategorize() {
+  const ids = _txSelectedIds();
+  if (!ids.length) return;
+  // Open category picker in bulk mode
+  const picker = document.getElementById("category-picker-modal");
+  document.getElementById("cat-picker-search").value = "";
+  _bulkCategorizeIds = ids;
+  picker.querySelector(".modal-header h3").textContent = `Set category for ${ids.length} transactions`;
+  const search = document.getElementById("cat-picker-search");
+  search.oninput = renderCategoryPickerList;
+  // Override the per-row picker selectors to use the bulk handler
+  _bulkCategorizeMode = true;
+  renderCategoryPickerList();
+  picker.classList.add("active");
+  picker.style.display = "flex";
+}
+
+let _bulkCategorizeMode = false;
+let _bulkCategorizeIds = [];
+
+async function _bulkCategorizeApply(categoryId) {
+  const ids = _bulkCategorizeIds || [];
+  if (!ids.length) return;
+  let ok = 0, fail = 0;
+  for (const id of ids) {
+    try {
+      await apiPatch(`/api/transactions/${id}`, { category_id: categoryId });
+      ok++;
+    } catch (e) { fail++; }
+  }
+  _bulkCategorizeMode = false; _bulkCategorizeIds = [];
+  closeCategoryPicker();
+  showToast(`Categorized ${ok}${fail ? `, ${fail} failed` : ""}`, ok ? "success" : "error");
+  txBulkClear();
+  await txReload();
+}
+
+async function txBulkMarkTransfer() {
+  const ids = _txSelectedIds();
+  if (!ids.length) return;
+  if (!confirm(`Mark ${ids.length} transaction(s) as transfer? They'll drop out of P&L.`)) return;
+  let ok = 0, fail = 0;
+  for (const id of ids) {
+    try { await apiPatch(`/api/transactions/${id}`, { is_transfer: true }); ok++; }
+    catch (e) { fail++; }
+  }
+  showToast(`Marked ${ok} as transfer${fail ? `, ${fail} failed` : ""}`, ok ? "success" : "error");
+  txBulkClear();
+  await txReload();
+}
+
+async function txBulkClearCategory() {
+  const ids = _txSelectedIds();
+  if (!ids.length) return;
+  if (!confirm(`Clear category on ${ids.length} transaction(s)?`)) return;
+  let ok = 0, fail = 0;
+  for (const id of ids) {
+    try { await apiPatch(`/api/transactions/${id}`, { clear_category: true }); ok++; }
+    catch (e) { fail++; }
+  }
+  showToast(`Cleared ${ok}${fail ? `, ${fail} failed` : ""}`, ok ? "success" : "error");
+  txBulkClear();
+  await txReload();
 }
 
 async function txSync() {
@@ -5763,23 +5983,26 @@ function renderCategoryPickerList() {
 }
 
 async function categoryPickerSelect(categoryId) {
+  // Bulk mode takes precedence
+  if (_bulkCategorizeMode) return _bulkCategorizeApply(categoryId);
   const txId = _catPickerState.txId;
   if (!txId) return;
   try {
     await apiPatch(`/api/transactions/${txId}`, { category_id: categoryId });
     closeCategoryPicker();
     await txReload();
-  } catch (e) { showToast("Failed: " + e.message, "error"); }
+  } catch (e) { showToast(friendlyError(e), "error"); }
 }
 
 async function categoryPickerClear() {
+  if (_bulkCategorizeMode) return _bulkCategorizeApply(null); // won't pass validation but keep flow clean
   const txId = _catPickerState.txId;
   if (!txId) return;
   try {
     await apiPatch(`/api/transactions/${txId}`, { clear_category: true });
     closeCategoryPicker();
     await txReload();
-  } catch (e) { showToast("Failed: " + e.message, "error"); }
+  } catch (e) { showToast(friendlyError(e), "error"); }
 }
 
 
@@ -5944,7 +6167,7 @@ function _coaRender() {
     <td style="font-family:monospace;font-size:var(--text-sm);">${_escapeHtml(a.code)}</td>
     <td><strong>${_escapeHtml(a.name)}</strong></td>
     <td><span class="badge" style="background:${typeColor[a.type] || "#888"}22;color:${typeColor[a.type] || "#888"};">${a.type}</span></td>
-    <td style="text-align:right;font-variant-numeric:tabular-nums;">${(a.ytd_activity || 0).toFixed(2)}</td>
+    <td style="text-align:right;font-variant-numeric:tabular-nums;">${formatCurrency(a.ytd_activity)}</td>
     <td style="text-align:right;">
       <button class="btn btn-sm btn-ghost" onclick="openCoaEditModal('${a.id}')">Edit</button>
       <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="coaArchive('${a.id}')">Archive</button>
@@ -6579,9 +6802,9 @@ function _renderPerCompanyDashboard(data) {
       <table class="data-table" style="width:100%;font-size:var(--text-sm);">
         <thead><tr><th>Date</th><th>Merchant</th><th style="text-align:right;">Amount</th></tr></thead>
         <tbody>${recent.length ? recent.map((t) => `<tr>
-          <td style="font-size:var(--text-xs);">${t.date || ""}</td>
+          <td style="font-size:var(--text-xs);">${formatDate(t.date)}</td>
           <td>${_escapeHtml(t.merchant_name || t.description || "—")}</td>
-          <td style="text-align:right;color:${(t.amount || 0) > 0 ? "var(--color-text-primary)" : "var(--color-success)"};">${parseFloat(t.amount || 0).toFixed(2)}</td>
+          <td style="text-align:right;color:${(t.amount || 0) > 0 ? "var(--color-text-primary)" : "var(--color-success)"};">${formatCurrency(t.amount)}</td>
         </tr>`).join("") : '<tr><td colspan="3" style="text-align:center;color:var(--color-text-muted);padding:12px;">No transactions yet.</td></tr>'}</tbody>
       </table>
     </div>
@@ -6597,7 +6820,7 @@ function _kpiCard(label, value, color) {
   const c = color || "var(--color-text-primary)";
   return `<div style="background:var(--color-bg-muted);padding:12px;border-radius:var(--radius-md);">
     <div style="font-size:var(--text-xs);color:var(--color-text-secondary);text-transform:uppercase;">${label}</div>
-    <div style="font-size:var(--text-lg);font-weight:700;color:${c};margin-top:4px;">${(value || 0).toFixed(2)}</div>
+    <div style="font-size:var(--text-lg);font-weight:700;color:${c};margin-top:4px;">${formatCurrency(value)}</div>
   </div>`;
 }
 
@@ -6918,7 +7141,7 @@ function _customersRender() {
     <td>${_escapeHtml(c.company_name || "—")}</td>
     <td>${_escapeHtml(c.email || "—")}</td>
     <td>${_escapeHtml(c.phone || "—")}</td>
-    <td style="text-align:right;font-variant-numeric:tabular-nums;${(c.balance || 0) > 0 ? "color:var(--color-warning);" : ""}">${(c.balance || 0).toFixed(2)}</td>
+    <td style="text-align:right;font-variant-numeric:tabular-nums;${(c.balance || 0) > 0 ? "color:var(--color-warning);" : ""}">${formatCurrency(c.balance || 0)}</td>
     <td style="text-align:right;">
       <button class="btn btn-sm btn-ghost" onclick="openCustomerEdit('${c.id}')">Edit</button>
       <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="customerDelete('${c.id}','${c.display_name.replace(/'/g, "\\'")}')">×</button>
@@ -7050,7 +7273,7 @@ function _vendorsRender() {
     <td>${_escapeHtml(v.email || "—")}</td>
     <td>${_escapeHtml(v.phone || "—")}</td>
     <td style="text-align:center;">${v.is_1099 ? '<span class="badge badge-neutral">1099</span>' : ""}</td>
-    <td style="text-align:right;font-variant-numeric:tabular-nums;${(v.balance || 0) > 0 ? "color:var(--color-warning);" : ""}">${(v.balance || 0).toFixed(2)}</td>
+    <td style="text-align:right;font-variant-numeric:tabular-nums;${(v.balance || 0) > 0 ? "color:var(--color-warning);" : ""}">${formatCurrency(v.balance || 0)}</td>
     <td style="text-align:right;">
       <button class="btn btn-sm btn-ghost" onclick="openVendorEdit('${v.id}')">Edit</button>
       <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="vendorDelete('${v.id}','${v.display_name.replace(/'/g, "\\'")}')">×</button>
@@ -7103,14 +7326,8 @@ const _BILL_STATUSES = [
 ];
 
 function _statusBadge(status) {
-  const colors = {
-    draft: "badge-neutral", sent: "badge-neutral", open: "badge-neutral",
-    partially_paid: "badge-warning",
-    paid: "badge-success",
-    overdue: "badge-warning",
-    void: "badge-neutral",
-  };
-  return `<span class="badge ${colors[status] || "badge-neutral"}" style="text-transform:capitalize;">${status.replace("_"," ")}</span>`;
+  // Alias for the newer unified helper — kept for backward compat.
+  return statusBadge(status);
 }
 
 async function _docLoadParties(kind) {
@@ -7172,12 +7389,12 @@ function _renderDocList(kind) {
   const partyLabel = (d) => (kind === "invoice" ? d.customer : d.vendor)?.display_name || "—";
   body.innerHTML = rows.map((d) => `<tr>
     <td><strong>${_escapeHtml(d.number || "—")}</strong></td>
-    <td>${d.date || ""}</td>
-    <td>${d.due_date || "—"}</td>
+    <td>${formatDate(d.date)}</td>
+    <td>${d.due_date ? formatDate(d.due_date) : "—"}</td>
     <td>${_escapeHtml(partyLabel(d))}</td>
     <td>${_statusBadge(d.status)}</td>
-    <td style="text-align:right;font-variant-numeric:tabular-nums;">${parseFloat(d.total || 0).toFixed(2)}</td>
-    <td style="text-align:right;font-variant-numeric:tabular-nums;${parseFloat(d.balance || 0) > 0 ? "color:var(--color-warning);" : ""}">${parseFloat(d.balance || 0).toFixed(2)}</td>
+    <td style="text-align:right;font-variant-numeric:tabular-nums;">${formatCurrency(d.total)}</td>
+    <td style="text-align:right;font-variant-numeric:tabular-nums;${parseFloat(d.balance || 0) > 0 ? "color:var(--color-warning);" : ""}">${formatCurrency(d.balance)}</td>
     <td style="text-align:right;">
       <button class="btn btn-sm btn-secondary" onclick="openDocDetail('${kind}','${d.id}')">View</button>
       ${d.status !== "paid" && d.status !== "void" ? `<button class="btn btn-sm btn-ghost" onclick="${kind === "invoice" ? "openInvoiceEdit" : "openBillEdit"}('${d.id}')">Edit</button>` : ""}
@@ -7412,17 +7629,17 @@ function _renderDocDetail() {
     <td style="text-align:right;">${parseFloat(l.quantity || 0).toFixed(2)}</td>
     <td style="text-align:right;">${parseFloat(l.unit_price || 0).toFixed(2)}</td>
     <td style="text-align:right;">${((parseFloat(l.tax_rate || 0)) * 100).toFixed(2)}%</td>
-    <td style="text-align:right;font-variant-numeric:tabular-nums;">${parseFloat(l.amount || 0).toFixed(2)}</td>
+    <td style="text-align:right;font-variant-numeric:tabular-nums;">${formatCurrency(l.amount)}</td>
   </tr>`).join("");
 
   const paymentsHtml = payments.length
     ? `<table class="data-table" style="width:100%;font-size:var(--text-sm);margin-top:12px;">
          <thead><tr><th>Date</th><th>Method</th><th>Reference</th><th style="text-align:right;">Amount</th><th></th></tr></thead>
          <tbody>${payments.map((p) => `<tr>
-           <td>${p.date}</td>
+           <td>${formatDate(p.date)}</td>
            <td>${_escapeHtml(p.payment_method || "—")}</td>
            <td>${_escapeHtml(p.reference || "—")}</td>
-           <td style="text-align:right;">${parseFloat(p.amount || 0).toFixed(2)}</td>
+           <td style="text-align:right;">${formatCurrency(p.amount)}</td>
            <td><button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="_docDetailDeletePayment('${p.id}')">×</button></td>
          </tr>`).join("")}</tbody>
        </table>`
@@ -7437,7 +7654,7 @@ function _renderDocDetail() {
       </div>
       <div style="text-align:right;">
         ${_statusBadge(doc.status)}
-        <div style="margin-top:4px;">Date: ${doc.date}${doc.due_date ? " · Due: " + doc.due_date : ""}</div>
+        <div style="margin-top:4px;">Date: ${formatDate(doc.date)}${doc.due_date ? " · Due: " + formatDate(doc.due_date) : ""}</div>
       </div>
     </div>
     <table class="data-table" style="width:100%;font-size:var(--text-sm);">
@@ -7445,12 +7662,12 @@ function _renderDocDetail() {
       <tbody>${linesHtml}</tbody>
     </table>
     <div style="text-align:right;margin-top:8px;font-size:var(--text-sm);">
-      Subtotal: <strong>${parseFloat(doc.subtotal || 0).toFixed(2)}</strong>
-      &nbsp;·&nbsp; Tax: <strong>${parseFloat(doc.tax_total || 0).toFixed(2)}</strong>
-      &nbsp;·&nbsp; <strong style="font-size:var(--text-md);">Total: ${parseFloat(doc.total || 0).toFixed(2)}</strong>
+      Subtotal: <strong>${formatCurrency(doc.subtotal)}</strong>
+      &nbsp;·&nbsp; Tax: <strong>${formatCurrency(doc.tax_total)}</strong>
+      &nbsp;·&nbsp; <strong style="font-size:var(--text-md);">Total: ${formatCurrency(doc.total)}</strong>
     </div>
     <div style="text-align:right;font-size:var(--text-md);margin-top:4px;${parseFloat(doc.balance || 0) > 0.005 ? "color:var(--color-warning);" : ""}">
-      Balance: <strong>${parseFloat(doc.balance || 0).toFixed(2)}</strong>
+      Balance: <strong>${formatCurrency(doc.balance)}</strong>
     </div>
     ${doc.memo ? `<div style="margin-top:8px;padding:8px;background:var(--color-bg-muted);border-radius:6px;font-size:var(--text-sm);"><strong>Memo:</strong> ${_escapeHtml(doc.memo)}</div>` : ""}
     <h4 style="margin:16px 0 4px;font-size:var(--text-sm);">Payments</h4>
@@ -7599,7 +7816,7 @@ function _agingRender(kind, r) {
     body.innerHTML = `<div style="text-align:center;padding:24px;color:var(--color-text-muted);">No open ${kind === "ar" ? "invoices" : "bills"} as of ${r.as_of}. 🎉</div>`;
     return;
   }
-  const fmt = (v) => v ? parseFloat(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—";
+  const fmt = (v) => v ? formatCurrency(v) : "—";
   body.innerHTML = `
     <table class="data-table" style="width:100%;font-size:var(--text-sm);">
       <thead><tr>
