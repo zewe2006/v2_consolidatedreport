@@ -1424,54 +1424,46 @@ function renderTransactionDetail(data) {
   el.innerHTML = html;
 }
 
+async function _refreshDrillModal() {
+  if (currentTxnDetail?.vendor_id) {
+    // Re-run via vendor helper
+    await openVendorTransactions(currentTxnDetail.vendor_id, currentTxnDetail.vendor_name);
+    return;
+  }
+  if (currentTxnDetail?.account_name) {
+    const ctx = _getActiveReportContext();
+    const data = await apiPost("/api/reports/transaction-detail", {
+      account_name: currentTxnDetail.account_name,
+      company_id: ctx.company_id || "all",
+      company_ids: ctx.company_ids || null,
+      start_date: ctx.start_date || null,
+      end_date: ctx.end_date || null,
+      date_macro: ctx.date_macro || null,
+      accounting_method: ctx.accounting_method || "Accrual",
+    });
+    currentTxnDetail = data;
+    renderTransactionDetail(data);
+  }
+}
+
 async function drillDeleteTxn(txnId) {
   if (!confirm("Delete this transaction? This cannot be undone.")) return;
   try {
     await apiDelete(`/api/transactions/${txnId}`);
     showToast("Deleted.", "success");
-    // Re-run the drill-down query so the table refreshes without closing the modal
-    if (currentTxnDetail?.account_name) {
-      const ctx = _getActiveReportContext();
-      const data = await apiPost("/api/reports/transaction-detail", {
-        account_name: currentTxnDetail.account_name,
-        company_id: ctx.company_id || "all",
-        company_ids: ctx.company_ids || null,
-        start_date: ctx.start_date || null,
-        end_date: ctx.end_date || null,
-        date_macro: ctx.date_macro || null,
-        accounting_method: ctx.accounting_method || "Accrual",
-      });
-      currentTxnDetail = data;
-      renderTransactionDetail(data);
-    }
+    await _refreshDrillModal();
   } catch (e) {
     showToast("Delete failed: " + (e.message || e), "error");
   }
 }
 
 async function drillEditTxn(txnId) {
-  // Reuse the main Transactions page inline category picker if available.
-  // Otherwise fall back to a simple prompt.
   if (typeof openCategoryPicker === "function") {
     openCategoryPicker(txnId, async (catId) => {
       try {
         await apiPatch(`/api/transactions/${txnId}`, { category_id: catId });
         showToast("Category updated.", "success");
-        // Refresh drill-down
-        if (currentTxnDetail?.account_name) {
-          const ctx = _getActiveReportContext();
-          const data = await apiPost("/api/reports/transaction-detail", {
-            account_name: currentTxnDetail.account_name,
-            company_id: ctx.company_id || "all",
-            company_ids: ctx.company_ids || null,
-            start_date: ctx.start_date || null,
-            end_date: ctx.end_date || null,
-            date_macro: ctx.date_macro || null,
-            accounting_method: ctx.accounting_method || "Accrual",
-          });
-          currentTxnDetail = data;
-          renderTransactionDetail(data);
-        }
+        await _refreshDrillModal();
       } catch (e) { showToast("Update failed: " + (e.message || e), "error"); }
     });
   } else {
@@ -7576,10 +7568,48 @@ function _vendorsRender() {
     <td style="text-align:center;">${v.is_1099 ? '<span class="badge badge-neutral">1099</span>' : ""}</td>
     <td style="text-align:right;font-variant-numeric:tabular-nums;${(v.balance || 0) > 0 ? "color:var(--color-warning);" : ""}">${formatCurrency(v.balance || 0)}</td>
     <td style="text-align:right;">
+      <button class="btn btn-sm btn-ghost" onclick="openVendorTransactions('${v.id}','${v.display_name.replace(/'/g, "\\'")}')" title="View transactions for this vendor">Transactions</button>
       <button class="btn btn-sm btn-ghost" onclick="openVendorEdit('${v.id}')">Edit</button>
       <button class="btn btn-sm btn-ghost" style="color:var(--color-error);" onclick="vendorDelete('${v.id}','${v.display_name.replace(/'/g, "\\'")}')">×</button>
     </td>
   </tr>`).join("");
+}
+
+async function openVendorTransactions(vendorId, vendorName) {
+  const modal = document.getElementById("txn-detail-modal");
+  const loading = document.getElementById("txn-detail-loading");
+  const table = document.getElementById("txn-detail-table");
+  document.getElementById("txn-detail-title").textContent = `Transactions — ${vendorName}`;
+  document.getElementById("txn-detail-badge").textContent = `Vendor: ${vendorName}`;
+  document.getElementById("txn-detail-date-range").textContent = "";
+  loading.classList.remove("hidden");
+  table.innerHTML = "";
+  modal.classList.add("active");
+  try {
+    const r = await apiGet(`/api/transactions/${selectedCompanyId}?vendor_id=${encodeURIComponent(vendorId)}&limit=500&sort=date.desc`);
+    const rows = (r.transactions || []).map((t) => {
+      const amt = parseFloat(t.amount) || 0;
+      return {
+        id: t.id,
+        Date: t.date || "",
+        "Transaction Type": "Plaid",
+        Num: "",
+        Name: t.merchant_name || vendorName,
+        "Memo/Description": t.description || t.notes || "",
+        Account: t.category?.name || "",
+        Debit:  amt > 0 ? amt.toFixed(2) : "",
+        Credit: amt < 0 ? (-amt).toFixed(2) : "",
+        Amount: amt.toFixed(2),
+        editable: true,
+      };
+    });
+    currentTxnDetail = { account_name: vendorName, transactions: rows,
+                        vendor_id: vendorId, vendor_name: vendorName };
+    loading.classList.add("hidden");
+    renderTransactionDetail(currentTxnDetail);
+  } catch (e) {
+    loading.innerHTML = `<p style="color:var(--color-error);padding:var(--space-4);">Error loading transactions: ${e.message}</p>`;
+  }
 }
 
 async function openVendorEdit(id) {
