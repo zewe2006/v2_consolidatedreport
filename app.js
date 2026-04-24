@@ -441,6 +441,24 @@ function navigateTo(page) {
   });
   document.getElementById("page-title").textContent = allTitles[page] || "Dashboard";
   location.hash = page;
+  // Transactions page surfaces its own bank connection banner — hide the
+  // global trial banner there to avoid two competing ones.
+  const trialBanner = document.getElementById("trial-banner");
+  const trialExpired = document.getElementById("trial-expired-banner");
+  if (page === "transactions") {
+    if (trialBanner)  trialBanner.dataset.prevDisplay = trialBanner.style.display || "";
+    if (trialExpired) trialExpired.dataset.prevDisplay = trialExpired.style.display || "";
+    if (trialBanner)  trialBanner.style.display = "none";
+    if (trialExpired) trialExpired.style.display = "none";
+  } else {
+    // Restore default behavior — let the existing billing logic decide
+    if (trialBanner && trialBanner.dataset.prevDisplay !== undefined) {
+      trialBanner.style.display = trialBanner.dataset.prevDisplay;
+    }
+    if (trialExpired && trialExpired.dataset.prevDisplay !== undefined) {
+      trialExpired.style.display = trialExpired.dataset.prevDisplay;
+    }
+  }
   if (page === "companies") loadCompanies();
   if (page === "intercompany") loadICHistory();
   if (page === "account-mapping") loadAccountMappings();
@@ -4598,7 +4616,59 @@ async function _txLoadAccounts() {
     _txState.items = resp.items || [];
     _txRenderBankFilter();
     _txRenderAccountFilter();
+    _txRenderBanksSummary();
   } catch (e) { console.warn("Accounts load failed", e); }
+}
+
+function _txRenderBanksSummary() {
+  const panel = document.getElementById("tx-banks-summary");
+  if (!panel) return;
+  const items = _txState.items || [];
+  const accts = _txState.accounts || [];
+  if (!items.length && !accts.length) {
+    panel.style.display = "none";
+    return;
+  }
+  const totalAccounts = accts.length;
+  const totalBalance = accts.reduce((s, a) => s + (parseFloat(a.current_balance) || 0), 0);
+  const lastSync = items.map((it) => it.last_synced_at).filter(Boolean).sort().reverse()[0];
+  const syncedAgo = lastSync ? _timeAgo(new Date(lastSync)) : "never";
+
+  const itemsHtml = items.map((it) => {
+    const accs = accts.filter((a) => a.plaid_item_id === it.id);
+    const issue = it.status && it.status !== "good";
+    return `<div style="display:flex;align-items:center;gap:8px;padding:4px 10px;background:${issue ? "oklch(0.95 0.08 60)" : "var(--color-bg-muted)"};border-radius:6px;font-size:var(--text-xs);">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M6 15h4"/></svg>
+      <strong>${_escapeHtml(it.institution_name || "Bank")}</strong>
+      <span style="color:var(--color-text-secondary);">${accs.length} account${accs.length === 1 ? "" : "s"}</span>
+      ${issue ? `<span class="badge badge-warning" style="font-size:10px;">${_escapeHtml(it.status)}</span>` : ""}
+    </div>`;
+  }).join("");
+
+  // Also account for the synthetic "QBO Import" placeholder accounts (no plaid_item_id)
+  const placeholders = accts.filter((a) => !a.plaid_item_id);
+  const placeholderHtml = placeholders.map((p) => {
+    const safeName = (p.name || "").replace(/'/g, "\\'");
+    return `<div style="display:inline-flex;align-items:center;gap:6px;padding:4px 6px 4px 10px;background:oklch(0.95 0.04 250);border-radius:6px;font-size:var(--text-xs);">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+      <strong>${_escapeHtml(p.name)}</strong>
+      <button title="Delete this QBO import (removes all its transactions)" onclick="txDeleteQboImport('${p.id}','${safeName}')" style="background:transparent;border:none;color:var(--color-error);font-size:16px;cursor:pointer;padding:0 4px;line-height:1;" type="button">&times;</button>
+    </div>`;
+  }).join("");
+
+  panel.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        ${itemsHtml || '<span style="color:var(--color-text-muted);font-size:var(--text-sm);">No live bank connected.</span>'}
+        ${placeholderHtml}
+      </div>
+      <div style="font-size:var(--text-xs);color:var(--color-text-secondary);text-align:right;">
+        ${totalAccounts} account${totalAccounts === 1 ? "" : "s"} · total balance <strong style="color:var(--color-text-primary);">${totalBalance.toFixed(2)}</strong>
+        <br>Synced ${syncedAgo}
+        · <a href="#bank-accounts" onclick="navigateTo('bank-accounts');return false;" style="color:var(--color-accent);">Manage</a>
+      </div>
+    </div>`;
+  panel.style.display = "block";
 }
 
 function _txRenderBankFilter() {
@@ -4617,6 +4687,23 @@ function _txRenderAccountFilter() {
     : _txState.accounts;
   sel.innerHTML = `<option value="">All accounts</option>` +
     scoped.map((a) => `<option value="${a.id}">${_escapeHtml(a.name)}${a.mask ? " ···" + a.mask : ""}</option>`).join("");
+}
+
+async function txDeleteQboImport(placeholderId, label) {
+  const msg = `Delete "${label}"?\n\nThis removes the placeholder account AND every QBO-imported transaction attached to it from this company.\n\nAuto-created CoA accounts stay — remove them individually from the Chart of Accounts page if needed.\n\nType DELETE to confirm.`;
+  const answer = prompt(msg);
+  if (answer !== "DELETE") {
+    if (answer !== null) showToast("Canceled — didn't match.", "info");
+    return;
+  }
+  try {
+    await apiDelete(`/api/accounts/${placeholderId}`);
+    showToast(`${label} removed`, "success");
+    // Refresh everything on the Transactions page
+    await _txLoadAccounts();
+    await txReload();
+    if (typeof loadCompanyList === "function") await loadCompanyList();
+  } catch (e) { showToast("Failed: " + (e.message || "unknown"), "error"); }
 }
 
 function txBankChanged() {
