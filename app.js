@@ -5437,11 +5437,45 @@ function txSetSort(col) {
     _txState.sort_dir = _txState.sort_dir === "asc" ? "desc" : "asc";
   } else {
     _txState.sort_col = col;
-    _txState.sort_dir = col === "date" || col === "amount" ? "desc" : "asc";
+    _txState.sort_dir = col === "date" || col === "amount" || col === "spent" || col === "received" ? "desc" : "asc";
   }
   _txState.offset = 0;
   _txRenderSortArrows();
-  txReload();
+  // "spent" and "received" are pseudo-columns derived from `amount`. Sort
+  // client-side over the loaded page so we don't need backend support
+  // for a computed column.
+  if (col === "spent" || col === "received") {
+    _txRender(_txSortClientSide(_txState.txs || []));
+  } else {
+    txReload();
+  }
+}
+
+function _txSortClientSide(txs) {
+  const col = _txState.sort_col;
+  const dir = _txState.sort_dir;
+  if (col !== "spent" && col !== "received") return txs;
+  // Plaid convention: positive amount = spent (outflow), negative = received.
+  // For "Spent" sort, spend rows come first (largest spend on top when desc).
+  // For "Received" sort, receive rows come first (largest receive on top when desc).
+  const want = col === "spent" ? "spent" : "received";
+  const dirMul = dir === "desc" ? -1 : 1;
+  const arr = [...txs];
+  arr.sort((a, b) => {
+    const aVal = Number(a.amount || 0);
+    const bVal = Number(b.amount || 0);
+    const aIs = want === "spent" ? aVal > 0 : aVal < 0;
+    const bIs = want === "spent" ? bVal > 0 : bVal < 0;
+    // Rows of the wanted side always come before the other side.
+    if (aIs && !bIs) return -1;
+    if (!aIs && bIs) return 1;
+    if (!aIs && !bIs) return 0;
+    // Both on the wanted side — compare by magnitude of that side.
+    const aMag = want === "spent" ? aVal : -aVal;
+    const bMag = want === "spent" ? bVal : -bVal;
+    return (aMag - bMag) * dirMul;
+  });
+  return arr;
 }
 
 function _txRenderSortArrows() {
