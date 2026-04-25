@@ -2064,6 +2064,14 @@
     </div>
     <div class="form-row">
       <div class="form-group">
+        <label class="form-label">Apply to</label>
+        <select class="form-select" id="rule-direction" onchange="rulePreview()">
+          <option value="">Both — Money In + Money Out</option>
+          <option value="out">Money Out (spent)</option>
+          <option value="in">Money In (received)</option>
+        </select>
+      </div>
+      <div class="form-group">
         <label class="form-label">Account (optional)</label>
         <select class="form-select" id="rule-account" onchange="rulePreview()">
           <option value="">Any account</option>

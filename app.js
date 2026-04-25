@@ -6806,6 +6806,8 @@ function openRuleEditModal(id) {
   document.getElementById("rule-desc-regex").value = r?.match?.description_regex || "";
   document.getElementById("rule-amt-min").value = r?.match?.min ?? "";
   document.getElementById("rule-amt-max").value = r?.match?.max ?? "";
+  const dirSel = document.getElementById("rule-direction");
+  if (dirSel) dirSel.value = r?.match?.direction || "";
   document.getElementById("rule-priority").value = r?.priority ?? 100;
   document.getElementById("rule-mark-transfer").checked = !!r?.action?.mark_transfer;
   document.getElementById("rule-enabled").checked = r ? !!r.enabled : true;
@@ -6957,6 +6959,8 @@ function _collectRuleMatch() {
   if (hi !== "") match.max = parseFloat(hi);
   const acct = document.getElementById("rule-account").value;
   if (acct) match.account_id = acct;
+  const dir = document.getElementById("rule-direction")?.value;
+  if (dir === "in" || dir === "out") match.direction = dir;
   return match;
 }
 
