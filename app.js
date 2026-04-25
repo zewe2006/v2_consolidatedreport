@@ -7680,27 +7680,12 @@ function _renderPerCompanyDashboard(data) {
       ${data.uncategorized_count > 0 ? `<div style="background:oklch(0.95 0.08 60);border-radius:var(--radius-md);padding:10px 14px;margin-bottom:16px;font-size:var(--text-sm);">
         ⚠ <strong>${data.uncategorized_count}</strong> transactions are uncategorized. <a href="#transactions" onclick="navigateTo('transactions');document.getElementById('tx-filter-uncat').checked=true;txReload();return false;">Review now →</a>
       </div>` : ""}
-      <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px;">
-        <div>
-          <h3 style="font-size:var(--text-sm);margin-bottom:8px;">Monthly Net Cash Flow</h3>
-          <div style="display:flex;gap:4px;align-items:flex-end;height:120px;border-bottom:1px solid var(--color-border);">
-            ${months.map((m) => {
-              const h = Math.max(4, Math.min(100, Math.abs(m.net) / 100));
-              const color = m.net >= 0 ? "var(--color-success)" : "var(--color-error)";
-              return `<div title="${m.month}: ${m.net.toFixed(2)}" style="flex:1;background:${color};height:${h}px;border-radius:2px 2px 0 0;"></div>`;
-            }).join("")}
-          </div>
-          <div style="display:flex;gap:4px;margin-top:4px;font-size:9px;color:var(--color-text-secondary);">
-            ${months.map((m) => `<div style="flex:1;text-align:center;">${m.month.slice(5)}</div>`).join("")}
-          </div>
-        </div>
-        <div>
-          <h3 style="font-size:var(--text-sm);margin-bottom:8px;">Top Expenses YTD</h3>
-          ${topExp.length ? topExp.map((t) => `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:var(--text-sm);">
-            <span>${_escapeHtml(t.name)}</span>
-            <strong>${t.total.toFixed(2)}</strong>
-          </div>`).join("") : '<div style="font-size:var(--text-sm);color:var(--color-text-muted);">No expenses yet.</div>'}
-        </div>
+      <div>
+        <h3 style="font-size:var(--text-sm);margin-bottom:8px;">Top Expenses YTD</h3>
+        ${topExp.length ? topExp.map((t) => `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:var(--text-sm);">
+          <span>${_escapeHtml(t.name)}</span>
+          <strong>${t.total.toFixed(2)}</strong>
+        </div>`).join("") : '<div style="font-size:var(--text-sm);color:var(--color-text-muted);">No expenses yet.</div>'}
       </div>
       <h3 style="font-size:var(--text-sm);margin:16px 0 8px;">Recent Activity</h3>
       <table class="data-table" style="width:100%;font-size:var(--text-sm);">
