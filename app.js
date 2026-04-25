@@ -8375,8 +8375,19 @@ async function billsReload() {
 
 function _renderDocList(kind) {
   const body = document.getElementById(kind === "invoice" ? "invoices-body" : "bills-body");
-  const rows = kind === "invoice" ? _invoicesState.rows : _billsState.rows;
-  if (!rows.length) { body.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--color-text-muted);">No ${kind}s yet.</td></tr>`; return; }
+  let rows = kind === "invoice" ? _invoicesState.rows : _billsState.rows;
+  // Vendor / customer name filter (client-side, scoped to loaded rows)
+  const filterEl = document.getElementById(kind === "invoice" ? "invoices-filter-customer" : "bills-filter-vendor");
+  const q = (filterEl?.value || "").trim().toLowerCase();
+  if (q) {
+    rows = rows.filter((d) => {
+      const party = kind === "invoice" ? d.customer : d.vendor;
+      const name = (party?.display_name || "").toLowerCase();
+      const num = (d.number || "").toLowerCase();
+      return name.includes(q) || num.includes(q);
+    });
+  }
+  if (!rows.length) { body.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--color-text-muted);">${q ? "No matches." : "No " + kind + "s yet."}</td></tr>`; return; }
   const partyLabel = (d) => (kind === "invoice" ? d.customer : d.vendor)?.display_name || "—";
   body.innerHTML = rows.map((d) => `<tr>
     <td><strong>${_escapeHtml(d.number || "—")}</strong></td>

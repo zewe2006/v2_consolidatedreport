@@ -1529,6 +1529,8 @@
         <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
           <span class="card-title" id="bills-page-title">Bills</span>
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <input class="form-input form-input-sm" type="search" id="bills-filter-vendor"
+                   placeholder="Filter by vendor…" oninput="_renderDocList('bill')" style="width:220px;">
             <select class="form-select form-select-sm" id="bills-filter-status" onchange="billsReload()" style="width:160px;">
               <option value="">All statuses</option>
               <option value="open">Open</option>
