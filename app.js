@@ -2483,7 +2483,22 @@ async function loadICAccountsFor(side, forceRefresh) {
   try {
     let accounts = forceRefresh ? null : icAccountsCache[companyId];
     if (!accounts) {
-      accounts = await apiGet(`/api/companies/${companyId}/accounts`);
+      // Detect manual vs QBO via the cached companies list — manual companies
+      // pull their CoA from Supabase, QBO companies use the synced cache.
+      const co = (allCompanies || []).find((c) => c.id === companyId);
+      if (co && co.source === "manual") {
+        const r = await apiGet(`/api/coa/${companyId}`);
+        // Normalize to the {name, account_type, classification} shape that
+        // buildAccountOptions expects.
+        accounts = (r.accounts || []).map((a) => ({
+          name: a.name,
+          fully_qualified_name: a.name,
+          account_type: a.type ? a.type.charAt(0).toUpperCase() + a.type.slice(1) : "Other",
+          classification: a.type ? a.type.charAt(0).toUpperCase() + a.type.slice(1) : "Other",
+        }));
+      } else {
+        accounts = await apiGet(`/api/companies/${companyId}/accounts`);
+      }
       icAccountsCache[companyId] = accounts;
     }
     // Update account selects in existing line rows for this side
