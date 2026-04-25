@@ -607,8 +607,9 @@
           <div class="form-row">
             <div class="form-group">
               <label class="form-label">Entry Type</label>
-              <select class="form-select" id="ic-type">
+              <select class="form-select" id="ic-type" onchange="onIcTypeChange()">
                 <option value="fund_transfer">Fund Transfer</option>
+                <option value="loan_advance">Loan / Advance (A/R + A/P)</option>
                 <option value="expense_allocation">Expense Allocation</option>
                 <option value="revenue_sharing">Revenue Sharing</option>
                 <option value="other">Other</option>

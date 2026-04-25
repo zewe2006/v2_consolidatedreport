@@ -1978,6 +1978,26 @@ async function deleteICEntry(entryId) {
 // =====================================================================
 let icLineCounter = 0;
 
+// When entry type = loan_advance, auto-prefill the standard A/R + A/P pattern:
+//   Source (lender):  Dr Accounts Receivable      / Cr <leave for user>
+//   Dest   (borrower): Dr <leave for user>        / Cr Accounts Payable
+// User can still edit the account names; we only seed the structure.
+function onIcTypeChange() {
+  const t = document.getElementById("ic-type").value;
+  if (t !== "loan_advance") return;
+  // Only auto-fill if both sides are empty (don't blow away existing edits)
+  const srcEmpty = document.querySelectorAll("#ic-source-lines tr").length === 0;
+  const dstEmpty = document.querySelectorAll("#ic-dest-lines tr").length === 0;
+  if (srcEmpty) {
+    addICLine("source", { posting_type: "Debit",  account_name: "Accounts Receivable" });
+    addICLine("source", { posting_type: "Credit", account_name: "" });
+  }
+  if (dstEmpty) {
+    addICLine("dest",   { posting_type: "Debit",  account_name: "" });
+    addICLine("dest",   { posting_type: "Credit", account_name: "Accounts Payable" });
+  }
+}
+
 function addICLine(side, preset) {
   const tbody = document.getElementById(`ic-${side}-lines`);
   const idx = icLineCounter++;
