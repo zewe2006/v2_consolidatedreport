@@ -8648,6 +8648,7 @@ function _renderDocDetail() {
   const canPay = doc.status !== "paid" && doc.status !== "void" && parseFloat(doc.balance || 0) > 0.005;
 
   const linesHtml = lines.map((l) => `<tr>
+    <td>${_escapeHtml(l.account_name || "—")}</td>
     <td>${_escapeHtml(l.description || "—")}</td>
     <td style="text-align:right;">${parseFloat(l.quantity || 0).toFixed(2)}</td>
     <td style="text-align:right;">${parseFloat(l.unit_price || 0).toFixed(2)}</td>
@@ -8681,7 +8682,7 @@ function _renderDocDetail() {
       </div>
     </div>
     <table class="data-table" style="width:100%;font-size:var(--text-sm);">
-      <thead><tr><th>Description</th><th style="text-align:right;">Qty</th><th style="text-align:right;">Unit</th><th style="text-align:right;">Tax</th><th style="text-align:right;">Amount</th></tr></thead>
+      <thead><tr><th>Account</th><th>Description</th><th style="text-align:right;">Qty</th><th style="text-align:right;">Unit</th><th style="text-align:right;">Tax</th><th style="text-align:right;">Amount</th></tr></thead>
       <tbody>${linesHtml}</tbody>
     </table>
     <div style="text-align:right;margin-top:8px;font-size:var(--text-sm);">
