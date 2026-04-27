@@ -5343,6 +5343,14 @@ async function _txLoadAccounts() {
     const resp = await apiGet(`/api/plaid/accounts/${selectedCompanyId}`);
     _txState.accounts = resp.accounts || [];
     _txState.items = resp.items || [];
+    if (!_txState.items.length && supabaseAccessToken) {
+      const [items, accts] = await Promise.all([
+        _supaFetch("plaid_items", { select: "id,institution_name,status,last_synced_at,created_at", order: "created_at.desc" }),
+        _supaFetch("accounts",    { select: "id,name,mask,type,subtype,plaid_item_id,current_balance,available_balance" }),
+      ]);
+      if (items) _txState.items = items;
+      if (accts) _txState.accounts = accts;
+    }
     _txRenderBankFilter();
     _txRenderAccountFilter();
     _txRenderBanksSummary();
@@ -5723,6 +5731,10 @@ async function _txFetchFromSupabase(params) {
   sp.append("select", "*,account:accounts(name,mask),vendor:vendors(display_name),category:categories(name)");
   sp.append("order", "date.desc");
   sp.append("limit", "200");
+  // Hide QBO-imported journal entries — those are double-entry rows that
+  // duplicate real bank activity (one debit + one credit per transaction).
+  // They belong on a journal-entries page, not the bank-transactions page.
+  sp.append("plaid_txn_id", "not.like.qbo:*");
 
   const search = params.get("search");
   if (search) {
