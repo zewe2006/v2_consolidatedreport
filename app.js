@@ -8548,7 +8548,7 @@ async function prefillBillFromLoanStatement(payload) {
     if (!_contactsState.coa.length) {
       try {
         const r = await fetch(
-          `${SUPABASE_URL}/rest/v1/chart_of_accounts?company_id=eq.${selectedCompanyId}&is_active=eq.true&select=id,code,name,type&order=code`,
+          `${SUPABASE_URL}/rest/v1/chart_of_accounts?company_id=eq.${selectedCompanyId}&is_active=eq.true&select=id,code,name,type,is_active&order=code`,
           { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` } },
         );
         if (r.ok) {
