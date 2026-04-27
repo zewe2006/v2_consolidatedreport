@@ -8811,7 +8811,7 @@ function _renderDocLines() {
     const currentLabel = l.coa_account_id ? _coaLabelById(l.coa_account_id) : (l._coa_typed || "");
     return `<tr>
       <td><input class="form-input form-input-sm" type="text" value="${_escapeHtml(l.description || "")}" oninput="_docLine(${i},'description',this.value)"></td>
-      <td style="position:relative;overflow:visible;">
+      <td>
         <input class="form-input form-input-sm doc-coa-input" type="text"
                id="doc-coa-input-${i}"
                placeholder="Click to pick or type to search…"
@@ -8822,11 +8822,6 @@ function _renderDocLines() {
                onkeydown="_coaPopoverKey(event, ${i})"
                onblur="setTimeout(() => _coaPopoverClose(${i}), 150)"
                style="width:100%;">
-        <div id="doc-coa-popover-${i}" class="doc-coa-popover"
-             style="display:none;position:absolute;top:100%;left:0;right:0;z-index:100;
-                    background:var(--color-surface,white);border:1px solid var(--color-border,#ddd);
-                    border-radius:6px;max-height:240px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,0.1);
-                    margin-top:2px;"></div>
       </td>
       <td><input class="form-input form-input-sm" type="number" step="0.01" value="${l.quantity || 1}" oninput="_docLine(${i},'quantity',this.value)" style="text-align:right;"></td>
       <td><input class="form-input form-input-sm" type="number" step="0.01" value="${l.unit_price || 0}" oninput="_docLine(${i},'unit_price',this.value)" style="text-align:right;"></td>
@@ -8839,23 +8834,44 @@ function _renderDocLines() {
 }
 
 // --- Inline CoA combobox (click-to-open, type-to-filter, +Create at bottom) ---
+// Popover is body-level so it isn't clipped by the table wrapper's overflow.
+
+function _ensureCoaPopover() {
+  let pop = document.getElementById("doc-coa-popover");
+  if (!pop) {
+    pop = document.createElement("div");
+    pop.id = "doc-coa-popover";
+    pop.style.cssText = "display:none;position:absolute;z-index:10000;background:var(--color-surface,#fff);border:1px solid var(--color-border,#ddd);border-radius:6px;max-height:280px;overflow-y:auto;box-shadow:0 6px 24px rgba(0,0,0,0.15);";
+    document.body.appendChild(pop);
+  }
+  return pop;
+}
 
 function _coaPopoverOpen(i) {
   const input = document.getElementById(`doc-coa-input-${i}`);
   if (!input) return;
+  const pop = _ensureCoaPopover();
+  pop.dataset.activeIdx = String(i);
+  const r = input.getBoundingClientRect();
+  pop.style.top = `${r.bottom + window.scrollY + 2}px`;
+  pop.style.left = `${r.left + window.scrollX}px`;
+  pop.style.width = `${r.width}px`;
   _coaPopoverFilter(i, input.value || "");
-  document.getElementById(`doc-coa-popover-${i}`).style.display = "block";
+  pop.style.display = "block";
 }
 
 function _coaPopoverClose(i) {
-  const pop = document.getElementById(`doc-coa-popover-${i}`);
-  if (pop) pop.style.display = "none";
+  const pop = document.getElementById("doc-coa-popover");
+  if (!pop) return;
+  // Only close if we're still on this input (so a quick mousedown→pick→blur
+  // sequence doesn't race with a re-open from another row).
+  if (pop.dataset.activeIdx === String(i)) pop.style.display = "none";
 }
 
 function _coaPopoverFilter(i, raw) {
   const q = (raw || "").toLowerCase().trim();
-  const pop = document.getElementById(`doc-coa-popover-${i}`);
-  if (!pop) return;
+  const pop = _ensureCoaPopover();
+  pop.dataset.activeIdx = String(i);
   const all = (_docState.coa || []).filter((a) => a.is_active);
   const rank = { income: 1, expense: 2, asset: 3, liability: 4, equity: 5 };
   const filtered = all.filter((a) => {
