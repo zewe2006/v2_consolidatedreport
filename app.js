@@ -7,6 +7,10 @@
 // Example: "https://your-app-name.up.railway.app"
 // For local development, use: "http://localhost:8000"
 const API = "https://overflowing-ambition-production-4b7e.up.railway.app";
+// Next.js Financials app — used for routes that hit Supabase directly
+// (loan-statement extraction, vendor loan CoA mapping). Override with
+// window.FIN_API at runtime, otherwise default to localhost dev.
+const FIN_API = (typeof window !== "undefined" && window.FIN_API) || "http://localhost:3000";
 let authToken = null;
 let currentUser = null;
 let chartInstances = {};
@@ -8427,10 +8431,10 @@ async function loanStmtHandleFile(file) {
   try {
     const fd = new FormData();
     fd.append("file", file);
-    const url = `${API}/api/bills/extract-loan-statement?company_id=${encodeURIComponent(selectedCompanyId)}`;
+    const url = `${FIN_API}/api/bills/extract-loan-statement?company_id=${encodeURIComponent(selectedCompanyId)}`;
     const resp = await fetch(url, {
       method: "POST",
-      headers: { Authorization: `Bearer ${authToken}` },
+      credentials: "include",
       body: fd,
     });
     if (!resp.ok) {
@@ -8823,7 +8827,18 @@ async function _maybeSaveLoanCoaMapping(vendorId) {
       prev.fees_coa_id        === next.fees_coa_id;
     if (same) return;
   }
-  await apiPost("/api/vendor-loan-coa-mapping", next);
+  // Use Next.js Financials app (Supabase-backed) rather than Railway for this
+  // table, since vendor_loan_coa_mapping lives in Supabase.
+  const resp = await fetch(`${FIN_API}/api/vendor-loan-coa-mapping`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(next),
+  });
+  if (!resp.ok) {
+    const detail = await resp.text();
+    throw new Error(`HTTP ${resp.status}: ${detail.slice(0, 200)}`);
+  }
 }
 
 
