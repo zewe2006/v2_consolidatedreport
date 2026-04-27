@@ -10,7 +10,17 @@ const API = "https://overflowing-ambition-production-4b7e.up.railway.app";
 // Next.js Financials app — used for routes that hit Supabase directly
 // (loan-statement extraction, vendor loan CoA mapping). Override with
 // window.FIN_API at runtime, otherwise default to localhost dev.
-const FIN_API = (typeof window !== "undefined" && window.FIN_API) || "http://localhost:3000";
+// Next.js Financials app URL. Override via window.FIN_API. Otherwise auto-pick
+// based on host: localhost → local Next.js dev, prod legacy → deployed hub.
+const FIN_API = (() => {
+  if (typeof window !== "undefined" && window.FIN_API) return window.FIN_API;
+  if (typeof window !== "undefined") {
+    const h = window.location.hostname;
+    if (h === "localhost" || h === "127.0.0.1") return "http://localhost:3000";
+    return "https://hub.consolidatedreport.app";
+  }
+  return "http://localhost:3000";
+})();
 // Supabase project — used in parallel to Railway login so we can call
 // FIN_API routes (loan-statement extraction, vendor mapping) with a JWT.
 const SUPABASE_URL = (typeof window !== "undefined" && window.SUPABASE_URL) || "https://aemqlnwbnvwynnxirrmg.supabase.co";
