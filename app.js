@@ -8806,15 +8806,31 @@ function _renderDocLines() {
     const rank = { income: 1, expense: 2, asset: 3, liability: 4, equity: 5 };
     return (rank[a.type] || 9) - (rank[b.type] || 9) || a.code.localeCompare(b.code);
   });
+  // Render (or refresh) a single shared <datalist> the line-row inputs link to.
+  // Re-built every time so newly-created accounts show up immediately.
+  let dl = document.getElementById("doc-coa-list");
+  if (!dl) {
+    dl = document.createElement("datalist");
+    dl.id = "doc-coa-list";
+    document.body.appendChild(dl);
+  }
+  dl.innerHTML = sortedCoa.map((a) => `<option value="${_escapeHtml(_coaLabel(a))}"></option>`).join("");
+
   body.innerHTML = _docState.lines.map((l, i) => {
     const amt = (parseFloat(l.quantity) || 0) * (parseFloat(l.unit_price) || 0);
+    const currentLabel = l.coa_account_id ? _coaLabelById(l.coa_account_id) : (l._coa_typed || "");
     return `<tr>
       <td><input class="form-input form-input-sm" type="text" value="${_escapeHtml(l.description || "")}" oninput="_docLine(${i},'description',this.value)"></td>
       <td>
-        <select class="form-select form-select-sm" onchange="_docLine(${i},'coa_account_id',this.value)">
-          <option value="">— select —</option>
-          ${sortedCoa.map((a) => `<option value="${a.id}" ${l.coa_account_id === a.id ? "selected" : ""}>${_escapeHtml(a.code)} ${_escapeHtml(a.name)} (${a.type})</option>`).join("")}
-        </select>
+        <div style="display:flex;gap:4px;align-items:center;">
+          <input class="form-input form-input-sm" list="doc-coa-list"
+                 placeholder="Type code or name…"
+                 value="${_escapeHtml(currentLabel)}"
+                 oninput="_docCoaInput(${i}, this.value)"
+                 style="flex:1;min-width:0;">
+          <button class="btn btn-ghost btn-sm" type="button" title="Create new account from typed text"
+                  onclick="_docNewCoaFromLine(${i})">+</button>
+        </div>
       </td>
       <td><input class="form-input form-input-sm" type="number" step="0.01" value="${l.quantity || 1}" oninput="_docLine(${i},'quantity',this.value)" style="text-align:right;"></td>
       <td><input class="form-input form-input-sm" type="number" step="0.01" value="${l.unit_price || 0}" oninput="_docLine(${i},'unit_price',this.value)" style="text-align:right;"></td>
@@ -8824,6 +8840,82 @@ function _renderDocLines() {
     </tr>`;
   }).join("");
   _updateDocTotals();
+}
+
+function _coaLabel(a) {
+  return `${a.code} — ${a.name} (${a.type})`;
+}
+
+function _coaLabelById(id) {
+  const a = (_docState.coa || []).find((x) => x.id === id);
+  return a ? _coaLabel(a) : "";
+}
+
+function _docCoaInput(i, raw) {
+  const val = (raw || "").trim();
+  const a = (_docState.coa || []).find((x) => _coaLabel(x) === val);
+  if (a) {
+    _docState.lines[i].coa_account_id = a.id;
+    _docState.lines[i]._coa_typed = "";
+  } else if (val === "") {
+    _docState.lines[i].coa_account_id = "";
+    _docState.lines[i]._coa_typed = "";
+  } else {
+    _docState.lines[i].coa_account_id = "";
+    _docState.lines[i]._coa_typed = val;
+  }
+  _updateDocTotals();
+}
+
+async function _docNewCoaFromLine(i) {
+  const typed = (_docState.lines[i]._coa_typed || "").trim();
+  const name = typed || prompt("New account name?");
+  if (!name) return;
+  const type = (prompt("Type — asset / liability / equity / income / expense:", "expense") || "").toLowerCase().trim();
+  if (!["asset","liability","equity","income","expense"].includes(type)) {
+    showToast("Invalid type. Aborted.", "error"); return;
+  }
+  // Suggest a code based on existing codes for that type
+  const existing = (_docState.coa || []).filter((a) => a.type === type).map((a) => parseInt(a.code, 10) || 0);
+  const baseCode = { asset: 1000, liability: 2000, equity: 3000, income: 4000, expense: 6000 }[type];
+  const suggested = String(Math.max(baseCode, ...existing) + 10);
+  const code = prompt("Code:", suggested);
+  if (!code) return;
+
+  // Try Supabase first (manual+plaid companies); fall back to Railway.
+  try {
+    if (supabaseAccessToken) {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Prefer": "return=representation",
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${supabaseAccessToken}`,
+        },
+        body: JSON.stringify({ company_id: selectedCompanyId, code, name, type, is_active: true }),
+      });
+      if (!r.ok) throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 200)}`);
+      const rows = await r.json();
+      const acc = Array.isArray(rows) ? rows[0] : rows;
+      _docState.coa = [..._docState.coa, acc];
+      _contactsState.coa = _docState.coa;
+      _docState.lines[i].coa_account_id = acc.id;
+      _docState.lines[i]._coa_typed = "";
+      _renderDocLines();
+      showToast(`Created ${acc.code} — ${acc.name}`, "success");
+    } else {
+      const created = await apiPost(`/api/coa/${selectedCompanyId}`, { code, name, type });
+      _docState.coa = [..._docState.coa, created];
+      _contactsState.coa = _docState.coa;
+      _docState.lines[i].coa_account_id = created.id;
+      _docState.lines[i]._coa_typed = "";
+      _renderDocLines();
+      showToast(`Created ${created.code} — ${created.name}`, "success");
+    }
+  } catch (e) {
+    showToast("Failed to create account: " + (e.message || "unknown"), "error");
+  }
 }
 
 function _docLine(i, field, value) {
