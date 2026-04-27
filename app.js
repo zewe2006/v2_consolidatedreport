@@ -5693,6 +5693,26 @@ async function txReload() {
   }
 }
 
+// Generic Supabase REST fetcher for fallback queries when Railway's
+// endpoints return empty for manual+plaid companies whose data lives
+// only in Supabase.
+async function _supaFetch(table, query) {
+  if (!supabaseAccessToken || !selectedCompanyId) return null;
+  const sp = new URLSearchParams();
+  sp.append("company_id", `eq.${selectedCompanyId}`);
+  sp.append("select", query.select || "*");
+  if (query.order) sp.append("order", query.order);
+  if (query.limit) sp.append("limit", String(query.limit));
+  for (const f of (query.filters || [])) sp.append(f.k, f.v);
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${sp.toString()}`, {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
+    });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
 // Pull transactions directly from Supabase when Railway's transactions
 // endpoint is empty for this company (manual+plaid companies whose Plaid
 // sync writes to Supabase, not Railway).
@@ -7666,6 +7686,14 @@ async function baReload() {
     const resp = await apiGet(`/api/plaid/accounts/${selectedCompanyId}`);
     _baState.items = resp.items || [];
     _baState.accounts = resp.accounts || [];
+    if (!_baState.items.length && supabaseAccessToken) {
+      const [items, accts] = await Promise.all([
+        _supaFetch("plaid_items", { select: "id,institution_name,status,last_synced_at,created_at", order: "created_at.desc" }),
+        _supaFetch("accounts",    { select: "id,name,mask,type,subtype,plaid_item_id,current_balance,available_balance" }),
+      ]);
+      if (items) _baState.items = items;
+      if (accts) _baState.accounts = accts;
+    }
     _baRender();
   } catch (e) {
     document.getElementById("ba-list").innerHTML = `<div style="text-align:center;padding:24px;color:var(--color-error);">Load failed: ${_escapeHtml(e.message)}</div>`;
@@ -8177,6 +8205,15 @@ async function customersReload() {
     const qs = search ? `?search=${encodeURIComponent(search)}` : "";
     const r = await apiGet(`/api/customers/${selectedCompanyId}${qs}`);
     _contactsState.rows = r.customers || [];
+    if (!_contactsState.rows.length && supabaseAccessToken) {
+      const filters = search ? [{ k: "display_name", v: `ilike.*${search.replace(/[*]/g,"")}*` }] : [];
+      const rows = await _supaFetch("customers", {
+        select: "id,display_name,company_name,email,phone,terms_days,is_active",
+        filters: [{ k: "is_active", v: "eq.true" }, ...filters],
+        order: "display_name.asc",
+      });
+      if (rows) _contactsState.rows = rows;
+    }
     _customersRender();
   } catch (e) {
     document.getElementById("customers-body").innerHTML = `<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--color-error);">Load failed: ${_escapeHtml(e.message)}</td></tr>`;
@@ -8336,6 +8373,15 @@ async function vendorsReload() {
     const qs = search ? `?search=${encodeURIComponent(search)}` : "";
     const r = await apiGet(`/api/vendors/${selectedCompanyId}${qs}`);
     _contactsState.rows = r.vendors || [];
+    if (!_contactsState.rows.length && supabaseAccessToken) {
+      const filters = search ? [{ k: "display_name", v: `ilike.*${search.replace(/[*]/g,"")}*` }] : [];
+      const rows = await _supaFetch("vendors", {
+        select: "id,display_name,company_name,email,phone,terms_days,is_active,is_1099",
+        filters: [{ k: "is_active", v: "eq.true" }, ...filters],
+        order: "display_name.asc",
+      });
+      if (rows) _contactsState.rows = rows;
+    }
     _vendorsRender();
   } catch (e) {
     document.getElementById("vendors-body").innerHTML = `<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--color-error);">Load failed: ${_escapeHtml(e.message)}</td></tr>`;
@@ -8472,6 +8518,15 @@ async function invoicesReload() {
   try {
     const r = await apiGet(`/api/invoices/${selectedCompanyId}${qs}`);
     _invoicesState.rows = r.invoices || [];
+    if (!_invoicesState.rows.length && supabaseAccessToken) {
+      const filters = status ? [{ k: "status", v: `eq.${status}` }] : [];
+      const rows = await _supaFetch("invoices", {
+        select: "id,number,date,due_date,status,total,balance,customer:customers(display_name)",
+        order: "date.desc",
+        filters,
+      });
+      if (rows) _invoicesState.rows = rows;
+    }
     _renderDocList("invoice");
   } catch (e) {
     document.getElementById("invoices-body").innerHTML = `<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--color-error);">${_escapeHtml(e.message)}</td></tr>`;
@@ -8705,6 +8760,15 @@ async function billsReload() {
   try {
     const r = await apiGet(`/api/bills/${selectedCompanyId}${qs}`);
     _billsState.rows = r.bills || [];
+    if (!_billsState.rows.length && supabaseAccessToken) {
+      const filters = status ? [{ k: "status", v: `eq.${status}` }] : [];
+      const rows = await _supaFetch("bills", {
+        select: "id,number,date,due_date,status,total,balance,vendor:vendors(display_name)",
+        order: "date.desc",
+        filters,
+      });
+      if (rows) _billsState.rows = rows;
+    }
     _renderDocList("bill");
   } catch (e) {
     document.getElementById("bills-body").innerHTML = `<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--color-error);">${_escapeHtml(e.message)}</td></tr>`;
