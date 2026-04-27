@@ -11,7 +11,13 @@ const API = "https://overflowing-ambition-production-4b7e.up.railway.app";
 // (loan-statement extraction, vendor loan CoA mapping). Override with
 // window.FIN_API at runtime, otherwise default to localhost dev.
 const FIN_API = (typeof window !== "undefined" && window.FIN_API) || "http://localhost:3000";
+// Supabase project — used in parallel to Railway login so we can call
+// FIN_API routes (loan-statement extraction, vendor mapping) with a JWT.
+const SUPABASE_URL = (typeof window !== "undefined" && window.SUPABASE_URL) || "https://aemqlnwbnvwynnxirrmg.supabase.co";
+const SUPABASE_ANON_KEY = (typeof window !== "undefined" && window.SUPABASE_ANON_KEY) || "sb_publishable_lB85Z64texzZYJkUkPvMxw_wBE23m9I";
 let authToken = null;
+let supabaseAccessToken = null;
+let supabaseRefreshToken = null;
 let currentUser = null;
 let chartInstances = {};
 let currentReportData = { pl: null, bs: null, cf: null };
@@ -60,6 +66,62 @@ document.addEventListener("click", (e) => {
   }
 });
 
+// --- Supabase session bridge ---
+// Acquires a Supabase access token using the same email/password the user
+// supplied to Railway. Required for FIN_API calls (Next.js routes that read
+// Supabase via RLS). Failure is non-fatal: legacy Railway flows keep working.
+async function _supabaseSignIn(email, password) {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY },
+      body: JSON.stringify({ email, password }),
+    });
+    if (!r.ok) return false;
+    const data = await r.json();
+    supabaseAccessToken = data.access_token || null;
+    supabaseRefreshToken = data.refresh_token || null;
+    return !!supabaseAccessToken;
+  } catch {
+    return false;
+  }
+}
+
+async function _supabaseRefresh() {
+  if (!supabaseRefreshToken) return false;
+  try {
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY },
+      body: JSON.stringify({ refresh_token: supabaseRefreshToken }),
+    });
+    if (!r.ok) return false;
+    const data = await r.json();
+    supabaseAccessToken = data.access_token || null;
+    supabaseRefreshToken = data.refresh_token || supabaseRefreshToken;
+    return !!supabaseAccessToken;
+  } catch {
+    return false;
+  }
+}
+
+// Fetch wrapper for FIN_API calls — adds Bearer header, retries once on 401
+// after refreshing the Supabase token.
+async function finFetch(path, opts = {}) {
+  const url = path.startsWith("http") ? path : `${FIN_API}${path}`;
+  const doFetch = () => {
+    const headers = Object.assign({}, opts.headers || {});
+    if (supabaseAccessToken) headers["Authorization"] = `Bearer ${supabaseAccessToken}`;
+    return fetch(url, Object.assign({}, opts, { headers }));
+  };
+  let resp = await doFetch();
+  if (resp.status === 401 && supabaseRefreshToken) {
+    const ok = await _supabaseRefresh();
+    if (ok) resp = await doFetch();
+  }
+  return resp;
+}
+
 // --- Auth ---
 async function doLogin() {
   const email = document.getElementById("login-email").value;
@@ -76,6 +138,9 @@ async function doLogin() {
     const data = await res.json();
     authToken = data.token;
     currentUser = data.user;
+    // Parallel Supabase session — non-fatal if it fails (Railway flows keep
+    // working; only FIN_API routes need it).
+    _supabaseSignIn(email, password);
     showApp();
   } catch (e) {
     errEl.textContent = e.message;
@@ -118,6 +183,7 @@ async function doSignUp() {
     const data = await res.json();
     authToken = data.token;
     currentUser = data.user;
+    _supabaseSignIn(email, password);
     showApp();
   } catch (e) {
     errEl.textContent = e.message;
@@ -143,6 +209,8 @@ function doLogout() {
     headers: { Authorization: `Bearer ${authToken}` },
   }).catch(() => {});
   authToken = null;
+  supabaseAccessToken = null;
+  supabaseRefreshToken = null;
   currentUser = null;
   document.getElementById("app-shell").classList.add("hidden");
   document.getElementById("login-page").style.display = "flex";
@@ -8431,10 +8499,9 @@ async function loanStmtHandleFile(file) {
   try {
     const fd = new FormData();
     fd.append("file", file);
-    const url = `${FIN_API}/api/bills/extract-loan-statement?company_id=${encodeURIComponent(selectedCompanyId)}`;
-    const resp = await fetch(url, {
+    const path = `/api/bills/extract-loan-statement?company_id=${encodeURIComponent(selectedCompanyId)}`;
+    const resp = await finFetch(path, {
       method: "POST",
-      credentials: "include",
       body: fd,
     });
     if (!resp.ok) {
@@ -8829,9 +8896,8 @@ async function _maybeSaveLoanCoaMapping(vendorId) {
   }
   // Use Next.js Financials app (Supabase-backed) rather than Railway for this
   // table, since vendor_loan_coa_mapping lives in Supabase.
-  const resp = await fetch(`${FIN_API}/api/vendor-loan-coa-mapping`, {
+  const resp = await finFetch("/api/vendor-loan-coa-mapping", {
     method: "POST",
-    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(next),
   });
