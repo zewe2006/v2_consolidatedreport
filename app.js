@@ -8806,31 +8806,27 @@ function _renderDocLines() {
     const rank = { income: 1, expense: 2, asset: 3, liability: 4, equity: 5 };
     return (rank[a.type] || 9) - (rank[b.type] || 9) || a.code.localeCompare(b.code);
   });
-  // Render (or refresh) a single shared <datalist> the line-row inputs link to.
-  // Re-built every time so newly-created accounts show up immediately.
-  let dl = document.getElementById("doc-coa-list");
-  if (!dl) {
-    dl = document.createElement("datalist");
-    dl.id = "doc-coa-list";
-    document.body.appendChild(dl);
-  }
-  dl.innerHTML = sortedCoa.map((a) => `<option value="${_escapeHtml(_coaLabel(a))}"></option>`).join("");
-
   body.innerHTML = _docState.lines.map((l, i) => {
     const amt = (parseFloat(l.quantity) || 0) * (parseFloat(l.unit_price) || 0);
     const currentLabel = l.coa_account_id ? _coaLabelById(l.coa_account_id) : (l._coa_typed || "");
     return `<tr>
       <td><input class="form-input form-input-sm" type="text" value="${_escapeHtml(l.description || "")}" oninput="_docLine(${i},'description',this.value)"></td>
-      <td>
-        <div style="display:flex;gap:4px;align-items:center;">
-          <input class="form-input form-input-sm" list="doc-coa-list"
-                 placeholder="Type code or name…"
-                 value="${_escapeHtml(currentLabel)}"
-                 oninput="_docCoaInput(${i}, this.value)"
-                 style="flex:1;min-width:0;">
-          <button class="btn btn-ghost btn-sm" type="button" title="Create new account from typed text"
-                  onclick="_docNewCoaFromLine(${i})">+</button>
-        </div>
+      <td style="position:relative;overflow:visible;">
+        <input class="form-input form-input-sm doc-coa-input" type="text"
+               id="doc-coa-input-${i}"
+               placeholder="Click to pick or type to search…"
+               value="${_escapeHtml(currentLabel)}"
+               autocomplete="off"
+               onfocus="_coaPopoverOpen(${i})"
+               oninput="_coaPopoverFilter(${i}, this.value)"
+               onkeydown="_coaPopoverKey(event, ${i})"
+               onblur="setTimeout(() => _coaPopoverClose(${i}), 150)"
+               style="width:100%;">
+        <div id="doc-coa-popover-${i}" class="doc-coa-popover"
+             style="display:none;position:absolute;top:100%;left:0;right:0;z-index:100;
+                    background:var(--color-surface,white);border:1px solid var(--color-border,#ddd);
+                    border-radius:6px;max-height:240px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,0.1);
+                    margin-top:2px;"></div>
       </td>
       <td><input class="form-input form-input-sm" type="number" step="0.01" value="${l.quantity || 1}" oninput="_docLine(${i},'quantity',this.value)" style="text-align:right;"></td>
       <td><input class="form-input form-input-sm" type="number" step="0.01" value="${l.unit_price || 0}" oninput="_docLine(${i},'unit_price',this.value)" style="text-align:right;"></td>
@@ -8840,6 +8836,138 @@ function _renderDocLines() {
     </tr>`;
   }).join("");
   _updateDocTotals();
+}
+
+// --- Inline CoA combobox (click-to-open, type-to-filter, +Create at bottom) ---
+
+function _coaPopoverOpen(i) {
+  const input = document.getElementById(`doc-coa-input-${i}`);
+  if (!input) return;
+  _coaPopoverFilter(i, input.value || "");
+  document.getElementById(`doc-coa-popover-${i}`).style.display = "block";
+}
+
+function _coaPopoverClose(i) {
+  const pop = document.getElementById(`doc-coa-popover-${i}`);
+  if (pop) pop.style.display = "none";
+}
+
+function _coaPopoverFilter(i, raw) {
+  const q = (raw || "").toLowerCase().trim();
+  const pop = document.getElementById(`doc-coa-popover-${i}`);
+  if (!pop) return;
+  const all = (_docState.coa || []).filter((a) => a.is_active);
+  const rank = { income: 1, expense: 2, asset: 3, liability: 4, equity: 5 };
+  const filtered = all.filter((a) => {
+    if (!q) return true;
+    return (a.code || "").toLowerCase().includes(q)
+      || (a.name || "").toLowerCase().includes(q)
+      || (a.type || "").toLowerCase().includes(q);
+  }).sort((a, b) => (rank[a.type] || 9) - (rank[b.type] || 9) || (a.code || "").localeCompare(b.code || ""));
+
+  // Track currently-typed text so + Create knows what name to use
+  _docState.lines[i]._coa_typed = raw || "";
+  // Also keep coa_account_id consistent with the input — only set if exact match
+  const exact = all.find((a) => _coaLabel(a) === raw);
+  _docState.lines[i].coa_account_id = exact ? exact.id : "";
+
+  let html = filtered.slice(0, 30).map((a) => `
+    <div class="doc-coa-row" onmousedown="_coaPopoverPick(${i}, '${a.id}')"
+         style="padding:6px 10px;cursor:pointer;font-size:var(--text-sm);"
+         onmouseenter="this.style.background='var(--color-bg-muted,#f3f4f6)'"
+         onmouseleave="this.style.background=''">
+      <strong>${_escapeHtml(a.code)}</strong> ${_escapeHtml(a.name)}
+      <span style="color:var(--color-text-muted,#888);font-size:12px;">(${a.type})</span>
+    </div>`).join("");
+
+  if (!filtered.length) {
+    html += `<div style="padding:6px 10px;color:var(--color-text-muted,#888);font-size:var(--text-sm);">No matches.</div>`;
+  }
+  // + Create new — always offered when something is typed
+  if (q && !exact) {
+    html += `
+      <div onmousedown="_coaPopoverCreate(${i})"
+           style="padding:8px 10px;cursor:pointer;border-top:1px solid var(--color-border,#ddd);
+                  font-size:var(--text-sm);color:var(--color-accent,#1a56db);font-weight:500;"
+           onmouseenter="this.style.background='var(--color-bg-muted,#f3f4f6)'"
+           onmouseleave="this.style.background=''">
+        + Create new account: "${_escapeHtml(raw)}"
+      </div>`;
+  }
+  pop.innerHTML = html;
+}
+
+function _coaPopoverPick(i, id) {
+  const a = (_docState.coa || []).find((x) => x.id === id);
+  if (!a) return;
+  _docState.lines[i].coa_account_id = a.id;
+  _docState.lines[i]._coa_typed = "";
+  const input = document.getElementById(`doc-coa-input-${i}`);
+  if (input) input.value = _coaLabel(a);
+  _coaPopoverClose(i);
+  _updateDocTotals();
+}
+
+function _coaPopoverKey(e, i) {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    // Pick first match if any
+    const input = document.getElementById(`doc-coa-input-${i}`);
+    const q = (input?.value || "").toLowerCase().trim();
+    if (!q) return;
+    const all = (_docState.coa || []).filter((a) => a.is_active);
+    const match = all.find((a) =>
+      (a.code || "").toLowerCase().includes(q) ||
+      (a.name || "").toLowerCase().includes(q),
+    );
+    if (match) _coaPopoverPick(i, match.id);
+  } else if (e.key === "Escape") {
+    _coaPopoverClose(i);
+  }
+}
+
+async function _coaPopoverCreate(i) {
+  const typed = (_docState.lines[i]._coa_typed || "").trim();
+  if (!typed) { _coaPopoverClose(i); return; }
+  // Quick prompts only for type + code (we already have name = typed text)
+  const type = (prompt(`Type for "${typed}" — asset / liability / equity / income / expense:`, "expense") || "").toLowerCase().trim();
+  if (!["asset","liability","equity","income","expense"].includes(type)) {
+    showToast("Invalid type — account not created.", "error"); return;
+  }
+  const baseCode = { asset: 1000, liability: 2000, equity: 3000, income: 4000, expense: 6000 }[type];
+  const used = (_docState.coa || []).filter((a) => a.type === type).map((a) => parseInt(a.code, 10) || 0);
+  const suggested = String(Math.max(baseCode - 10, ...used) + 10);
+  const code = prompt("Account code:", suggested);
+  if (!code) return;
+
+  try {
+    let acc;
+    if (supabaseAccessToken) {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Prefer: "return=representation",
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${supabaseAccessToken}`,
+        },
+        body: JSON.stringify({ company_id: selectedCompanyId, code, name: typed, type, is_active: true }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
+      const rows = await r.json();
+      acc = Array.isArray(rows) ? rows[0] : rows;
+    } else {
+      acc = await apiPost(`/api/coa/${selectedCompanyId}`, { code, name: typed, type });
+    }
+    _docState.coa = [..._docState.coa, acc];
+    _contactsState.coa = _docState.coa;
+    _docState.lines[i].coa_account_id = acc.id;
+    _docState.lines[i]._coa_typed = "";
+    _renderDocLines();
+    showToast(`Created ${acc.code} — ${acc.name}`, "success");
+  } catch (e) {
+    showToast("Failed to create: " + (e.message || "unknown"), "error");
+  }
 }
 
 function _coaLabel(a) {
