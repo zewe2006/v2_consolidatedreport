@@ -5665,8 +5665,18 @@ async function txReload() {
   if (document.getElementById("tx-filter-transfers").checked) params.set("transfers_only", "true");
 
   try {
-    const resp = await apiGet(`/api/transactions/${selectedCompanyId}?${params.toString()}`);
-    const txs = resp.transactions || [];
+    let resp = await apiGet(`/api/transactions/${selectedCompanyId}?${params.toString()}`);
+    let txs = resp.transactions || [];
+    // Supabase fallback: if Railway returned nothing AND we have a Supabase
+    // session, query Supabase directly. Manual+Plaid companies' transactions
+    // live there, not in Railway's DB.
+    if (!txs.length && supabaseAccessToken) {
+      const fb = await _txFetchFromSupabase(params);
+      if (fb && fb.length) {
+        txs = fb;
+        resp.has_more = false; // simple paging — no cursor support yet
+      }
+    }
     _txState.has_more = !!resp.has_more;
     _txState.txs = txs;
     // Fetch match hints first so the render shows inline Match buttons
@@ -5680,6 +5690,41 @@ async function txReload() {
     document.getElementById("tx-next").disabled = !_txState.has_more;
   } catch (e) {
     body.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--color-error);">Load failed: ${_escapeHtml(e.message || "unknown")}</td></tr>`;
+  }
+}
+
+// Pull transactions directly from Supabase when Railway's transactions
+// endpoint is empty for this company (manual+plaid companies whose Plaid
+// sync writes to Supabase, not Railway).
+async function _txFetchFromSupabase(params) {
+  if (!supabaseAccessToken || !selectedCompanyId) return null;
+  const sp = new URLSearchParams();
+  sp.append("company_id", `eq.${selectedCompanyId}`);
+  sp.append("select", "*,account:accounts(name,mask),vendor:vendors(display_name),category:categories(name)");
+  sp.append("order", "date.desc");
+  sp.append("limit", "200");
+
+  const search = params.get("search");
+  if (search) {
+    const s = search.replace(/[(),*]/g, "");
+    sp.append("or", `(merchant_name.ilike.*${s}*,description.ilike.*${s}*,name.ilike.*${s}*)`);
+  }
+  const dateFrom = params.get("date_from");
+  if (dateFrom) sp.append("date", `gte.${dateFrom}`);
+  const dateTo = params.get("date_to");
+  if (dateTo) sp.append("date", `lte.${dateTo}`);
+
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/transactions?${sp.toString()}`, {
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${supabaseAccessToken}`,
+      },
+    });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
   }
 }
 
