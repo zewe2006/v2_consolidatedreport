@@ -8698,7 +8698,7 @@ async function _openDocEdit(kind, id) {
   document.getElementById("doc-due-date").value = doc?.due_date || "";
   document.getElementById("doc-memo").value = doc?.memo || "";
   document.getElementById("doc-status").value = doc?.status || (kind === "invoice" ? "draft" : "open");
-  partySel.value = doc?.customer_id || doc?.vendor_id || "";
+  document.getElementById("doc-party").value = doc?.customer_id || doc?.vendor_id || "";
 
   _docState.lines = lines.length ? lines.map((l) => ({ ...l })) : [{ description: "", quantity: 1, unit_price: 0, tax_rate: 0, coa_account_id: "" }];
 
