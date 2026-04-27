@@ -1539,6 +1539,10 @@
               <option value="overdue">Overdue</option>
               <option value="void">Void</option>
             </select>
+            <button class="btn btn-secondary btn-sm" onclick="openNewLoanBillModal()" type="button" title="Upload a loan statement to auto-create a Bill with Principal/Interest split">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+              New Loan Bill
+            </button>
             <button class="btn btn-primary btn-sm" onclick="openBillEdit(null)" type="button">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
               New Bill
@@ -2651,6 +2655,29 @@
     <div style="display:flex;gap:8px;">
       <button class="btn btn-primary" id="payment-save-btn" onclick="paymentSave()" type="button">Record Payment</button>
       <button class="btn btn-secondary" onclick="closePaymentModal()" type="button">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======== MODAL: New Loan Bill (upload statement) ======== -->
+<div id="loan-stmt-upload-modal" class="modal-overlay">
+  <div class="modal" style="max-width:520px;">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:var(--text-lg);">New Loan Bill</h3>
+      <button class="modal-close" onclick="closeLoanStmtUploadModal()" style="background:none;border:none;font-size:var(--text-2xl);cursor:pointer;color:var(--color-text-secondary);">&times;</button>
+    </div>
+    <p style="font-size:var(--text-sm);color:var(--color-text-muted);margin-bottom:16px;">
+      Drop a lender statement PDF. Claude Vision extracts the lender, principal, interest, and dates, then prefills a Bill with the split lines. Account picks are remembered per vendor for next time.
+    </p>
+    <div id="loan-stmt-dropzone" style="border:2px dashed var(--color-border);border-radius:var(--radius-lg);padding:32px 24px;text-align:center;cursor:pointer;transition:all 0.2s;">
+      <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" stroke-width="1.5" style="width:40px;height:40px;margin:0 auto 8px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+      <p style="font-size:var(--text-base);font-weight:600;margin-bottom:4px;">Drop a loan statement PDF here</p>
+      <p style="font-size:var(--text-sm);color:var(--color-text-muted);">or click to choose a file (max 15 MB)</p>
+      <input type="file" id="loan-stmt-file-input" accept="application/pdf,image/*" style="display:none;">
+    </div>
+    <div id="loan-stmt-status" style="display:none;margin-top:14px;padding:10px 14px;border-radius:var(--radius-md);font-size:var(--text-sm);"></div>
+    <div style="display:flex;gap:8px;margin-top:16px;">
+      <button class="btn btn-secondary" onclick="closeLoanStmtUploadModal()" type="button">Cancel</button>
     </div>
   </div>
 </div>

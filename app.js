@@ -8360,6 +8360,180 @@ async function billsInit() {
   await billsReload();
 }
 
+// ---------- New Loan Bill (upload statement → extract → prefill bill) ----------
+
+function openNewLoanBillModal() {
+  if (!selectedCompanyId) { showToast("Pick a company first.", "info"); return; }
+  const company = _getSelectedCompany();
+  if (!company || company.source !== "manual") { showToast("Loan bills are only available for manual companies.", "info"); return; }
+  const modal = document.getElementById("loan-stmt-upload-modal");
+  const status = document.getElementById("loan-stmt-status");
+  status.style.display = "none";
+  status.textContent = "";
+  modal.classList.add("active");
+  modal.style.display = "flex";
+  _bindLoanStmtDropzone();
+}
+
+function closeLoanStmtUploadModal() {
+  const modal = document.getElementById("loan-stmt-upload-modal");
+  modal.classList.remove("active");
+  modal.style.display = "none";
+  const input = document.getElementById("loan-stmt-file-input");
+  if (input) input.value = "";
+}
+
+let _loanStmtBound = false;
+function _bindLoanStmtDropzone() {
+  if (_loanStmtBound) return;
+  _loanStmtBound = true;
+  const zone = document.getElementById("loan-stmt-dropzone");
+  const input = document.getElementById("loan-stmt-file-input");
+  if (!zone || !input) return;
+  zone.addEventListener("click", () => input.click());
+  input.addEventListener("change", (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (f) loanStmtHandleFile(f);
+  });
+  ["dragenter", "dragover"].forEach((ev) => {
+    zone.addEventListener(ev, (e) => { e.preventDefault(); zone.style.borderColor = "var(--color-accent)"; zone.style.background = "var(--color-bg-muted)"; });
+  });
+  ["dragleave", "drop"].forEach((ev) => {
+    zone.addEventListener(ev, (e) => { e.preventDefault(); zone.style.borderColor = "var(--color-border)"; zone.style.background = ""; });
+  });
+  zone.addEventListener("drop", (e) => {
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) loanStmtHandleFile(f);
+  });
+}
+
+function _loanStmtStatus(msg, kind) {
+  const el = document.getElementById("loan-stmt-status");
+  if (!el) return;
+  const colors = {
+    info: "background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;",
+    ok:   "background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;",
+    err:  "background:#fef2f2;color:#991b1b;border:1px solid #fecaca;",
+  };
+  el.style.display = "block";
+  el.style.cssText += colors[kind || "info"];
+  el.textContent = msg;
+}
+
+async function loanStmtHandleFile(file) {
+  if (!file) return;
+  if (file.size > 15 * 1024 * 1024) { _loanStmtStatus("File too large (max 15 MB).", "err"); return; }
+  _loanStmtStatus(`Extracting ${file.name}…`, "info");
+  try {
+    const fd = new FormData();
+    fd.append("file", file);
+    const url = `${API}/api/bills/extract-loan-statement?company_id=${encodeURIComponent(selectedCompanyId)}`;
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${authToken}` },
+      body: fd,
+    });
+    if (!resp.ok) {
+      const detail = await resp.text();
+      throw new Error(`HTTP ${resp.status}: ${detail.slice(0, 200)}`);
+    }
+    const payload = await resp.json();
+    if (!payload || !payload.extracted) throw new Error("Empty extraction response");
+    _loanStmtStatus("Extracted. Opening bill…", "ok");
+    await prefillBillFromLoanStatement(payload);
+    closeLoanStmtUploadModal();
+  } catch (e) {
+    _loanStmtStatus(`Failed: ${e.message}`, "err");
+  }
+}
+
+async function prefillBillFromLoanStatement(payload) {
+  // Open the existing Bill edit modal in "create" mode, then overwrite fields
+  // with the extracted values and rebuild the lines array.
+  await _openDocEdit("bill", null);
+
+  const ex = payload.extracted || {};
+  const vendor = payload.vendor || null;     // { id, display_name } | null
+  const mapping = payload.mapping || null;   // saved CoA picks per vendor | null
+
+  // Fields
+  if (ex.loan_account_number) document.getElementById("doc-number").value = ex.loan_account_number;
+  if (ex.billing_date)        document.getElementById("doc-date").value = ex.billing_date;
+  if (ex.due_date)            document.getElementById("doc-due-date").value = ex.due_date;
+  const memoBits = [];
+  if (ex.lender)   memoBits.push(`Loan payment — ${ex.lender}`);
+  if (ex.property) memoBits.push(ex.property);
+  if (memoBits.length) document.getElementById("doc-memo").value = memoBits.join(" · ");
+
+  // Vendor pick — prefer matched id, otherwise leave blank and surface lender name
+  if (vendor && vendor.id) {
+    const partySel = document.getElementById("doc-party");
+    partySel.value = vendor.id;
+  } else if (ex.lender) {
+    showToast(`Vendor "${ex.lender}" not found — pick or create one.`, "info");
+  }
+
+  // Build lines: one per non-zero amount field
+  const lineDefs = [
+    ["principal",   "Principal",   mapping?.principal_coa_id   || ""],
+    ["interest",    "Interest",    mapping?.interest_coa_id    || ""],
+    ["escrow",      "Escrow",      mapping?.escrow_coa_id      || ""],
+    ["late_charge", "Late Charge", mapping?.late_charge_coa_id || ""],
+    ["fees_other",  "Fees / Other",mapping?.fees_coa_id        || ""],
+  ];
+  const lines = [];
+  for (const [key, label, coa] of lineDefs) {
+    const amt = parseFloat(ex[key]) || 0;
+    if (amt > 0) {
+      lines.push({
+        description: label,
+        quantity: 1,
+        unit_price: amt,
+        tax_rate: 0,
+        coa_account_id: coa,
+      });
+    }
+  }
+  if (!lines.length) {
+    // Statement had no positive line components — fall back to a single Total line
+    lines.push({
+      description: "Loan payment",
+      quantity: 1,
+      unit_price: parseFloat(ex.total) || 0,
+      tax_rate: 0,
+      coa_account_id: "",
+    });
+  }
+  _docState.lines = lines;
+  _docState.isLoanBill = true;
+  _docState.loanExtraction = ex;
+  _docState.loanMappingSaved = mapping;
+  _renderDocLines();
+
+  // Sum check
+  const sumLines = lines.reduce((acc, l) => acc + (l.unit_price || 0), 0);
+  const stmtTotal = parseFloat(ex.total) || 0;
+  if (stmtTotal > 0 && Math.abs(sumLines - stmtTotal) > 0.01) {
+    _loanStmtShowMismatch(sumLines, stmtTotal);
+  } else {
+    _loanStmtClearMismatch();
+  }
+}
+
+function _loanStmtShowMismatch(sumLines, stmtTotal) {
+  const errEl = document.getElementById("doc-edit-error");
+  if (!errEl) return;
+  errEl.style.cssText = "display:block;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:var(--radius-md);padding:8px 12px;font-size:var(--text-sm);margin-bottom:8px;";
+  errEl.textContent = `Heads up — extracted lines total ${sumLines.toFixed(2)} but statement shows ${stmtTotal.toFixed(2)}. Please verify before saving.`;
+}
+
+function _loanStmtClearMismatch() {
+  const errEl = document.getElementById("doc-edit-error");
+  if (!errEl) return;
+  errEl.style.cssText = "display:none;";
+  errEl.textContent = "";
+}
+
 async function billsReload() {
   if (!selectedCompanyId) return;
   const status = document.getElementById("bills-filter-status").value;
@@ -8410,6 +8584,9 @@ async function openBillEdit(id) { await _openDocEdit("bill", id); }
 async function _openDocEdit(kind, id) {
   _docState.kind = kind;
   _docState.editing = id;
+  _docState.isLoanBill = false;
+  _docState.loanExtraction = null;
+  _docState.loanMappingSaved = null;
   if (!_contactsState.coa.length) await _contactsLoadCoa();
   _docState.coa = _contactsState.coa;
   await _docLoadParties(kind);
@@ -8607,12 +8784,46 @@ async function docSave() {
     } else {
       await apiPost(`${base}/${selectedCompanyId}`, body);
     }
+    if (kind === "bill" && _docState.isLoanBill) {
+      _maybeSaveLoanCoaMapping(party_id).catch((err) => console.warn("loan CoA mapping save failed:", err));
+    }
+    _docState.isLoanBill = false;
+    _docState.loanExtraction = null;
+    _docState.loanMappingSaved = null;
     closeDocEdit();
     if (kind === "invoice") await invoicesReload(); else await billsReload();
   } catch (e) {
     errEl.textContent = "Failed: " + (e.message || "unknown");
     errEl.style.display = "block";
   }
+}
+
+// After saving a loan bill, persist the vendor → CoA mapping for next time.
+// Fire-and-forget: a failure here doesn't roll back the bill.
+async function _maybeSaveLoanCoaMapping(vendorId) {
+  if (!vendorId || !selectedCompanyId) return;
+  const lineByDesc = (desc) => _docState.lines.find((l) => l.description === desc);
+  const next = {
+    company_id: selectedCompanyId,
+    vendor_id: vendorId,
+    principal_coa_id:   lineByDesc("Principal")?.coa_account_id    || null,
+    interest_coa_id:    lineByDesc("Interest")?.coa_account_id     || null,
+    escrow_coa_id:      lineByDesc("Escrow")?.coa_account_id       || null,
+    late_charge_coa_id: lineByDesc("Late Charge")?.coa_account_id  || null,
+    fees_coa_id:        lineByDesc("Fees / Other")?.coa_account_id || null,
+  };
+  // Skip the upsert if nothing changed vs. what the backend returned earlier.
+  const prev = _docState.loanMappingSaved;
+  if (prev) {
+    const same =
+      prev.principal_coa_id   === next.principal_coa_id   &&
+      prev.interest_coa_id    === next.interest_coa_id    &&
+      prev.escrow_coa_id      === next.escrow_coa_id      &&
+      prev.late_charge_coa_id === next.late_charge_coa_id &&
+      prev.fees_coa_id        === next.fees_coa_id;
+    if (same) return;
+  }
+  await apiPost("/api/vendor-loan-coa-mapping", next);
 }
 
 

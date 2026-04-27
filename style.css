@@ -53,6 +53,9 @@
   --color-text-muted:     #7a7974;
   --color-text-faint:     #bab9b4;
   --color-text-inverse:   #f9f8f4;
+  --color-text-primary:   var(--color-text);
+  --color-text-secondary: var(--color-text-muted);
+  --color-bg-muted:       var(--color-surface-offset);
   --color-primary:        #1a56db;
   --color-primary-hover:  #1648b8;
   --color-primary-active: #123d9a;
