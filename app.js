@@ -8529,6 +8529,13 @@ async function loanStmtHandleFile(file) {
 }
 
 async function prefillBillFromLoanStatement(payload) {
+  // Force-refresh CoA + vendors before opening the modal. _openDocEdit's
+  // cache check ("if (!_contactsState.coa.length)") would otherwise serve
+  // stale data from a different company, leaving the line-item account
+  // dropdowns empty for this company.
+  _contactsState.coa = [];
+  _docState.parties = [];
+
   // Open the existing Bill edit modal in "create" mode, then overwrite fields
   // with the extracted values and rebuild the lines array.
   await _openDocEdit("bill", null);
