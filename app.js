@@ -8540,6 +8540,37 @@ async function prefillBillFromLoanStatement(payload) {
   // with the extracted values and rebuild the lines array.
   await _openDocEdit("bill", null);
 
+  // Railway's /api/coa and /api/vendors return empty for some manual+plaid
+  // companies whose data lives only in Supabase (the loan-statement flow's
+  // backing store). Fall back to Supabase directly via the JWT bridge so the
+  // dropdowns actually populate.
+  if (supabaseAccessToken && selectedCompanyId) {
+    if (!_contactsState.coa.length) {
+      try {
+        const r = await fetch(
+          `${SUPABASE_URL}/rest/v1/chart_of_accounts?company_id=eq.${selectedCompanyId}&is_active=eq.true&select=id,code,name,type&order=code`,
+          { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` } },
+        );
+        if (r.ok) {
+          _contactsState.coa = await r.json();
+          _docState.coa = _contactsState.coa;
+        }
+      } catch { /* keep Railway fallback (empty) */ }
+    }
+    if (!_docState.parties.length) {
+      try {
+        const r = await fetch(
+          `${SUPABASE_URL}/rest/v1/vendors?company_id=eq.${selectedCompanyId}&is_active=eq.true&select=id,display_name,company_name,terms_days,default_account_id&order=display_name`,
+          { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` } },
+        );
+        if (r.ok) {
+          _docState.parties = await r.json();
+          _docRenderPartyOptions();
+        }
+      } catch { /* keep Railway fallback (empty) */ }
+    }
+  }
+
   const ex = payload.extracted || {};
   const vendor = payload.vendor || null;     // { id, display_name } | null
   const mapping = payload.mapping || null;   // saved CoA picks per vendor | null
