@@ -6268,6 +6268,9 @@ async function _supaTxnPatch(txId, body) {
     patch.category_id = null;
     patch.categorized_by = "user";
   }
+  if (body.clear_vendor) {
+    patch.vendor_id = null;
+  }
   if (Object.prototype.hasOwnProperty.call(body, "is_transfer")) {
     patch.is_transfer = !!body.is_transfer;
   }
@@ -6718,7 +6721,8 @@ async function _txComboCommit(id) {
   _closeTxCombo();
   const patch = kind === "category" ? { category_id: id } : { vendor_id: id };
   try {
-    await apiPatch(`/api/transactions/${txId}`, patch);
+    if (_shouldUseRailway()) await apiPatch(`/api/transactions/${txId}`, patch);
+    else await _supaTxnPatch(txId, patch);
     await txReload();
   } catch (e) { showToast("Update failed: " + (e.message || e), "error"); }
 }
@@ -6927,7 +6931,8 @@ async function vendorPickerSelect(vendorId) {
   const txId = _vendorPickerState.txId;
   if (!txId) return;
   try {
-    await apiPatch(`/api/transactions/${txId}`, { vendor_id: vendorId });
+    if (_shouldUseRailway()) await apiPatch(`/api/transactions/${txId}`, { vendor_id: vendorId });
+    else await _supaTxnPatch(txId, { vendor_id: vendorId });
     closeCategoryPicker();
     _resetCategoryPickerDefaults();
     await txReload();
@@ -6973,7 +6978,8 @@ async function vendorPickerClear() {
   const txId = _vendorPickerState.txId;
   if (!txId) return;
   try {
-    await apiPatch(`/api/transactions/${txId}`, { clear_vendor: true });
+    if (_shouldUseRailway()) await apiPatch(`/api/transactions/${txId}`, { clear_vendor: true });
+    else await _supaTxnPatch(txId, { clear_vendor: true });
     closeCategoryPicker();
     _resetCategoryPickerDefaults();
     await txReload();
@@ -7283,7 +7289,8 @@ function rowActionsMenu(event, items) {
 
 async function _txMarkTransfer(txId, mark) {
   try {
-    await apiPatch(`/api/transactions/${txId}`, { is_transfer: mark });
+    if (_shouldUseRailway()) await apiPatch(`/api/transactions/${txId}`, { is_transfer: mark });
+    else await _supaTxnPatch(txId, { is_transfer: mark });
     showToast(mark ? "Marked as transfer" : "Unmarked transfer", "success");
     await txReload();
   } catch (e) { showToast("Failed: " + e.message, "error"); }
@@ -7291,7 +7298,8 @@ async function _txMarkTransfer(txId, mark) {
 
 async function _txClearCategory(txId) {
   try {
-    await apiPatch(`/api/transactions/${txId}`, { clear_category: true });
+    if (_shouldUseRailway()) await apiPatch(`/api/transactions/${txId}`, { clear_category: true });
+    else await _supaTxnPatch(txId, { clear_category: true });
     showToast("Category cleared", "success");
     await txReload();
   } catch (e) { showToast("Failed: " + e.message, "error"); }
@@ -7299,7 +7307,8 @@ async function _txClearCategory(txId) {
 
 async function _txClearVendor(txId) {
   try {
-    await apiPatch(`/api/transactions/${txId}`, { clear_vendor: true });
+    if (_shouldUseRailway()) await apiPatch(`/api/transactions/${txId}`, { clear_vendor: true });
+    else await _supaTxnPatch(txId, { clear_vendor: true });
     showToast("Vendor cleared", "success");
     await txReload();
   } catch (e) { showToast("Failed: " + e.message, "error"); }
