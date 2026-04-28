@@ -1091,6 +1091,13 @@ async function _supaBalanceSheet(companyId, endDate) {
   const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
   const asOf = endDate || new Date().toISOString().slice(0, 10);
 
+  // NOTE: A GL-based Balance Sheet exists at _supaBalanceSheetFromGL but it
+  // requires opening-balance journal entries to be accurate (otherwise bank
+  // accounts compute from cash-leg activity only and net negative). Until
+  // opening balances are backfilled, this hybrid path remains the default
+  // for every company. Switching companies onto the GL BS is a per-company
+  // call once their opening balances are entered.
+
   const [coa, accounts, openBills, openInvoices] = await Promise.all([
     fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts?company_id=eq.${companyId}&is_active=eq.true&select=id,code,name,type,subtype&order=code`, { headers }).then((r) => r.ok ? r.json() : []),
     fetch(`${SUPABASE_URL}/rest/v1/accounts?company_id=eq.${companyId}&select=id,name,type,subtype,current_balance,coa_account_id`, { headers }).then((r) => r.ok ? r.json() : []),
@@ -1172,6 +1179,82 @@ async function _supaBalanceSheet(companyId, endDate) {
   };
 }
 
+// GL-based Balance Sheet: every COA's balance = sum of journal_lines as of
+// the asOf date. Asset/expense are debit-balance (debit−credit); liability,
+// equity, income are credit-balance (credit−debit). Income/expense roll up
+// into a single Retained Earnings (current-year) row under Equity.
+async function _supaBalanceSheetFromGL(companyId, asOf) {
+  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+
+  const [coa, jeRows] = await Promise.all([
+    fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts?company_id=eq.${companyId}&is_active=eq.true&select=id,code,name,type,subtype&order=code`, { headers }).then((r) => r.ok ? r.json() : []),
+    fetch(`${SUPABASE_URL}/rest/v1/journal_entries?company_id=eq.${companyId}&date=lte.${asOf}&select=date,journal_lines(coa_account_id,debit,credit)&limit=20000`, { headers }).then((r) => r.ok ? r.json() : []),
+  ]);
+
+  const coaById = new Map(coa.map((c) => [c.id, c]));
+  // raw[coaId] = signed natural-balance amount (debit-positive types: dr-cr;
+  // credit-positive types: cr-dr).
+  const raw = new Map();
+  for (const je of jeRows) {
+    for (const jl of (je.journal_lines || [])) {
+      const c = coaById.get(jl.coa_account_id);
+      if (!c) continue;
+      const dr = parseFloat(jl.debit || 0);
+      const cr = parseFloat(jl.credit || 0);
+      const debitPositive = (c.type === "asset" || c.type === "expense");
+      const delta = debitPositive ? (dr - cr) : (cr - dr);
+      raw.set(c.id, (raw.get(c.id) || 0) + delta);
+    }
+  }
+
+  // Roll income+expense into a single current-year Retained Earnings line.
+  let netIncomeYTD = 0;
+  for (const c of coa) {
+    if (c.type === "income" || c.type === "expense") {
+      const v = raw.get(c.id) || 0;
+      // Income contributes positively, expense negatively to net income
+      netIncomeYTD += (c.type === "income" ? v : -v);
+    }
+  }
+
+  const accountsWithBalance = coa
+    .filter((c) => c.type === "asset" || c.type === "liability" || c.type === "equity")
+    .map((c) => ({ id: c.id, code: c.code, name: c.name, type: c.type, subtype: c.subtype, balance: raw.get(c.id) || 0 }));
+
+  const buildGroup = (label, type) => {
+    const rows = accountsWithBalance.filter((a) => a.type === type && Math.abs(a.balance) > 0.005);
+    rows.sort((a, b) => (a.code || "").localeCompare(b.code || ""));
+    const total = rows.reduce((s, a) => s + a.balance, 0);
+    return { label, type, rows, total };
+  };
+
+  const assets = buildGroup("Assets", "asset");
+  const liabilities = buildGroup("Liabilities", "liability");
+  const equity = buildGroup("Equity", "equity");
+
+  if (Math.abs(netIncomeYTD) > 0.005) {
+    equity.rows.push({ id: "_ytd_ni", code: "—", name: "Net Income (current period)", type: "equity", balance: netIncomeYTD });
+    equity.total += netIncomeYTD;
+  }
+
+  // Final balance check — should be 0 in a clean GL.
+  const imbalance = assets.total - liabilities.total - equity.total;
+  if (Math.abs(imbalance) > 0.005) {
+    equity.rows.push({ id: "_plug", code: "—", name: "Balance Sheet Imbalance (data check)", type: "equity", balance: imbalance });
+    equity.total += imbalance;
+  }
+
+  return {
+    asOf,
+    companyId,
+    groups: [assets, liabilities, equity],
+    totalAssets: assets.total,
+    totalLiabilities: liabilities.total,
+    totalEquity: equity.total,
+    notice: "Derived from the General Ledger. Single source of truth.",
+  };
+}
+
 function _renderSupaBSReport(data, wrapperId) {
   const wrap = document.getElementById(wrapperId);
   const fmt = (n) => (n < 0 ? `(${Math.abs(n).toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2})})` : n.toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2}));
@@ -1200,10 +1283,32 @@ function _renderSupaBSReport(data, wrapperId) {
   wrap.innerHTML = html;
 }
 
-// Cash-basis P&L from Supabase. Sums transactions by category (= CoA id)
-// for the period, grouped into income vs expense. App amount convention:
-// positive = outflow (expense direction), negative = inflow (income).
+// Cash-basis P&L from Supabase. Routes to the GL-based builder when the
+// company has any journal_entries (proper double-entry data); otherwise
+// falls back to the legacy transactions × categories × COA path that has
+// served manual+Plaid companies prior to the GL backfill.
 async function _supaProfitLoss(companyId, startDate, endDate, summarizeBy) {
+  if (!supabaseAccessToken) throw new Error("Supabase session required.");
+  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+  // Detect whether this company has GL data — if yes, use it.
+  try {
+    const probe = await fetch(
+      `${SUPABASE_URL}/rest/v1/journal_entries?company_id=eq.${companyId}&select=id&limit=1`,
+      { headers }
+    );
+    if (probe.ok) {
+      const rows = await probe.json();
+      if (Array.isArray(rows) && rows.length > 0) {
+        return _supaProfitLossFromGL(companyId, startDate, endDate, summarizeBy);
+      }
+    }
+  } catch { /* fall through to legacy path */ }
+  return _supaProfitLossFromTxns(companyId, startDate, endDate, summarizeBy);
+}
+
+// Legacy P&L: reads transactions × categories × chart_of_accounts. Kept
+// for companies that don't have a general ledger populated yet.
+async function _supaProfitLossFromTxns(companyId, startDate, endDate, summarizeBy) {
   if (!supabaseAccessToken) throw new Error("Supabase session required.");
   const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
   const start = startDate || `${new Date().getFullYear()}-01-01`;
@@ -1319,7 +1424,121 @@ async function _supaProfitLoss(companyId, startDate, endDate, summarizeBy) {
     totalExpense: expenseTotals.total,
     netIncome: incomeTotals.total - expenseTotals.total,
     netByColumn,
-    notice: "Cash basis · derived from categorized transactions in Supabase. No prior-period compare yet.",
+    notice: "Cash basis · derived from categorized transactions in Supabase (legacy path — no GL data for this company yet). No prior-period compare yet.",
+  };
+}
+
+// GL-based P&L: reads journal_lines × journal_entries × chart_of_accounts.
+// Income COAs naturally hold credit balances (revenue = credits − debits);
+// expense COAs are debit balances (expense = debits − credits). Same shape
+// as _supaProfitLossFromTxns so the renderer doesn't need to change.
+async function _supaProfitLossFromGL(companyId, startDate, endDate, summarizeBy) {
+  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+  const start = startDate || `${new Date().getFullYear()}-01-01`;
+  const end = endDate || new Date().toISOString().slice(0, 10);
+
+  const [coa, jeRows] = await Promise.all([
+    fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts?company_id=eq.${companyId}&is_active=eq.true&type=in.(income,expense)&select=id,code,name,type,subtype&order=code`, { headers }).then((r) => r.ok ? r.json() : []),
+    // Pull every JE in range with its lines inlined via PostgREST embed
+    fetch(`${SUPABASE_URL}/rest/v1/journal_entries?company_id=eq.${companyId}&date=gte.${start}&date=lte.${end}&select=date,journal_lines(coa_account_id,debit,credit)&limit=10000`, { headers }).then((r) => r.ok ? r.json() : []),
+  ]);
+
+  const sb = (summarizeBy || "").toLowerCase();
+  const colKey = (date) => {
+    if (!date) return "Total";
+    if (sb === "month") return date.slice(0, 7);
+    if (sb === "quarter") {
+      const m = parseInt(date.slice(5, 7), 10);
+      return `${date.slice(0, 4)}-Q${Math.ceil(m / 3)}`;
+    }
+    if (sb === "year") return date.slice(0, 4);
+    return "Total";
+  };
+  const colLabel = (key) => {
+    if (key === "Total") return "Total";
+    if (sb === "month") {
+      const [y, m] = key.split("-");
+      return new Date(parseInt(y, 10), parseInt(m, 10) - 1, 1).toLocaleString("en-US", { month: "short", year: "numeric" });
+    }
+    return key;
+  };
+
+  const coaTypeById = new Map(coa.map((c) => [c.id, c.type]));
+  // byCoaCol: coaId -> Map<colKey, signed P&L amount>
+  const byCoaCol = new Map();
+  const colKeysSet = new Set();
+  for (const je of jeRows) {
+    const k = colKey(je.date);
+    for (const jl of (je.journal_lines || [])) {
+      const t = coaTypeById.get(jl.coa_account_id);
+      if (t !== "income" && t !== "expense") continue;
+      const dr = parseFloat(jl.debit || 0);
+      const cr = parseFloat(jl.credit || 0);
+      // Income: revenue is credit-balance, so the natural P&L value is cr-dr.
+      // Expense: dr-cr. We store the "raw" value (income negative, expense positive)
+      // mirroring the legacy path so buildRow's sign-flip logic stays consistent.
+      const raw = t === "income" ? -(cr - dr) : (dr - cr);
+      colKeysSet.add(k);
+      let m = byCoaCol.get(jl.coa_account_id);
+      if (!m) { m = new Map(); byCoaCol.set(jl.coa_account_id, m); }
+      m.set(k, (m.get(k) || 0) + raw);
+    }
+  }
+
+  let columns = [];
+  if (!sb) {
+    columns = [{ key: "Total", label: "Total" }];
+  } else {
+    const keys = Array.from(colKeysSet); keys.sort();
+    columns = keys.map((k) => ({ key: k, label: colLabel(k) }));
+    if (!columns.length) columns = [{ key: colKey(start), label: colLabel(colKey(start)) }];
+  }
+
+  const buildRow = (c) => {
+    const m = byCoaCol.get(c.id) || new Map();
+    const byColumn = {};
+    let total = 0;
+    for (const col of columns) {
+      const v = m.get(col.key) || 0;
+      const display = c.type === "income" ? -v : v;
+      byColumn[col.key] = display;
+      total += display;
+    }
+    return { id: c.id, code: c.code, name: c.name, type: c.type, byColumn, balance: total };
+  };
+
+  const incomeRows = coa.filter((c) => c.type === "income").map(buildRow).filter((r) => columns.some((col) => Math.abs(r.byColumn[col.key]) > 0.005));
+  const expenseRows = coa.filter((c) => c.type === "expense").map(buildRow).filter((r) => columns.some((col) => Math.abs(r.byColumn[col.key]) > 0.005));
+  incomeRows.sort((a, b) => (a.code || "").localeCompare(b.code || ""));
+  expenseRows.sort((a, b) => (a.code || "").localeCompare(b.code || ""));
+
+  const colTotals = (rows) => {
+    const out = { total: 0 };
+    for (const col of columns) {
+      out[col.key] = rows.reduce((s, r) => s + (r.byColumn[col.key] || 0), 0);
+      out.total += out[col.key];
+    }
+    return out;
+  };
+  const incomeTotals = colTotals(incomeRows);
+  const expenseTotals = colTotals(expenseRows);
+  const netByColumn = {};
+  for (const col of columns) {
+    netByColumn[col.key] = (incomeTotals[col.key] || 0) - (expenseTotals[col.key] || 0);
+  }
+
+  return {
+    start, end,
+    columns,
+    groups: [
+      { label: "Income",  rows: incomeRows,  totals: incomeTotals,  total: incomeTotals.total },
+      { label: "Expense", rows: expenseRows, totals: expenseTotals, total: expenseTotals.total },
+    ],
+    totalIncome: incomeTotals.total,
+    totalExpense: expenseTotals.total,
+    netIncome: incomeTotals.total - expenseTotals.total,
+    netByColumn,
+    notice: "Cash basis · derived from the General Ledger. Single source of truth.",
   };
 }
 
