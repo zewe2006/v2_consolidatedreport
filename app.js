@@ -5745,6 +5745,23 @@ async function _txFetchFromSupabase(params) {
     sp.append("plaid_txn_id", "not.like.qbo:*");
   }
 
+  // Pass through bank/account chip selections. plaid_item_id lives on the
+  // accounts table, so resolve to a set of account_ids client-side from the
+  // cached _txState.accounts list and filter with PostgREST's in.() syntax.
+  if (acctSelected) sp.append("account_id", `eq.${acctSelected}`);
+  if (bankSelected) {
+    const ids = (_txState.accounts || [])
+      .filter((a) => a.plaid_item_id === bankSelected)
+      .map((a) => a.id);
+    if (ids.length) {
+      sp.append("account_id", `in.(${ids.join(",")})`);
+    } else {
+      // Bank selected but we have no accounts for it cached — return nothing
+      // rather than fall back to "all transactions for the company".
+      sp.append("account_id", "eq.00000000-0000-0000-0000-000000000000");
+    }
+  }
+
   const search = params.get("search");
   if (search) {
     const s = search.replace(/[(),*]/g, "");
