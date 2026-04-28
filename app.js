@@ -6425,6 +6425,18 @@ async function _txFetchFromSupabase(params) {
   if (dateFrom) sp.append("date", `gte.${dateFrom}`);
   const dateTo = params.get("date_to");
   if (dateTo) sp.append("date", `lte.${dateTo}`);
+  // Header filter chips that the original code set on `params` but the
+  // Supabase fetcher was ignoring — that's why "Uncategorized only" and
+  // "Transfers only" were showing categorized/non-transfer rows through.
+  const cat = params.get("category_id");
+  if (cat) sp.append("category_id", `eq.${cat}`);
+  if (params.get("uncategorized_only") === "true") {
+    sp.append("category_id", "is.null");
+    sp.append("is_transfer", "eq.false");
+  }
+  if (params.get("transfers_only") === "true") {
+    sp.append("is_transfer", "eq.true");
+  }
 
   try {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/transactions?${sp.toString()}`, {
