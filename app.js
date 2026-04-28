@@ -7412,10 +7412,27 @@ async function coaSave() {
   const is_active = document.getElementById("coa-active").checked;
   if (!code || !name) { errEl.textContent = "Code and name are required."; errEl.style.display = "block"; return; }
   try {
-    if (_coaEditId) {
-      await apiPatch(`/api/coa/${_coaEditId}`, { code, name, type, parent_id, is_active });
+    const company = _getSelectedCompany();
+    const isQbo = ((company?.source) || "qbo") === "qbo";
+    if (!isQbo && supabaseAccessToken) {
+      const headers = { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+      if (_coaEditId) {
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts?id=eq.${_coaEditId}`, {
+          method: "PATCH", headers, body: JSON.stringify({ code, name, type, parent_id, is_active }),
+        });
+        if (!r.ok) throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 200)}`);
+      } else {
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts`, {
+          method: "POST", headers, body: JSON.stringify({ company_id: selectedCompanyId, code, name, type, parent_id, is_active: true }),
+        });
+        if (!r.ok) throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 200)}`);
+      }
     } else {
-      await apiPost(`/api/coa/${selectedCompanyId}`, { code, name, type, parent_id });
+      if (_coaEditId) {
+        await apiPatch(`/api/coa/${_coaEditId}`, { code, name, type, parent_id, is_active });
+      } else {
+        await apiPost(`/api/coa/${selectedCompanyId}`, { code, name, type, parent_id });
+      }
     }
     closeCoaEditModal();
     await coaReload();
@@ -7425,7 +7442,18 @@ async function coaSave() {
 async function coaArchive(id) {
   if (!confirm("Archive this account? Inactive accounts stop showing in pickers and reports.")) return;
   try {
-    await apiPatch(`/api/coa/${id}`, { is_active: false });
+    const company = _getSelectedCompany();
+    const isQbo = ((company?.source) || "qbo") === "qbo";
+    if (!isQbo && supabaseAccessToken) {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts?id=eq.${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
+        body: JSON.stringify({ is_active: false }),
+      });
+      if (!r.ok) throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    } else {
+      await apiPatch(`/api/coa/${id}`, { is_active: false });
+    }
     showToast("Archived", "success");
     await coaReload();
   } catch (e) { showToast("Failed: " + e.message, "error"); }
