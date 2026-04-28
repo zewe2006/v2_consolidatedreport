@@ -1883,39 +1883,24 @@ async function _refreshDrillModal() {
   }
   if (currentTxnDetail?.account_name) {
     const ctx = _getActiveReportContext();
-    if (_shouldUseRailway()) {
-      const data = await apiPost("/api/reports/transaction-detail", {
-        account_name: currentTxnDetail.account_name,
-        company_id: ctx.company_id || "all",
-        company_ids: ctx.company_ids || null,
-        start_date: ctx.start_date || null,
-        end_date: ctx.end_date || null,
-        date_macro: ctx.date_macro || null,
-        accounting_method: ctx.accounting_method || "Accrual",
-      });
-      currentTxnDetail = data;
-      renderTransactionDetail(data);
-    } else {
-      // No CoA id from a P&L/BS drill — render whatever we already had.
-      // Account-register flow uses register_account_name and runs its own
-      // path above, so this branch is mainly defensive.
-      renderTransactionDetail(currentTxnDetail);
-    }
+    const data = await apiPost("/api/reports/transaction-detail", {
+      account_name: currentTxnDetail.account_name,
+      company_id: ctx.company_id || "all",
+      company_ids: ctx.company_ids || null,
+      start_date: ctx.start_date || null,
+      end_date: ctx.end_date || null,
+      date_macro: ctx.date_macro || null,
+      accounting_method: ctx.accounting_method || "Accrual",
+    });
+    currentTxnDetail = data;
+    renderTransactionDetail(data);
   }
 }
 
 async function drillDeleteTxn(txnId) {
   if (!confirm("Delete this transaction? This cannot be undone.")) return;
   try {
-    if (_shouldUseRailway()) {
-      await apiDelete(`/api/transactions/${txnId}`);
-    } else {
-      const r = await fetch(`${SUPABASE_URL}/rest/v1/transactions?id=eq.${encodeURIComponent(txnId)}`, {
-        method: "DELETE",
-        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
-      });
-      if (!r.ok) throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 200)}`);
-    }
+    await apiDelete(`/api/transactions/${txnId}`);
     showToast("Deleted.", "success");
     await _refreshDrillModal();
   } catch (e) {
@@ -1927,8 +1912,7 @@ async function drillEditTxn(txnId) {
   if (typeof openCategoryPicker === "function") {
     openCategoryPicker(txnId, async (catId) => {
       try {
-        if (_shouldUseRailway()) await apiPatch(`/api/transactions/${txnId}`, { category_id: catId });
-        else await _supaTxnPatch(txnId, { category_id: catId });
+        await apiPatch(`/api/transactions/${txnId}`, { category_id: catId });
         showToast("Category updated.", "success");
         await _refreshDrillModal();
       } catch (e) { showToast("Update failed: " + (e.message || e), "error"); }
@@ -6108,28 +6092,19 @@ async function txReload() {
   if (document.getElementById("tx-filter-transfers").checked) params.set("transfers_only", "true");
 
   try {
-    let txs = [];
-    let hasMore = false;
-    // Manual+Plaid companies live in Supabase. QBO companies live in
-    // Railway. _shouldUseRailway() picks the right backend, with a safe
-    // Supabase fallback when the company list isn't loaded but a Supabase
-    // session exists.
-    if (_shouldUseRailway()) {
-      const resp = await apiGet(`/api/transactions/${selectedCompanyId}?${params.toString()}`);
-      txs = resp.transactions || [];
-      hasMore = !!resp.has_more;
-      // Defensive: if Railway returns empty for what's actually a Supabase
-      // company (stale source flag, etc.), fall through to Supabase.
-      if (!txs.length && supabaseAccessToken) {
-        const fb = await _txFetchFromSupabase(params);
-        if (fb && fb.rows && fb.rows.length) { txs = fb.rows; hasMore = !!fb.has_more; }
-      }
-    } else if (supabaseAccessToken) {
+    let resp = await apiGet(`/api/transactions/${selectedCompanyId}?${params.toString()}`);
+    let txs = resp.transactions || [];
+    // Supabase fallback: if Railway returned nothing AND we have a Supabase
+    // session, query Supabase directly. Manual+Plaid companies' transactions
+    // live there, not in Railway's DB.
+    if (!txs.length && supabaseAccessToken) {
       const fb = await _txFetchFromSupabase(params);
-      txs = (fb && fb.rows) || [];
-      hasMore = !!(fb && fb.has_more);
+      if (fb && fb.length) {
+        txs = fb;
+        resp.has_more = false; // simple paging — no cursor support yet
+      }
     }
-    _txState.has_more = hasMore;
+    _txState.has_more = !!resp.has_more;
     _txState.txs = txs;
     // Fetch match hints first so the render shows inline Match buttons
     // for any Plaid-categorized rows that line up with an open invoice/bill.
@@ -6160,71 +6135,21 @@ async function _supaFetch(table, query) {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${sp.toString()}`, {
       headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
     });
-    if (!r.ok) {
-      console.warn(`[supa] ${table} ${r.status}`, (await r.text()).slice(0, 200));
-      return null;
-    }
+    if (!r.ok) return null;
     return await r.json();
-  } catch (e) { console.warn(`[supa] ${table} fetch failed`, e); return null; }
+  } catch { return null; }
 }
 
-// PATCH a single row in `table` filtered by `id`. Throws on non-2xx so
-// callers can show toast errors. Used by the dual-path writers in
-// transactions/accounts when the active company is manual+Plaid.
-async function _supaPatchRow(table, id, patch) {
-  if (!supabaseAccessToken) throw new Error("Not signed in to Supabase.");
-  const headers = {
-    "Content-Type": "application/json",
-    apikey: SUPABASE_ANON_KEY,
-    Authorization: `Bearer ${supabaseAccessToken}`,
-    Prefer: "return=minimal",
-  };
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${encodeURIComponent(id)}`, {
-    method: "PATCH", headers, body: JSON.stringify(patch),
-  });
-  if (!r.ok) throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 200)}`);
-}
-
-// Translate the Railway PATCH /api/transactions/{id} body shape into the
-// Supabase column shape, then apply it.
-async function _supaTxnPatch(txId, body) {
-  const patch = {};
-  if (Object.prototype.hasOwnProperty.call(body, "category_id")) {
-    patch.category_id = body.category_id;
-    patch.categorized_by = "user";
-  }
-  if (body.clear_category) {
-    patch.category_id = null;
-    patch.categorized_by = "user";
-  }
-  if (Object.prototype.hasOwnProperty.call(body, "is_transfer")) {
-    patch.is_transfer = !!body.is_transfer;
-  }
-  if (Object.prototype.hasOwnProperty.call(body, "vendor_id")) {
-    patch.vendor_id = body.vendor_id;
-  }
-  if (Object.prototype.hasOwnProperty.call(body, "notes")) {
-    patch.notes = body.notes;
-  }
-  if (!Object.keys(patch).length) return;
-  await _supaPatchRow("transactions", txId, patch);
-}
-
-// Pull transactions directly from Supabase. Returns { rows, has_more }.
-// Used as the primary path for manual+Plaid companies and as a fallback
-// when Railway returns an empty page for a misclassified company.
+// Pull transactions directly from Supabase when Railway's transactions
+// endpoint is empty for this company (manual+plaid companies whose Plaid
+// sync writes to Supabase, not Railway).
 async function _txFetchFromSupabase(params) {
-  if (!supabaseAccessToken || !selectedCompanyId) return { rows: [], has_more: false };
+  if (!supabaseAccessToken || !selectedCompanyId) return null;
   const sp = new URLSearchParams();
   sp.append("company_id", `eq.${selectedCompanyId}`);
   sp.append("select", "*,account:accounts(name,mask),vendor:vendors(display_name),category:categories(name)");
-  // Honor sort + paging from the caller's params so manual+Plaid companies
-  // get real pagination (Range header + count=exact for has_more).
-  const limit = parseInt(params.get("limit") || "50", 10);
-  const offset = parseInt(params.get("offset") || "0", 10);
-  const sort = params.get("sort") || "date.desc";
-  // sort is "<col>.<dir>" (e.g. "date.desc"); pass through as PostgREST order.
-  sp.append("order", sort);
+  sp.append("order", "date.desc");
+  sp.append("limit", "200");
   // Hide QBO-imported journal entries by default — those are double-entry
   // rows that duplicate real bank activity. Only apply this hide when the
   // user has NOT picked a specific bank/account chip; if they explicitly
@@ -6267,33 +6192,12 @@ async function _txFetchFromSupabase(params) {
       headers: {
         apikey: SUPABASE_ANON_KEY,
         Authorization: `Bearer ${supabaseAccessToken}`,
-        // count=exact + Range tells PostgREST to return total count in the
-        // Content-Range header so we can compute has_more without an extra
-        // round-trip.
-        Prefer: "count=exact",
-        Range: `${offset}-${offset + limit - 1}`,
       },
     });
-    if (!r.ok) {
-      console.warn("[supa] transactions", r.status, (await r.text()).slice(0, 200));
-      return { rows: [], has_more: false };
-    }
-    const rows = await r.json();
-    let hasMore = false;
-    const cr = r.headers.get("content-range") || "";
-    // Content-Range looks like "0-49/250" or "0-49/*"
-    const m = /\/(\d+|\*)/.exec(cr);
-    if (m && m[1] !== "*") {
-      const total = parseInt(m[1], 10);
-      hasMore = (offset + rows.length) < total;
-    } else {
-      // Conservative fallback: if a full page came back, assume more.
-      hasMore = rows.length >= limit;
-    }
-    return { rows, has_more: hasMore };
-  } catch (e) {
-    console.warn("[supa] transactions fetch failed", e);
-    return { rows: [], has_more: false };
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
   }
 }
 
@@ -6980,12 +6884,10 @@ let _bulkCategorizeIds = [];
 async function _bulkCategorizeApply(categoryId) {
   const ids = _bulkCategorizeIds || [];
   if (!ids.length) return;
-  const useRailway = _shouldUseRailway();
   let ok = 0, fail = 0;
   for (const id of ids) {
     try {
-      if (useRailway) await apiPatch(`/api/transactions/${id}`, { category_id: categoryId });
-      else await _supaTxnPatch(id, { category_id: categoryId });
+      await apiPatch(`/api/transactions/${id}`, { category_id: categoryId });
       ok++;
     } catch (e) { fail++; }
   }
@@ -7000,14 +6902,10 @@ async function txBulkMarkTransfer() {
   const ids = _txSelectedIds();
   if (!ids.length) return;
   if (!confirm(`Mark ${ids.length} transaction(s) as transfer? They'll drop out of P&L.`)) return;
-  const useRailway = _shouldUseRailway();
   let ok = 0, fail = 0;
   for (const id of ids) {
-    try {
-      if (useRailway) await apiPatch(`/api/transactions/${id}`, { is_transfer: true });
-      else await _supaTxnPatch(id, { is_transfer: true });
-      ok++;
-    } catch (e) { fail++; }
+    try { await apiPatch(`/api/transactions/${id}`, { is_transfer: true }); ok++; }
+    catch (e) { fail++; }
   }
   showToast(`Marked ${ok} as transfer${fail ? `, ${fail} failed` : ""}`, ok ? "success" : "error");
   txBulkClear();
@@ -7018,14 +6916,10 @@ async function txBulkClearCategory() {
   const ids = _txSelectedIds();
   if (!ids.length) return;
   if (!confirm(`Clear category on ${ids.length} transaction(s)?`)) return;
-  const useRailway = _shouldUseRailway();
   let ok = 0, fail = 0;
   for (const id of ids) {
-    try {
-      if (useRailway) await apiPatch(`/api/transactions/${id}`, { clear_category: true });
-      else await _supaTxnPatch(id, { clear_category: true });
-      ok++;
-    } catch (e) { fail++; }
+    try { await apiPatch(`/api/transactions/${id}`, { clear_category: true }); ok++; }
+    catch (e) { fail++; }
   }
   showToast(`Cleared ${ok}${fail ? `, ${fail} failed` : ""}`, ok ? "success" : "error");
   txBulkClear();
@@ -7050,9 +6944,7 @@ async function txRecategorize() {
   if (!selectedCompanyId) return;
   if (!confirm("Re-run categorization rules on all uncategorized transactions?")) return;
   try {
-    const res = _shouldUseRailway()
-      ? await apiPost(`/api/rules/${selectedCompanyId}/recategorize`, {})
-      : await _supaRulesRecategorize("uncategorized");
+    const res = await apiPost(`/api/rules/${selectedCompanyId}/recategorize`, {});
     showToast(`Categorized: ${res.rule || 0} by rule · ${res.plaid || 0} by Plaid · ${res.skipped || 0} still uncategorized`, "success");
     await txReload();
   } catch (e) {
@@ -7293,8 +7185,7 @@ async function categoryPickerSelect(categoryId) {
   const txId = _catPickerState.txId;
   if (!txId) return;
   try {
-    if (_shouldUseRailway()) await apiPatch(`/api/transactions/${txId}`, { category_id: categoryId });
-    else await _supaTxnPatch(txId, { category_id: categoryId });
+    await apiPatch(`/api/transactions/${txId}`, { category_id: categoryId });
     closeCategoryPicker();
     await txReload();
   } catch (e) { showToast(friendlyError(e), "error"); }
@@ -7305,8 +7196,7 @@ async function categoryPickerClear() {
   const txId = _catPickerState.txId;
   if (!txId) return;
   try {
-    if (_shouldUseRailway()) await apiPatch(`/api/transactions/${txId}`, { clear_category: true });
-    else await _supaTxnPatch(txId, { clear_category: true });
+    await apiPatch(`/api/transactions/${txId}`, { clear_category: true });
     closeCategoryPicker();
     await txReload();
   } catch (e) { showToast(friendlyError(e), "error"); }
@@ -7497,7 +7387,7 @@ function _coaRender() {
     <td style="font-family:monospace;font-size:var(--text-sm);">${_escapeHtml(a.code)}</td>
     <td><strong>${_escapeHtml(a.name)}</strong></td>
     <td><span class="badge" style="background:${typeColor[a.type] || "#888"}22;color:${typeColor[a.type] || "#888"};">${a.type}</span></td>
-    <td style="text-align:right;font-variant-numeric:tabular-nums;">${a.ytd_activity != null ? formatCurrency(a.ytd_activity) : '<span style="color:var(--color-text-muted);">—</span>'}</td>
+    <td style="text-align:right;font-variant-numeric:tabular-nums;">${formatCurrency(a.ytd_activity)}</td>
     <td style="text-align:right;white-space:nowrap;">
       <button class="btn btn-sm btn-ghost" onclick="openAccountRegister('${a.id}','${a.name.replace(/'/g, "\\'")}')" title="View and edit all transactions for this account">Register</button>
       <button class="btn btn-sm btn-ghost" onclick='rowActionsMenu(event, [{label:"Edit", onClick:"openCoaEditModal(\u0027${a.id}\u0027)"}, null, {label:"Archive", onClick:"coaArchive(\u0027${a.id}\u0027)", danger:true}])' title="More">⋯</button>
@@ -7518,112 +7408,22 @@ async function openAccountRegister(coaId, accountName) {
   table.innerHTML = "";
   modal.classList.add("active");
   try {
-    // Resolve coaId once — _refreshDrillModal calls back with empty coaId
-    // and only the accountName, so fall back to the cached register id.
-    const resolvedCoaId = coaId || (currentTxnDetail && currentTxnDetail.register_coa_id) || "";
-    let data;
-    if (_shouldUseRailway()) {
-      data = await apiPost("/api/reports/transaction-detail", {
-        account_name: accountName,
-        company_id: selectedCompanyId,
-        start_date: null, end_date: null, date_macro: null,
-        accounting_method: "Accrual",
-      });
-    } else {
-      data = await _supaAccountRegister(resolvedCoaId, accountName);
-    }
+    const data = await apiPost("/api/reports/transaction-detail", {
+      account_name: accountName,
+      company_id: selectedCompanyId,
+      start_date: null, end_date: null, date_macro: null,
+      accounting_method: "Accrual",
+    });
     // Tag as register mode so _refreshDrillModal re-uses this path on edit/delete.
     currentTxnDetail = Object.assign({}, data, {
       register_account_name: accountName,
       register_company_id: selectedCompanyId,
-      register_coa_id: resolvedCoaId,
     });
     loading.classList.add("hidden");
     renderTransactionDetail(currentTxnDetail);
   } catch (e) {
     loading.innerHTML = `<p style="color:var(--color-error);padding:var(--space-4);">Error loading register: ${e.message}</p>`;
   }
-}
-
-// Supabase-side equivalent of QBO's /api/reports/transaction-detail for the
-// account-register flow. Returns transactions hitting the given CoA either
-// as the categorized side (transactions.category_id ↦ categories.coa_account_id)
-// or the bank/cash side (accounts.coa_account_id), shaped for renderTransactionDetail.
-async function _supaAccountRegister(coaId, accountName) {
-  if (!supabaseAccessToken || !selectedCompanyId) {
-    throw new Error("Sign in required.");
-  }
-  if (!coaId) {
-    return { account_name: accountName, transactions: [] };
-  }
-  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
-  const base = `${SUPABASE_URL}/rest/v1`;
-
-  // 1. Find the mirror category (categories.coa_account_id = coaId) for the
-  //    P&L side, and bank accounts whose coa_account_id = coaId for the cash
-  //    side. Both lookups are scoped to the current company.
-  const [catRows, acctRows] = await Promise.all([
-    fetch(`${base}/categories?company_id=eq.${selectedCompanyId}&coa_account_id=eq.${coaId}&select=id`, { headers })
-      .then((r) => r.ok ? r.json() : []),
-    fetch(`${base}/accounts?company_id=eq.${selectedCompanyId}&coa_account_id=eq.${coaId}&select=id,name,mask`, { headers })
-      .then((r) => r.ok ? r.json() : []),
-  ]);
-  const categoryIds = (catRows || []).map((c) => c.id);
-  const bankAccountIds = (acctRows || []).map((a) => a.id);
-
-  if (!categoryIds.length && !bankAccountIds.length) {
-    return { account_name: accountName, transactions: [] };
-  }
-
-  const sel = "id,date,amount,description,merchant_name,is_transfer,split_parent_id,categorized_by,plaid_txn_id,account:accounts(name,mask),vendor:vendors(display_name),category:categories(name,coa_account_id)";
-  const queries = [];
-  if (categoryIds.length) {
-    queries.push(`${base}/transactions?company_id=eq.${selectedCompanyId}&category_id=in.(${categoryIds.join(",")})&order=date.desc&limit=500&select=${encodeURIComponent(sel)}`);
-  }
-  if (bankAccountIds.length) {
-    queries.push(`${base}/transactions?company_id=eq.${selectedCompanyId}&account_id=in.(${bankAccountIds.join(",")})&order=date.desc&limit=500&select=${encodeURIComponent(sel)}`);
-  }
-
-  const results = await Promise.all(queries.map((u) => fetch(u, { headers }).then((r) => r.ok ? r.json() : [])));
-  const seen = new Set();
-  const merged = [];
-  for (const arr of results) {
-    for (const t of (arr || [])) {
-      if (seen.has(t.id)) continue;
-      seen.add(t.id);
-      merged.push(t);
-    }
-  }
-  merged.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-
-  // Shape into the columns renderTransactionDetail expects.
-  const transactions = merged.map((t) => {
-    const amt = Number(t.amount || 0);
-    // Plaid: positive = outflow (debit on bank). Mirror QBO's debit/credit
-    // pair so the totals row balances against the Net column.
-    const debit = amt > 0 ? amt : 0;
-    const credit = amt < 0 ? -amt : 0;
-    const acctLabel = t.account ? `${t.account.name}${t.account.mask ? " ···" + t.account.mask : ""}` : "";
-    const vendor = t.vendor ? t.vendor.display_name : "";
-    const merchant = t.merchant_name || vendor || t.description || "";
-    const memo = (t.description && t.description !== merchant) ? t.description : "";
-    return {
-      id: t.id,
-      editable: true,
-      Date: t.date || "",
-      "Transaction Type": t.is_transfer ? "Transfer" : "Bank Txn",
-      Num: "",
-      Name: vendor || merchant,
-      "Memo/Description": memo,
-      Account: acctLabel,
-      Debit: debit ? debit.toFixed(2) : "",
-      Credit: credit ? credit.toFixed(2) : "",
-      Amount: amt.toFixed(2),
-      Balance: "",
-    };
-  });
-
-  return { account_name: accountName, transactions };
 }
 
 let _coaEditId = null;
@@ -7668,7 +7468,7 @@ async function coaSave() {
         if (!r.ok) throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 200)}`);
       } else {
         const r = await fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts`, {
-          method: "POST", headers, body: JSON.stringify({ company_id: selectedCompanyId, code, name, type, parent_id, is_active }),
+          method: "POST", headers, body: JSON.stringify({ company_id: selectedCompanyId, code, name, type, parent_id, is_active: true }),
         });
         if (!r.ok) throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 200)}`);
       }
@@ -7834,148 +7634,19 @@ async function rulesRecategorize() {
   );
   if (!scope) return;
   const validScopes = ["uncategorized", "non_user", "all"];
-  const sc = scope.trim();
-  if (!validScopes.includes(sc)) {
+  if (!validScopes.includes(scope.trim())) {
     showToast("Scope must be one of: " + validScopes.join(", "), "error");
     return;
   }
   try {
-    let res;
-    if (_shouldUseRailway()) {
-      res = await apiPost(`/api/rules/${selectedCompanyId}/recategorize?scope=${sc}`, {});
-    } else {
-      res = await _supaRulesRecategorize(sc);
-    }
+    const res = await apiPost(
+      `/api/rules/${selectedCompanyId}/recategorize?scope=${scope.trim()}`, {},
+    );
     showToast(
       `Categorized: ${res.rule || 0} by rule · ${res.plaid || 0} by Plaid · ${res.skipped || 0} skipped`,
       "success",
     );
-    if (typeof txReload === "function") await txReload();
   } catch (e) { showToast("Failed: " + e.message, "error"); }
-}
-
-// Build a function that decides whether a transaction matches a rule's
-// `match` object. Used by both preview and recategorize on the Supabase
-// path. Mirrors the Railway-side rules engine's semantics for the keys
-// that show up in the UI: merchant (substring), description_regex,
-// min/max amount, direction (in/out by sign), and account_id.
-function _ruleMatcher(match) {
-  const m = match || {};
-  const merchantNeedle = m.merchant ? String(m.merchant).toLowerCase() : null;
-  let descRe = null;
-  if (m.description_regex) {
-    try { descRe = new RegExp(m.description_regex, "i"); } catch { descRe = null; }
-  }
-  const min = (m.min !== undefined && m.min !== null && m.min !== "") ? parseFloat(m.min) : null;
-  const max = (m.max !== undefined && m.max !== null && m.max !== "") ? parseFloat(m.max) : null;
-  const dir = (m.direction === "in" || m.direction === "out") ? m.direction : null;
-  const acctId = m.account_id || null;
-  return (t) => {
-    if (acctId && t.account_id !== acctId) return false;
-    const amt = Number(t.amount || 0);
-    if (min !== null && amt < min) return false;
-    if (max !== null && amt > max) return false;
-    // Plaid convention: amount > 0 = outflow ("out"), amount < 0 = inflow ("in").
-    if (dir === "in" && amt >= 0) return false;
-    if (dir === "out" && amt <= 0) return false;
-    if (merchantNeedle) {
-      const hay = ((t.merchant_name || "") + " " + (t.description || "")).toLowerCase();
-      if (!hay.includes(merchantNeedle)) return false;
-    }
-    if (descRe) {
-      if (!descRe.test(t.description || "")) return false;
-    }
-    return true;
-  };
-}
-
-// Apply a scope filter to a list of transactions. Mirrors Railway's
-// recategorize endpoint scopes so the prompt behavior is consistent.
-function _applyScopeFilter(rows, scope) {
-  return rows.filter((t) => {
-    if (t.is_transfer) return false;
-    if (scope === "uncategorized") return !t.category_id;
-    if (scope === "non_user") return t.categorized_by !== "user";
-    if (scope === "plaid_only") return t.categorized_by === "plaid";
-    if (scope === "all") return true;
-    return false;
-  });
-}
-
-// Fetch every transaction for the active company. Pages through Supabase
-// in batches of 1000 so we don't truncate at PostgREST's default limit.
-async function _supaFetchAllTxns() {
-  if (!supabaseAccessToken || !selectedCompanyId) return [];
-  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}`, Prefer: "count=exact" };
-  const sel = "id,date,amount,description,merchant_name,is_transfer,category_id,vendor_id,account_id,categorized_by,plaid_txn_id";
-  const pageSize = 1000;
-  let offset = 0;
-  const all = [];
-  while (true) {
-    const r = await fetch(
-      `${SUPABASE_URL}/rest/v1/transactions?company_id=eq.${selectedCompanyId}&select=${encodeURIComponent(sel)}&order=date.desc`,
-      { headers: { ...headers, Range: `${offset}-${offset + pageSize - 1}` } },
-    );
-    if (!r.ok) {
-      console.warn("[supa] tx fetch all", r.status, (await r.text()).slice(0, 200));
-      break;
-    }
-    const rows = await r.json();
-    all.push(...rows);
-    const cr = r.headers.get("content-range") || "";
-    const m = /\/(\d+|\*)/.exec(cr);
-    const total = m && m[1] !== "*" ? parseInt(m[1], 10) : null;
-    if (rows.length < pageSize || (total !== null && offset + rows.length >= total)) break;
-    offset += pageSize;
-  }
-  return all;
-}
-
-// Supabase-side equivalent of Railway's POST /api/rules/preview. Counts
-// how many uncategorized transactions match the given match object.
-async function _supaRulePreview(match, scope) {
-  const matcher = _ruleMatcher(match);
-  const all = await _supaFetchAllTxns();
-  const sc = scope || "uncategorized";
-  const scoped = _applyScopeFilter(all, sc);
-  const matches = scoped.filter(matcher).length;
-  return { matches, scanned: scoped.length };
-}
-
-// Supabase-side equivalent of Railway's recategorize endpoint. Walks the
-// scope, finds the first enabled rule (by priority asc) that matches each
-// row, and PATCHes the row. Returns { rule, plaid, skipped } so the
-// existing toast format keeps working.
-async function _supaRulesRecategorize(scope) {
-  // Pull the latest rules (don't trust the in-memory list — the Rules page
-  // may not have been visited this session).
-  const rulesResp = await fetch(
-    `${SUPABASE_URL}/rest/v1/rules?company_id=eq.${selectedCompanyId}&enabled=eq.true&order=priority.asc,created_at.desc`,
-    { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` } },
-  );
-  if (!rulesResp.ok) throw new Error(`Supabase rules ${rulesResp.status}`);
-  const rules = (await rulesResp.json()).map((r) => ({ ...r, _matcher: _ruleMatcher(r.match) }));
-  const txs = _applyScopeFilter(await _supaFetchAllTxns(), scope);
-
-  let ruleHits = 0, skipped = 0;
-  for (const t of txs) {
-    const hit = rules.find((r) => r._matcher(t));
-    if (!hit) { skipped++; continue; }
-    const patch = {};
-    if (hit.action?.set_category_id) patch.category_id = hit.action.set_category_id;
-    if (hit.action?.set_vendor_id) patch.vendor_id = hit.action.set_vendor_id;
-    if (hit.action?.mark_transfer) patch.is_transfer = true;
-    if (!Object.keys(patch).length) { skipped++; continue; }
-    patch.categorized_by = "rule";
-    try {
-      await _supaPatchRow("transactions", t.id, patch);
-      ruleHits++;
-    } catch (e) {
-      console.warn("[supa] recategorize patch failed", t.id, e);
-      skipped++;
-    }
-  }
-  return { rule: ruleHits, plaid: 0, skipped };
 }
 
 let _ruleEditId = null;
@@ -8139,9 +7810,7 @@ function rulePreview() {
       return;
     }
     try {
-      const res = _shouldUseRailway()
-        ? await apiPost("/api/rules/preview", { company_id: selectedCompanyId, match })
-        : await _supaRulePreview(match, "uncategorized");
+      const res = await apiPost("/api/rules/preview", { company_id: selectedCompanyId, match });
       document.getElementById("rule-preview-count").textContent = `Matches ${res.matches}/${res.scanned} uncategorized`;
     } catch (e) { /* silent */ }
   }, 400);
@@ -8205,7 +7874,8 @@ async function ruleSave() {
     }
     closeRuleEditModal();
     await rulesReload();
-    await _rulePromptApplyToPlaid(body);
+    // Auto-apply prompt is Railway-only (recategorize endpoint); skip for non-QBO.
+    if (__useRailway) await _rulePromptApplyToPlaid(body);
   } catch (e) { errEl.textContent = "Failed: " + (e.message || "unknown"); errEl.style.display = "block"; }
 }
 
@@ -8215,10 +7885,11 @@ async function ruleSave() {
 // Plaid's default PFC guess with the user's new rule.
 async function _rulePromptApplyToPlaid(body) {
   try {
-    const useRailway = _shouldUseRailway();
-    const preview = useRailway
-      ? await apiPost("/api/rules/preview", { company_id: selectedCompanyId, match: body.match, scope: "plaid_only" })
-      : await _supaRulePreview(body.match, "plaid_only");
+    const preview = await apiPost("/api/rules/preview", {
+      company_id: selectedCompanyId,
+      match: body.match,
+      scope: "plaid_only",
+    });
     const n = preview.matches || 0;
     if (!n) {
       showToast("Rule saved.", "success");
@@ -8234,11 +7905,10 @@ async function _rulePromptApplyToPlaid(body) {
       showToast("Rule saved. Existing Plaid-categorized rows left unchanged.", "success");
       return;
     }
-    const res = useRailway
-      ? await apiPost(`/api/rules/${selectedCompanyId}/recategorize?scope=plaid_only`, {})
-      : await _supaRulesRecategorize("plaid_only");
+    const res = await apiPost(
+      `/api/rules/${selectedCompanyId}/recategorize?scope=plaid_only`, {},
+    );
     showToast(`Applied: ${res.rule || 0} row${(res.rule || 0) === 1 ? "" : "s"} re-categorized.`, "success");
-    if (typeof txReload === "function") await txReload();
   } catch (e) {
     showToast("Rule saved, but applying it failed: " + (e.message || e), "error");
   }
@@ -8880,14 +8550,8 @@ async function baDeleteBank(itemId, institutionName, accountCount) {
 }
 
 async function baUpdateCoaMapping(accountId, coaId) {
-  try {
-    if (_shouldUseRailway()) {
-      await apiPatch(`/api/accounts/${accountId}`, { coa_account_id: coaId || null });
-    } else {
-      await _supaPatchRow("accounts", accountId, { coa_account_id: coaId || null });
-    }
-    showToast("Mapping updated", "success");
-  } catch (e) { showToast("Failed: " + e.message, "error"); }
+  try { await apiPatch(`/api/accounts/${accountId}`, { coa_account_id: coaId || null }); showToast("Mapping updated", "success"); }
+  catch (e) { showToast("Failed: " + e.message, "error"); }
 }
 
 async function baDeleteAccount(accountId, label) {
@@ -10886,7 +10550,7 @@ function _agingRender(kind, r) {
           <div style="font-weight:600;font-size:var(--text-sm);">${_escapeHtml(p.party_name)}</div>
           <table class="data-table" style="width:100%;font-size:var(--text-xs);margin-top:4px;">
             <thead><tr><th>Date</th><th>Due</th><th>#</th><th style="text-align:center;">Age</th><th style="text-align:right;">Total</th><th style="text-align:right;">Balance</th></tr></thead>
-            <tbody>${(p.docs || []).map((d) => `<tr>
+            <tbody>${p.docs.map((d) => `<tr>
               <td>${d.date}</td>
               <td>${d.due_date || "—"}</td>
               <td>${_escapeHtml(d.number || "—")}</td>
