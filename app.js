@@ -7526,8 +7526,18 @@ async function rulesInit() {
 
 async function rulesReload() {
   try {
-    const resp = await apiGet(`/api/rules/${selectedCompanyId}`);
-    _rulesState.rules = resp.rules || [];
+    const company = _getSelectedCompany();
+    const isQbo = ((company?.source) || "qbo") === "qbo";
+    if (!isQbo && supabaseAccessToken) {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/rules?company_id=eq.${selectedCompanyId}&order=priority.asc,created_at.desc`, {
+        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
+      });
+      if (!r.ok) throw new Error(`Supabase rules ${r.status}`);
+      _rulesState.rules = await r.json();
+    } else {
+      const resp = await apiGet(`/api/rules/${selectedCompanyId}`);
+      _rulesState.rules = resp.rules || [];
+    }
     _rulesRender();
   } catch (e) {
     document.getElementById("rules-body").innerHTML = `<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--color-error);">Load failed: ${_escapeHtml(e.message)}</td></tr>`;
@@ -7573,20 +7583,41 @@ function _rulesRender() {
 }
 
 async function rulesToggleEnabled(id, enabled) {
-  const r = _rulesState.rules.find((x) => x.id === id);
-  if (!r) return;
+  const rule = _rulesState.rules.find((x) => x.id === id);
+  if (!rule) return;
   try {
-    await apiPatch(`/api/rules/${id}`, {
-      name: r.name, priority: r.priority, match: r.match, action: r.action, enabled,
-    });
-    r.enabled = enabled;
+    const company = _getSelectedCompany();
+    const isQbo = ((company?.source) || "qbo") === "qbo";
+    if (!isQbo && supabaseAccessToken) {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/rules?id=eq.${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
+        body: JSON.stringify({ enabled }),
+      });
+      if (!r.ok) throw new Error(`Supabase ${r.status}`);
+    } else {
+      await apiPatch(`/api/rules/${id}`, {
+        name: rule.name, priority: rule.priority, match: rule.match, action: rule.action, enabled,
+      });
+    }
+    rule.enabled = enabled;
   } catch (e) { showToast("Failed: " + e.message, "error"); }
 }
 
 async function rulesDelete(id) {
   if (!confirm("Delete this rule?")) return;
   try {
-    await apiDelete(`/api/rules/${id}`);
+    const company = _getSelectedCompany();
+    const isQbo = ((company?.source) || "qbo") === "qbo";
+    if (!isQbo && supabaseAccessToken) {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/rules?id=eq.${id}`, {
+        method: "DELETE",
+        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
+      });
+      if (!r.ok) throw new Error(`Supabase ${r.status}`);
+    } else {
+      await apiDelete(`/api/rules/${id}`);
+    }
     await rulesReload();
   } catch (e) { showToast("Failed: " + e.message, "error"); }
 }
@@ -7825,14 +7856,28 @@ async function ruleSave() {
     enabled: document.getElementById("rule-enabled").checked,
   };
   try {
-    if (_ruleEditId) {
-      await apiPatch(`/api/rules/${_ruleEditId}`, body);
+    const company = _getSelectedCompany();
+    const isQbo = ((company?.source) || "qbo") === "qbo";
+    if (!isQbo && supabaseAccessToken) {
+      const headers = { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+      if (_ruleEditId) {
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/rules?id=eq.${_ruleEditId}`, { method: "PATCH", headers, body: JSON.stringify(body) });
+        if (!r.ok) throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 200)}`);
+      } else {
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/rules`, { method: "POST", headers, body: JSON.stringify({ ...body, company_id: selectedCompanyId }) });
+        if (!r.ok) throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 200)}`);
+      }
     } else {
-      await apiPost(`/api/rules/${selectedCompanyId}`, body);
+      if (_ruleEditId) {
+        await apiPatch(`/api/rules/${_ruleEditId}`, body);
+      } else {
+        await apiPost(`/api/rules/${selectedCompanyId}`, body);
+      }
     }
     closeRuleEditModal();
     await rulesReload();
-    await _rulePromptApplyToPlaid(body);
+    // Auto-apply prompt is Railway-only (recategorize endpoint); skip for non-QBO.
+    if (isQbo) await _rulePromptApplyToPlaid(body);
   } catch (e) { errEl.textContent = "Failed: " + (e.message || "unknown"); errEl.style.display = "block"; }
 }
 
@@ -7888,7 +7933,18 @@ async function journalInit() {
   document.getElementById("journal-page-title").textContent = `Journal Entries — ${company.name}`;
   if (!_txState.categories.length) await _txLoadCategories();
   if (!_coaState.accounts.length) {
-    try { const resp = await apiGet(`/api/coa/${selectedCompanyId}`); _coaState.accounts = resp.accounts || []; } catch (e) {}
+    try {
+      const isQbo = ((company?.source) || "qbo") === "qbo";
+      if (!isQbo && supabaseAccessToken) {
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts?company_id=eq.${selectedCompanyId}&is_active=eq.true&select=id,code,name,type,subtype&order=code`, {
+          headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
+        });
+        if (r.ok) _coaState.accounts = await r.json();
+      } else {
+        const resp = await apiGet(`/api/coa/${selectedCompanyId}`);
+        _coaState.accounts = resp.accounts || [];
+      }
+    } catch (e) {}
   }
   await journalReload();
 }
@@ -7897,8 +7953,18 @@ async function journalReload() {
   const list = document.getElementById("journal-list");
   list.innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">Loading...</div>';
   try {
-    const resp = await apiGet(`/api/journal/${selectedCompanyId}`);
-    _journalState.entries = resp.entries || [];
+    const company = _getSelectedCompany();
+    const isQbo = ((company?.source) || "qbo") === "qbo";
+    if (!isQbo && supabaseAccessToken) {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/journal_entries?company_id=eq.${selectedCompanyId}&select=id,date,memo,lines:journal_lines(id,coa_account_id,description,debit,credit)&order=date.desc,created_at.desc`, {
+        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
+      });
+      if (!r.ok) throw new Error(`Supabase ${r.status}`);
+      _journalState.entries = await r.json();
+    } else {
+      const resp = await apiGet(`/api/journal/${selectedCompanyId}`);
+      _journalState.entries = resp.entries || [];
+    }
     _journalRender();
   } catch (e) {
     list.innerHTML = `<div style="text-align:center;padding:24px;color:var(--color-error);">Load failed: ${_escapeHtml(e.message)}</div>`;
@@ -7937,8 +8003,22 @@ function _journalRender() {
 
 async function journalDelete(id) {
   if (!confirm("Delete this journal entry?")) return;
-  try { await apiDelete(`/api/journal/${id}`); await journalReload(); }
-  catch (e) { showToast("Failed: " + e.message, "error"); }
+  try {
+    const company = _getSelectedCompany();
+    const isQbo = ((company?.source) || "qbo") === "qbo";
+    if (!isQbo && supabaseAccessToken) {
+      // journal_lines has ON DELETE CASCADE on journal_entry_id, so deleting
+      // the parent removes the lines too.
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/journal_entries?id=eq.${id}`, {
+        method: "DELETE",
+        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
+      });
+      if (!r.ok) throw new Error(`Supabase ${r.status}`);
+    } else {
+      await apiDelete(`/api/journal/${id}`);
+    }
+    await journalReload();
+  } catch (e) { showToast("Failed: " + e.message, "error"); }
 }
 
 function openJournalEditModal() {
@@ -8313,7 +8393,36 @@ async function journalSave() {
   const lines = _journalState.editingLines.filter((l) => l.coa_account_id);
   if (lines.some((l) => !l.coa_account_id)) { errEl.textContent = "Every line needs an account."; errEl.style.display = "block"; return; }
   try {
-    await apiPost(`/api/journal/${selectedCompanyId}`, { date, memo: memo || null, lines });
+    const company = _getSelectedCompany();
+    const isQbo = ((company?.source) || "qbo") === "qbo";
+    if (!isQbo && supabaseAccessToken) {
+      const headers = { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}`, Prefer: "return=representation" };
+      // Insert journal_entries header
+      const er = await fetch(`${SUPABASE_URL}/rest/v1/journal_entries`, {
+        method: "POST", headers,
+        body: JSON.stringify({ company_id: selectedCompanyId, date, memo: memo || null, source: "manual" }),
+      });
+      if (!er.ok) throw new Error(`Supabase journal_entries ${er.status}: ${(await er.text()).slice(0, 200)}`);
+      const entry = (await er.json())[0];
+      // Insert journal_lines
+      const linesPayload = lines.map((l) => ({
+        journal_entry_id: entry.id,
+        coa_account_id: l.coa_account_id,
+        description: l.description || null,
+        debit: parseFloat(l.debit || 0),
+        credit: parseFloat(l.credit || 0),
+      }));
+      const lr = await fetch(`${SUPABASE_URL}/rest/v1/journal_lines`, {
+        method: "POST", headers: { ...headers, Prefer: "return=minimal" },
+        body: JSON.stringify(linesPayload),
+      });
+      if (!lr.ok) {
+        await fetch(`${SUPABASE_URL}/rest/v1/journal_entries?id=eq.${entry.id}`, { method: "DELETE", headers }).catch(() => {});
+        throw new Error(`Supabase journal_lines ${lr.status}: ${(await lr.text()).slice(0, 200)}`);
+      }
+    } else {
+      await apiPost(`/api/journal/${selectedCompanyId}`, { date, memo: memo || null, lines });
+    }
     closeJournalEditModal();
     await journalReload();
   } catch (e) { errEl.textContent = "Failed: " + (e.message || "unknown"); errEl.style.display = "block"; }
