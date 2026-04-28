@@ -919,9 +919,8 @@ async function loadPL() {
     const startVal = document.getElementById("pl-start-date").value || null;
     const endVal = document.getElementById("pl-end-date").value || null;
     // Source-based routing: QBO → Railway; Plaid/Manual → Supabase direct.
-    const company = _getSelectedCompany();
-    const isQbo = ((company?.source) || "qbo") === "qbo";
-    const useSupa = !isQbo && supabaseAccessToken && !byCompany;
+    const __useRailway = _shouldUseRailway();
+    const useSupa = !__useRailway && !byCompany;
     let data;
     if (useSupa) {
       const cid = (sel.company_id && sel.company_id !== "all") ? sel.company_id : selectedCompanyId;
@@ -1297,9 +1296,8 @@ async function loadCF() {
     const summarize = (document.getElementById("cf-summarize")?.value || "") || null;
     const startVal = document.getElementById("cf-start-date").value || null;
     const endVal = document.getElementById("cf-end-date").value || null;
-    const company = _getSelectedCompany();
-    const isQbo = ((company?.source) || "qbo") === "qbo";
-    const useSupa = !isQbo && supabaseAccessToken && !byCompany;
+    const __useRailway = _shouldUseRailway();
+    const useSupa = !__useRailway && !byCompany;
     let data;
     if (useSupa) {
       const cid = (sel.company_id && sel.company_id !== "all") ? sel.company_id : selectedCompanyId;
@@ -5555,6 +5553,17 @@ function _getSelectedCompany() {
   return (allCompanies || []).find((c) => c.id === selectedCompanyId) || null;
 }
 
+// True when we should route writes through Railway (QBO companies). When
+// the company list isn't loaded (Railway down, fresh tab, etc.) but we
+// have a Supabase session, prefer Supabase — it's the safer default for
+// manual+Plaid companies, which is most of what's broken when Railway
+// flakes anyway.
+function _shouldUseRailway() {
+  const company = _getSelectedCompany();
+  if (company) return (company.source || "qbo") === "qbo";
+  return !supabaseAccessToken;
+}
+
 function _loadPersistedSelection() {
   try {
     const saved = localStorage.getItem("v2_selected_company_id");
@@ -5712,9 +5721,8 @@ async function txInit() {
 async function _txLoadCategories() {
   try {
     // Source-based routing: QBO → Railway; Plaid/Manual → Supabase direct.
-    const company = _getSelectedCompany();
-    const isQbo = ((company?.source) || "qbo") === "qbo";
-    if (!isQbo && supabaseAccessToken) {
+    const __useRailway = _shouldUseRailway();
+    if (!__useRailway) {
       // Pull categories joined to chart_of_accounts so we can show the CoA
       // code/name (which is what users want to see in the picker, not the
       // raw category name).
@@ -6557,9 +6565,7 @@ async function _txComboCreateAndCommit() {
   const listEl = document.getElementById("tx-combo-list");
   if (listEl) listEl.innerHTML = `<div class="tx-combo-empty">Creating “${_escapeHtml(text)}”…</div>`;
 
-  const company = _getSelectedCompany();
-  const isQbo = ((company?.source) || "qbo") === "qbo";
-  const useSupa = !isQbo && supabaseAccessToken;
+  const useSupa = !_shouldUseRailway();
   const supaHeaders = useSupa ? { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}`, Prefer: "return=representation" } : null;
   try {
     if (kind === "category") {
@@ -6765,10 +6771,9 @@ async function vendorPickerCreateAndApply(displayName) {
   const txId = _vendorPickerState.txId;
   if (!txId || !displayName.trim()) return;
   try {
-    const company = _getSelectedCompany();
-    const isQbo = ((company?.source) || "qbo") === "qbo";
+    const __useRailway = _shouldUseRailway();
     let newVendorId = null;
-    if (!isQbo && supabaseAccessToken) {
+    if (!__useRailway) {
       const headers = { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}`, Prefer: "return=representation" };
       const cr = await fetch(`${SUPABASE_URL}/rest/v1/vendors`, {
         method: "POST", headers,
@@ -7453,9 +7458,8 @@ async function coaSave() {
   const is_active = document.getElementById("coa-active").checked;
   if (!code || !name) { errEl.textContent = "Code and name are required."; errEl.style.display = "block"; return; }
   try {
-    const company = _getSelectedCompany();
-    const isQbo = ((company?.source) || "qbo") === "qbo";
-    if (!isQbo && supabaseAccessToken) {
+    const __useRailway = _shouldUseRailway();
+    if (!__useRailway) {
       const headers = { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
       if (_coaEditId) {
         const r = await fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts?id=eq.${_coaEditId}`, {
@@ -7483,9 +7487,8 @@ async function coaSave() {
 async function coaArchive(id) {
   if (!confirm("Archive this account? Inactive accounts stop showing in pickers and reports.")) return;
   try {
-    const company = _getSelectedCompany();
-    const isQbo = ((company?.source) || "qbo") === "qbo";
-    if (!isQbo && supabaseAccessToken) {
+    const __useRailway = _shouldUseRailway();
+    if (!__useRailway) {
       const r = await fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts?id=eq.${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
@@ -7526,9 +7529,8 @@ async function rulesInit() {
 
 async function rulesReload() {
   try {
-    const company = _getSelectedCompany();
-    const isQbo = ((company?.source) || "qbo") === "qbo";
-    if (!isQbo && supabaseAccessToken) {
+    const __useRailway = _shouldUseRailway();
+    if (!__useRailway) {
       const r = await fetch(`${SUPABASE_URL}/rest/v1/rules?company_id=eq.${selectedCompanyId}&order=priority.asc,created_at.desc`, {
         headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
       });
@@ -7586,9 +7588,8 @@ async function rulesToggleEnabled(id, enabled) {
   const rule = _rulesState.rules.find((x) => x.id === id);
   if (!rule) return;
   try {
-    const company = _getSelectedCompany();
-    const isQbo = ((company?.source) || "qbo") === "qbo";
-    if (!isQbo && supabaseAccessToken) {
+    const __useRailway = _shouldUseRailway();
+    if (!__useRailway) {
       const r = await fetch(`${SUPABASE_URL}/rest/v1/rules?id=eq.${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
@@ -7607,9 +7608,8 @@ async function rulesToggleEnabled(id, enabled) {
 async function rulesDelete(id) {
   if (!confirm("Delete this rule?")) return;
   try {
-    const company = _getSelectedCompany();
-    const isQbo = ((company?.source) || "qbo") === "qbo";
-    if (!isQbo && supabaseAccessToken) {
+    const __useRailway = _shouldUseRailway();
+    if (!__useRailway) {
       const r = await fetch(`${SUPABASE_URL}/rest/v1/rules?id=eq.${id}`, {
         method: "DELETE",
         headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
@@ -7754,10 +7754,9 @@ async function _ruleComboCommit(kind) {
   if (kind === "vendor") {
     if (confirm(`Vendor "${text}" doesn't exist yet. Create it now?`)) {
       try {
-        const company = _getSelectedCompany();
-        const isQbo = ((company?.source) || "qbo") === "qbo";
+        const __useRailway = _shouldUseRailway();
         let newId = null;
-        if (!isQbo && supabaseAccessToken) {
+        if (!__useRailway) {
           const headers = { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}`, Prefer: "return=representation" };
           const cr = await fetch(`${SUPABASE_URL}/rest/v1/vendors`, {
             method: "POST", headers,
@@ -7856,9 +7855,8 @@ async function ruleSave() {
     enabled: document.getElementById("rule-enabled").checked,
   };
   try {
-    const company = _getSelectedCompany();
-    const isQbo = ((company?.source) || "qbo") === "qbo";
-    if (!isQbo && supabaseAccessToken) {
+    const __useRailway = _shouldUseRailway();
+    if (!__useRailway) {
       const headers = { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
       if (_ruleEditId) {
         const r = await fetch(`${SUPABASE_URL}/rest/v1/rules?id=eq.${_ruleEditId}`, { method: "PATCH", headers, body: JSON.stringify(body) });
@@ -7877,7 +7875,7 @@ async function ruleSave() {
     closeRuleEditModal();
     await rulesReload();
     // Auto-apply prompt is Railway-only (recategorize endpoint); skip for non-QBO.
-    if (isQbo) await _rulePromptApplyToPlaid(body);
+    if (__useRailway) await _rulePromptApplyToPlaid(body);
   } catch (e) { errEl.textContent = "Failed: " + (e.message || "unknown"); errEl.style.display = "block"; }
 }
 
@@ -7934,8 +7932,7 @@ async function journalInit() {
   if (!_txState.categories.length) await _txLoadCategories();
   if (!_coaState.accounts.length) {
     try {
-      const isQbo = ((company?.source) || "qbo") === "qbo";
-      if (!isQbo && supabaseAccessToken) {
+      if (!_shouldUseRailway()) {
         const r = await fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts?company_id=eq.${selectedCompanyId}&is_active=eq.true&select=id,code,name,type,subtype&order=code`, {
           headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
         });
@@ -7953,9 +7950,8 @@ async function journalReload() {
   const list = document.getElementById("journal-list");
   list.innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">Loading...</div>';
   try {
-    const company = _getSelectedCompany();
-    const isQbo = ((company?.source) || "qbo") === "qbo";
-    if (!isQbo && supabaseAccessToken) {
+    const __useRailway = _shouldUseRailway();
+    if (!__useRailway) {
       const r = await fetch(`${SUPABASE_URL}/rest/v1/journal_entries?company_id=eq.${selectedCompanyId}&select=id,date,memo,lines:journal_lines(id,coa_account_id,description,debit,credit)&order=date.desc,created_at.desc`, {
         headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
       });
@@ -8004,9 +8000,8 @@ function _journalRender() {
 async function journalDelete(id) {
   if (!confirm("Delete this journal entry?")) return;
   try {
-    const company = _getSelectedCompany();
-    const isQbo = ((company?.source) || "qbo") === "qbo";
-    if (!isQbo && supabaseAccessToken) {
+    const __useRailway = _shouldUseRailway();
+    if (!__useRailway) {
       // journal_lines has ON DELETE CASCADE on journal_entry_id, so deleting
       // the parent removes the lines too.
       const r = await fetch(`${SUPABASE_URL}/rest/v1/journal_entries?id=eq.${id}`, {
@@ -8393,9 +8388,8 @@ async function journalSave() {
   const lines = _journalState.editingLines.filter((l) => l.coa_account_id);
   if (lines.some((l) => !l.coa_account_id)) { errEl.textContent = "Every line needs an account."; errEl.style.display = "block"; return; }
   try {
-    const company = _getSelectedCompany();
-    const isQbo = ((company?.source) || "qbo") === "qbo";
-    if (!isQbo && supabaseAccessToken) {
+    const __useRailway = _shouldUseRailway();
+    if (!__useRailway) {
       const headers = { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}`, Prefer: "return=representation" };
       // Insert journal_entries header
       const er = await fetch(`${SUPABASE_URL}/rest/v1/journal_entries`, {
@@ -9075,9 +9069,8 @@ async function contactSave() {
   }
   try {
     // Source-based routing: QBO → Railway; Plaid/Manual → Supabase direct.
-    const company = _getSelectedCompany();
-    const isQbo = ((company?.source) || "qbo") === "qbo";
-    if (!isQbo && supabaseAccessToken) {
+    const __useRailway = _shouldUseRailway();
+    if (!__useRailway) {
       const table = kind === "customer" ? "customers" : "vendors";
       const supaHeaders = {
         "Content-Type": "application/json",
@@ -9137,9 +9130,8 @@ async function contactSave() {
 async function customerDelete(id, label) {
   if (!confirm(`Archive customer "${label}"?`)) return;
   try {
-    const company = _getSelectedCompany();
-    const isQbo = ((company?.source) || "qbo") === "qbo";
-    if (!isQbo && supabaseAccessToken) {
+    const __useRailway = _shouldUseRailway();
+    if (!__useRailway) {
       const r = await fetch(`${SUPABASE_URL}/rest/v1/customers?id=eq.${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
@@ -9263,9 +9255,8 @@ async function openVendorEdit(id) {
 async function vendorDelete(id, label) {
   if (!confirm(`Archive vendor "${label}"?`)) return;
   try {
-    const company = _getSelectedCompany();
-    const isQbo = ((company?.source) || "qbo") === "qbo";
-    if (!isQbo && supabaseAccessToken) {
+    const __useRailway = _shouldUseRailway();
+    if (!__useRailway) {
       const r = await fetch(`${SUPABASE_URL}/rest/v1/vendors?id=eq.${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
