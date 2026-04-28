@@ -363,7 +363,12 @@ async function loadCompanyList() {
       try { await _enrichManualPlaidItems(); }
       catch (e) { console.warn("plaid_items enrichment failed", e); }
     }
+    // Hydrate sidebar selection from localStorage BEFORE populating the
+    // multi-selects, so the report/dashboard pickers default to the company
+    // the user had selected on their last visit (not "All Companies").
+    _loadPersistedSelection();
     populateCompanySelectors();
+    if (typeof renderCompanySwitcher === "function") renderCompanySwitcher();
   } catch {
     allCompanies = [];
   }
@@ -4922,19 +4927,40 @@ async function txApplyToInvoice(txId) { await _openMatchModal(txId, "invoice"); 
 async function txApplyToBill(txId) { await _openMatchModal(txId, "bill"); }
 
 async function _openMatchModal(txId, kind) {
-  const row = document.querySelector(`tr[data-tx-id="${txId}"]`);
-  const amount = row ? Math.abs(parseFloat(row.querySelectorAll("td")[5].textContent.trim())) : 0;
-  const merchant = row ? (row.querySelectorAll("td")[2].querySelector("div")?.textContent?.trim() || "") : "";
+  // Read amount + merchant from the cached txn record. Reading from DOM cells
+  // (td[5] etc) was producing NaN for outflows, since spent + received live in
+  // separate columns and only one is populated per row.
+  const tx = (_txState.txs || []).find((t) => t.id === txId);
+  const amount = tx ? Math.abs(parseFloat(tx.amount) || 0) : 0;
+  const merchant = tx ? (tx.merchant_name || tx.description || "") : "";
   _matchContext = { kind, txId, txAmount: amount, txMerchant: merchant };
   document.getElementById("match-modal-title").textContent = `Apply to ${kind === "invoice" ? "Invoice" : "Bill"}`;
   document.getElementById("match-tx-context").innerHTML = `
-    <strong>${_escapeHtml(merchant || "(unknown)")}</strong> · ${amount.toFixed(2)}<br>
+    <strong>${_escapeHtml(merchant || "(unknown)")}</strong> · ${formatCurrency(amount)}<br>
     Looking for ${kind === "invoice" ? "open invoices" : "open bills"} with matching amount and date.
   `;
   const list = document.getElementById("match-candidates");
   list.innerHTML = '<div style="color:var(--color-text-muted);padding:12px;text-align:center;">Loading suggestions...</div>';
   const modal = document.getElementById("match-modal");
   modal.classList.add("active"); modal.style.display = "flex";
+  // Pre-flight: refuse to render candidates if this txn already has a payment.
+  // Otherwise the user clicks Apply and only then sees the "already matched"
+  // server error — confusing and looks broken.
+  if (supabaseAccessToken && selectedCompanyId) {
+    try {
+      const dupeRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/payments?matched_transaction_id=eq.${txId}&select=id,kind,date,amount&limit=1`,
+        { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` } }
+      );
+      if (dupeRes.ok) {
+        const dupes = await dupeRes.json();
+        if (Array.isArray(dupes) && dupes.length > 0) {
+          list.innerHTML = `<div style="padding:12px;text-align:center;color:var(--color-text-muted);">This transaction is already matched to a ${kind}. Unmatch the existing payment from the bill/invoice first, then re-open this dialog.</div>`;
+          return;
+        }
+      }
+    } catch { /* non-fatal — fall through to candidates */ }
+  }
   try {
     let candidates = null;
     try {
