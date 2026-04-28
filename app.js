@@ -10199,6 +10199,9 @@ let _docState = {
 };
 let _invoicesState = { rows: [] };
 let _billsState = { rows: [] };
+// docId -> { tx_id, tx_date, tx_amount, tx_desc } for the bank txn that
+// settled this bill/invoice (via payments + payment_applications).
+let _docMatchedTxMap = {};
 
 const _INVOICE_STATUSES = [
   ["draft","Draft"],["sent","Sent"],["partially_paid","Partially Paid"],
@@ -10247,6 +10250,7 @@ async function invoicesReload() {
       });
       if (rows) _invoicesState.rows = rows;
     }
+    await _loadDocMatchedTxs("invoice", _invoicesState.rows);
     _renderDocList("invoice");
   } catch (e) {
     document.getElementById("invoices-body").innerHTML = `<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--color-error);">${_escapeHtml(e.message)}</td></tr>`;
@@ -10495,6 +10499,7 @@ async function billsReload() {
       });
       if (rows) _billsState.rows = rows;
     }
+    await _loadDocMatchedTxs("bill", _billsState.rows);
     _renderDocList("bill");
   } catch (e) {
     document.getElementById("bills-body").innerHTML = `<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--color-error);">${_escapeHtml(e.message)}</td></tr>`;
@@ -10517,19 +10522,75 @@ function _renderDocList(kind) {
   }
   if (!rows.length) { body.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--color-text-muted);">${q ? "No matches." : "No " + kind + "s yet."}</td></tr>`; return; }
   const partyLabel = (d) => (kind === "invoice" ? d.customer : d.vendor)?.display_name || "—";
-  body.innerHTML = rows.map((d) => `<tr>
-    <td><strong>${_escapeHtml(d.number || "—")}</strong></td>
-    <td>${formatDate(d.date)}</td>
-    <td>${d.due_date ? formatDate(d.due_date) : "—"}</td>
-    <td>${_escapeHtml(partyLabel(d))}</td>
-    <td>${_statusBadge(d.status)}</td>
-    <td style="text-align:right;font-variant-numeric:tabular-nums;">${formatCurrency(d.total)}</td>
-    <td style="text-align:right;font-variant-numeric:tabular-nums;${parseFloat(d.balance || 0) > 0 ? "color:var(--color-warning);" : ""}">${formatCurrency(d.balance)}</td>
-    <td style="text-align:right;">
-      <button class="btn btn-sm btn-secondary" onclick="openDocDetail('${kind}','${d.id}')">View</button>
-      ${d.status !== "paid" && d.status !== "void" ? `<button class="btn btn-sm btn-ghost" onclick="${kind === "invoice" ? "openInvoiceEdit" : "openBillEdit"}('${d.id}')">Edit</button>` : ""}
-    </td>
-  </tr>`).join("");
+  body.innerHTML = rows.map((d) => {
+    const matched = _docMatchedTxMap[d.id];
+    const matchedLine = matched
+      ? `<div style="font-size:var(--text-xs);color:var(--color-success);margin-top:2px;">✓ ${kind === "invoice" ? "Received" : "Paid"} ${formatDate(matched.tx_date)} · ${formatCurrency(matched.tx_amount)}${matched.tx_desc ? ` — ${_escapeHtml(matched.tx_desc.slice(0, 40))}` : ""}</div>`
+      : "";
+    return `<tr>
+      <td><strong>${_escapeHtml(d.number || "—")}</strong>${matchedLine}</td>
+      <td>${formatDate(d.date)}</td>
+      <td>${d.due_date ? formatDate(d.due_date) : "—"}</td>
+      <td>${_escapeHtml(partyLabel(d))}</td>
+      <td>${_statusBadge(d.status)}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums;">${formatCurrency(d.total)}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums;${parseFloat(d.balance || 0) > 0 ? "color:var(--color-warning);" : ""}">${formatCurrency(d.balance)}</td>
+      <td style="text-align:right;">
+        <button class="btn btn-sm btn-secondary" onclick="openDocDetail('${kind}','${d.id}')">View</button>
+        ${d.status !== "paid" && d.status !== "void" ? `<button class="btn btn-sm btn-ghost" onclick="${kind === "invoice" ? "openInvoiceEdit" : "openBillEdit"}('${d.id}')">Edit</button>` : ""}
+      </td>
+    </tr>`;
+  }).join("");
+}
+
+// Resolve the bank transaction (date / amount / description) that settled
+// each loaded bill or invoice, via payment_applications -> payments. Lets the
+// list inline "✓ Paid Apr 6 · $9,664.52 — Transfer To 6398" under each row.
+async function _loadDocMatchedTxs(kind, docs) {
+  _docMatchedTxMap = {};
+  if (!supabaseAccessToken || !selectedCompanyId || !docs || !docs.length) return;
+  const docIds = docs.map((d) => d.id);
+  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+  const fkCol = kind === "invoice" ? "invoice_id" : "bill_id";
+  try {
+    const appRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/payment_applications?${fkCol}=in.(${docIds.join(",")})&select=${fkCol},payment_id`,
+      { headers }
+    );
+    const apps = appRes.ok ? await appRes.json() : [];
+    if (!apps.length) return;
+    const payIds = [...new Set(apps.map((a) => a.payment_id))];
+    const payRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/payments?id=in.(${payIds.join(",")})&select=id,matched_transaction_id`,
+      { headers }
+    );
+    const pays = payRes.ok ? await payRes.json() : [];
+    const txIds = pays.map((p) => p.matched_transaction_id).filter(Boolean);
+    if (!txIds.length) return;
+    const txRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/transactions?id=in.(${txIds.join(",")})&select=id,date,amount,merchant_name,description`,
+      { headers }
+    );
+    const txs = txRes.ok ? await txRes.json() : [];
+    const txById = new Map(txs.map((t) => [t.id, t]));
+    const payToTx = new Map(pays.map((p) => [p.id, p.matched_transaction_id]));
+    for (const a of apps) {
+      const docId = a[fkCol];
+      const txId = payToTx.get(a.payment_id);
+      const tx = txId ? txById.get(txId) : null;
+      if (!tx) continue;
+      // First match wins — partial-payment cases stay rare for now.
+      if (_docMatchedTxMap[docId]) continue;
+      _docMatchedTxMap[docId] = {
+        tx_id: tx.id,
+        tx_date: tx.date,
+        tx_amount: Math.abs(parseFloat(tx.amount) || 0),
+        tx_desc: tx.merchant_name || tx.description || "",
+      };
+    }
+  } catch (e) {
+    console.warn("[supa] doc-matched-tx fetch failed", e);
+  }
 }
 
 async function openInvoiceEdit(id) { await _openDocEdit("invoice", id); }
