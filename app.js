@@ -6576,6 +6576,37 @@ async function _supaApplyMatch(txId, m) {
     body: JSON.stringify({ balance: newBalance, status: newStatus }),
   });
   if (!updRes.ok) throw new Error(`${table} update: ${updRes.status} ${(await updRes.text()).slice(0, 150)}`);
+
+  // 4. Categorize the bank transaction so it shows as a Bill/Invoice
+  //    Payment in the register instead of "Uncategorized." Matches QBO's
+  //    behavior: a matched bank txn rolls up to A/P (bill payment) or
+  //    A/R (invoice payment), not to the bill's expense lines (those
+  //    are already booked via the bill itself).
+  try {
+    const isPayable = m.kind !== "invoice";
+    const coaQuery = isPayable
+      ? `${SUPABASE_URL}/rest/v1/chart_of_accounts?company_id=eq.${selectedCompanyId}&type=eq.liability&name=ilike.*payable*&select=id,name&limit=1`
+      : `${SUPABASE_URL}/rest/v1/chart_of_accounts?company_id=eq.${selectedCompanyId}&type=eq.asset&name=ilike.*receivable*&select=id,name&limit=1`;
+    const coaRows = await fetch(coaQuery, { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` } })
+      .then((r) => r.ok ? r.json() : []);
+    const coaId = coaRows[0]?.id;
+    if (coaId) {
+      const catRows = await fetch(`${SUPABASE_URL}/rest/v1/categories?company_id=eq.${selectedCompanyId}&coa_account_id=eq.${coaId}&select=id&limit=1`, { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` } })
+        .then((r) => r.ok ? r.json() : []);
+      const catId = catRows[0]?.id;
+      if (catId) {
+        await _supaPatchRow("transactions", txId, {
+          category_id: catId,
+          vendor_id: tx.vendor_id || (m.party ? null : null),
+          categorized_by: "user",
+        });
+      }
+    }
+  } catch (e) {
+    // Non-fatal — the match itself succeeded; categorization just falls back
+    // to whatever the txn had before. User can re-categorize manually.
+    console.warn("[match] post-categorize failed", e);
+  }
 }
 
 
