@@ -8879,13 +8879,36 @@ async function contactSave() {
     body.is_1099 = document.getElementById("contact-is-1099").checked;
   }
   try {
-    const url = kind === "customer"
-      ? (_contactsState.editing ? `/api/customers/${_contactsState.editing}` : `/api/customers/${selectedCompanyId}`)
-      : (_contactsState.editing ? `/api/vendors/${_contactsState.editing}` : `/api/vendors/${selectedCompanyId}`);
-    if (_contactsState.editing) {
-      await apiPatch(url, body);
+    // Source-based routing: QBO → Railway; Plaid/Manual → Supabase direct.
+    const company = _getSelectedCompany();
+    const isQbo = ((company?.source) || "qbo") === "qbo";
+    if (!isQbo && supabaseAccessToken) {
+      const table = kind === "customer" ? "customers" : "vendors";
+      const supaHeaders = {
+        "Content-Type": "application/json",
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${supabaseAccessToken}`,
+      };
+      const payload = { ...body };
+      if (!_contactsState.editing) payload.company_id = selectedCompanyId;
+      const url = _contactsState.editing
+        ? `${SUPABASE_URL}/rest/v1/${table}?id=eq.${_contactsState.editing}`
+        : `${SUPABASE_URL}/rest/v1/${table}`;
+      const r = await fetch(url, {
+        method: _contactsState.editing ? "PATCH" : "POST",
+        headers: { ...supaHeaders, Prefer: "return=representation" },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error(`Supabase ${table} ${r.status}: ${(await r.text()).slice(0, 300)}`);
     } else {
-      await apiPost(url, body);
+      const url = kind === "customer"
+        ? (_contactsState.editing ? `/api/customers/${_contactsState.editing}` : `/api/customers/${selectedCompanyId}`)
+        : (_contactsState.editing ? `/api/vendors/${_contactsState.editing}` : `/api/vendors/${selectedCompanyId}`);
+      if (_contactsState.editing) {
+        await apiPatch(url, body);
+      } else {
+        await apiPost(url, body);
+      }
     }
     // If the Bill/Invoice editor is awaiting a party refresh, reload its
     // dropdown and auto-select the contact we just saved (or the newest one).
@@ -8918,8 +8941,21 @@ async function contactSave() {
 
 async function customerDelete(id, label) {
   if (!confirm(`Archive customer "${label}"?`)) return;
-  try { await apiDelete(`/api/customers/${id}`); await customersReload(); }
-  catch (e) { showToast("Failed: " + e.message, "error"); }
+  try {
+    const company = _getSelectedCompany();
+    const isQbo = ((company?.source) || "qbo") === "qbo";
+    if (!isQbo && supabaseAccessToken) {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/customers?id=eq.${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
+        body: JSON.stringify({ is_active: false }),
+      });
+      if (!r.ok) throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    } else {
+      await apiDelete(`/api/customers/${id}`);
+    }
+    await customersReload();
+  } catch (e) { showToast("Failed: " + e.message, "error"); }
 }
 
 // ------ VENDORS ------
@@ -9031,8 +9067,21 @@ async function openVendorEdit(id) {
 
 async function vendorDelete(id, label) {
   if (!confirm(`Archive vendor "${label}"?`)) return;
-  try { await apiDelete(`/api/vendors/${id}`); await vendorsReload(); }
-  catch (e) { showToast("Failed: " + e.message, "error"); }
+  try {
+    const company = _getSelectedCompany();
+    const isQbo = ((company?.source) || "qbo") === "qbo";
+    if (!isQbo && supabaseAccessToken) {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/vendors?id=eq.${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
+        body: JSON.stringify({ is_active: false }),
+      });
+      if (!r.ok) throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    } else {
+      await apiDelete(`/api/vendors/${id}`);
+    }
+    await vendorsReload();
+  } catch (e) { showToast("Failed: " + e.message, "error"); }
 }
 
 
