@@ -1115,7 +1115,11 @@ function _renderSupaBSReport(data, wrapperId) {
       html += `<tr><td style="padding:0 var(--space-2);color:var(--color-text-muted);">(none)</td><td></td></tr>`;
     } else {
       for (const r of g.rows) {
-        html += `<tr><td style="padding:2px var(--space-2);padding-left:var(--space-5);">${_escapeHtml(r.code || "—")} ${_escapeHtml(r.name)}</td><td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${fmt(r.balance)}</td></tr>`;
+        // Synthetic plug rows (id starts with "_") aren't real CoA — skip drilldown.
+        const drillable = r.id && !String(r.id).startsWith("_");
+        const labelEsc = _escapeHtml((r.code ? r.code + " " : "") + r.name).replace(/'/g, "\\'");
+        const trAttrs = drillable ? `style="cursor:pointer;" onclick="drillDownAccount('${labelEsc}','${r.id}')" title="View transactions"` : "";
+        html += `<tr ${trAttrs}><td style="padding:2px var(--space-2);padding-left:var(--space-5);">${_escapeHtml(r.code || "—")} ${_escapeHtml(r.name)}</td><td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${fmt(r.balance)}</td></tr>`;
       }
     }
     html += `<tr><td style="padding:var(--space-1) var(--space-2);font-weight:600;border-top:1px dashed var(--color-border);">Total ${_escapeHtml(g.label)}</td><td style="text-align:right;padding:var(--space-1) var(--space-2);font-weight:600;font-variant-numeric:tabular-nums;border-top:1px dashed var(--color-border);">${fmt(g.total)}</td></tr>`;
@@ -1201,7 +1205,8 @@ function _renderSupaPLReport(data, wrapperId) {
       html += `<tr><td style="padding:0 var(--space-2);color:var(--color-text-muted);">(none)</td><td></td></tr>`;
     } else {
       for (const r of g.rows) {
-        html += `<tr><td style="padding:2px var(--space-2);padding-left:var(--space-5);">${_escapeHtml(r.code || "—")} ${_escapeHtml(r.name)}</td><td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${fmt(r.balance)}</td></tr>`;
+        const labelEsc = _escapeHtml((r.code ? r.code + " " : "") + r.name).replace(/'/g, "\\'");
+        html += `<tr style="cursor:pointer;" onclick="drillDownAccount('${labelEsc}','${r.id}')" title="View transactions"><td style="padding:2px var(--space-2);padding-left:var(--space-5);">${_escapeHtml(r.code || "—")} ${_escapeHtml(r.name)}</td><td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${fmt(r.balance)}</td></tr>`;
       }
     }
     html += `<tr><td style="padding:var(--space-1) var(--space-2);font-weight:600;border-top:1px dashed var(--color-border);">Total ${_escapeHtml(g.label)}</td><td style="text-align:right;padding:var(--space-1) var(--space-2);font-weight:600;font-variant-numeric:tabular-nums;border-top:1px dashed var(--color-border);">${fmt(g.total)}</td></tr>`;
@@ -1734,7 +1739,7 @@ function _getActiveReportContext() {
   return {};
 }
 
-async function drillDownAccount(accountName) {
+async function drillDownAccount(accountName, coaId) {
   const ctx = _getActiveReportContext();
   const modal = document.getElementById("txn-detail-modal");
   const loading = document.getElementById("txn-detail-loading");
@@ -1754,18 +1759,25 @@ async function drillDownAccount(accountName) {
   modal.classList.add("active");
 
   try {
-    const data = await apiPost("/api/reports/transaction-detail", {
-      account_name: accountName,
-      company_id: ctx.company_id || "all",
-      company_ids: ctx.company_ids || null,
-      start_date: ctx.start_date || null,
-      end_date: ctx.end_date || null,
-      date_macro: ctx.date_macro || null,
-      accounting_method: ctx.accounting_method || "Accrual",
-    });
-    currentTxnDetail = data;
+    let data;
+    if (_shouldUseRailway()) {
+      data = await apiPost("/api/reports/transaction-detail", {
+        account_name: accountName,
+        company_id: ctx.company_id || "all",
+        company_ids: ctx.company_ids || null,
+        start_date: ctx.start_date || null,
+        end_date: ctx.end_date || null,
+        date_macro: ctx.date_macro || null,
+        accounting_method: ctx.accounting_method || "Accrual",
+      });
+    } else {
+      // Supabase drill: filter the register query to the active report's
+      // date range. coaId is required to find the matching transactions.
+      data = await _supaAccountRegister(coaId, accountName, ctx.start_date, ctx.end_date);
+    }
+    currentTxnDetail = Object.assign({}, data, { account_name: accountName, drill_coa_id: coaId });
     loading.classList.add("hidden");
-    renderTransactionDetail(data);
+    renderTransactionDetail(currentTxnDetail);
   } catch (e) {
     loading.innerHTML = `<p style="color:var(--color-error);padding:var(--space-4);">Error loading transactions: ${e.message}</p>`;
   }
@@ -7549,7 +7561,8 @@ async function openAccountRegister(coaId, accountName) {
 // account-register flow. Returns transactions hitting the given CoA either
 // as the categorized side (transactions.category_id ↦ categories.coa_account_id)
 // or the bank/cash side (accounts.coa_account_id), shaped for renderTransactionDetail.
-async function _supaAccountRegister(coaId, accountName) {
+// Optional startDate/endDate constrain to a P&L/BS period; omit for full register.
+async function _supaAccountRegister(coaId, accountName, startDate, endDate) {
   if (!supabaseAccessToken || !selectedCompanyId) {
     throw new Error("Sign in required.");
   }
@@ -7576,12 +7589,13 @@ async function _supaAccountRegister(coaId, accountName) {
   }
 
   const sel = "id,date,amount,description,merchant_name,is_transfer,split_parent_id,categorized_by,plaid_txn_id,account:accounts(name,mask),vendor:vendors(display_name),category:categories(name,coa_account_id)";
+  const dateClause = `${startDate ? `&date=gte.${startDate}` : ""}${endDate ? `&date=lte.${endDate}` : ""}`;
   const queries = [];
   if (categoryIds.length) {
-    queries.push(`${base}/transactions?company_id=eq.${selectedCompanyId}&category_id=in.(${categoryIds.join(",")})&order=date.desc&limit=500&select=${encodeURIComponent(sel)}`);
+    queries.push(`${base}/transactions?company_id=eq.${selectedCompanyId}&category_id=in.(${categoryIds.join(",")})${dateClause}&order=date.desc&limit=500&select=${encodeURIComponent(sel)}`);
   }
   if (bankAccountIds.length) {
-    queries.push(`${base}/transactions?company_id=eq.${selectedCompanyId}&account_id=in.(${bankAccountIds.join(",")})&order=date.desc&limit=500&select=${encodeURIComponent(sel)}`);
+    queries.push(`${base}/transactions?company_id=eq.${selectedCompanyId}&account_id=in.(${bankAccountIds.join(",")})${dateClause}&order=date.desc&limit=500&select=${encodeURIComponent(sel)}`);
   }
 
   const results = await Promise.all(queries.map((u) => fetch(u, { headers }).then((r) => r.ok ? r.json() : [])));
