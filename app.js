@@ -5418,11 +5418,15 @@ function _txRenderBanksSummary() {
   // Per-item chips (skip groups that typeToGroup returns null for)
   for (const it of items) {
     const accs = accts.filter((a) => a.plaid_item_id === it.id);
-    const typeCounts = {};
-    for (const a of accs) { const t = (a.type || "").toLowerCase(); typeCounts[t] = (typeCounts[t] || 0) + 1; }
-    const primary = Object.entries(typeCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "depository";
-    const g = typeToGroup(primary);
-    if (!g) continue;   // loan / investment / other — don't show
+    // Show this bank if ANY of its accounts is a visible type (depository
+    // or credit), regardless of how many loan/investment accounts it also
+    // has. With mixed-type items (e.g. First Internet Bank: 1 checking + 1
+    // loan) a count-based primary picker would tie 1-1 and could pick
+    // "loan", hiding the whole bank. Prefer depository, fall back to credit.
+    const hasDepository = accs.some((a) => (a.type || "").toLowerCase() === "depository");
+    const hasCredit     = accs.some((a) => (a.type || "").toLowerCase() === "credit");
+    if (!hasDepository && !hasCredit) continue;   // pure loan / investment item — hide
+    const g = typeToGroup(hasDepository ? "depository" : "credit");
     const sub = `${accs.length} acct${accs.length === 1 ? "" : "s"}`;
     addRow(g.label, g.order, chip({
       id: it.id,
@@ -5731,10 +5735,15 @@ async function _txFetchFromSupabase(params) {
   sp.append("select", "*,account:accounts(name,mask),vendor:vendors(display_name),category:categories(name)");
   sp.append("order", "date.desc");
   sp.append("limit", "200");
-  // Hide QBO-imported journal entries — those are double-entry rows that
-  // duplicate real bank activity (one debit + one credit per transaction).
-  // They belong on a journal-entries page, not the bank-transactions page.
-  sp.append("plaid_txn_id", "not.like.qbo:*");
+  // Hide QBO-imported journal entries by default — those are double-entry
+  // rows that duplicate real bank activity. Only apply this hide when the
+  // user has NOT picked a specific bank/account chip; if they explicitly
+  // click the QBO Import chip, they want to see those rows.
+  const bankSelected = params.get("plaid_item_id");
+  const acctSelected = params.get("account_id");
+  if (!bankSelected && !acctSelected) {
+    sp.append("plaid_txn_id", "not.like.qbo:*");
+  }
 
   const search = params.get("search");
   if (search) {
