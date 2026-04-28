@@ -426,17 +426,7 @@ function populateCompanySelectors() {
   });
 
   // Multi-select company checkboxes for report pages + dashboard
-  ["pl", "bs", "cf", "dash"].forEach((prefix) => {
-    const optionsDiv = document.getElementById(`${prefix}-company-options`);
-    if (!optionsDiv) return;
-    let html = '<div class="multi-opt-divider"></div>';
-    for (const c of allCompanies) {
-      const dotClass = c.status === "connected" ? "connected" : "disconnected";
-      html += `<label class="multi-opt"><input type="checkbox" value="${c.id}" onchange="handleCompanyCheck('${prefix}')" checked> <span><i class="status-dot ${dotClass}"></i>${c.name}</span></label>`;
-    }
-    optionsDiv.innerHTML = html;
-    updateMultiSelectLabel(prefix);
-  });
+  _syncCompanyMultiSelect();
 
   // IC dropdowns
   const srcEl = document.getElementById("ic-source-company");
@@ -461,6 +451,25 @@ function addDefaultICLines(side, count) {
   const tbody = document.getElementById(`ic-${side}-lines`);
   if (!tbody) return;
   for (let i = 0; i < n; i++) addICLine(side);
+}
+
+// Default the report/dashboard company multi-selects to whichever company
+// the sidebar has selected. If sidebar is on "All Companies" (selectedCompanyId
+// === null), check every box ("All Companies"). Called on initial population
+// and again whenever the sidebar selection changes.
+function _syncCompanyMultiSelect() {
+  ["pl", "bs", "cf", "dash"].forEach((prefix) => {
+    const optionsDiv = document.getElementById(`${prefix}-company-options`);
+    if (!optionsDiv) return;
+    let html = '<div class="multi-opt-divider"></div>';
+    for (const c of allCompanies) {
+      const dotClass = c.status === "connected" ? "connected" : "disconnected";
+      const isChecked = selectedCompanyId ? (selectedCompanyId === c.id) : true;
+      html += `<label class="multi-opt"><input type="checkbox" value="${c.id}" onchange="handleCompanyCheck('${prefix}')"${isChecked ? " checked" : ""}> <span><i class="status-dot ${dotClass}"></i>${c.name}</span></label>`;
+    }
+    optionsDiv.innerHTML = html;
+    updateMultiSelectLabel(prefix);
+  });
 }
 
 // --- Multi-select helpers ---
@@ -5643,6 +5652,55 @@ function formatNumber(n) {
   return x.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+/** Pull a human-readable merchant out of a transaction. Falls back to parsing
+ *  ACH/NACHA descriptors like "ORIG CO NAME:TX ROADHOUSE … TRACE#:… IND NAME:…".
+ *  Accepts a transaction object or a raw string. */
+function prettifyMerchant(tx) {
+  if (tx == null) return "—";
+  if (typeof tx === "object") {
+    const name = (tx.merchant_name || "").trim();
+    if (name) return _truncate(name, 80);
+    const raw = (tx.description || "").trim();
+    if (!raw) return "—";
+    return _truncate(_titleCaseMerchant(_extractMerchantFromDescriptor(raw)), 80);
+  }
+  const raw = String(tx).trim();
+  if (!raw) return "—";
+  return _truncate(_titleCaseMerchant(_extractMerchantFromDescriptor(raw)), 80);
+}
+
+function _extractMerchantFromDescriptor(raw) {
+  let m = raw.match(/ORIG CO NAME:\s*([^]*?)(?=\s+(?:INT |DESC |CO ENTRY|SEC:|TRACE#:|EED:|IND ID:|IND NAME:|TRN:|ORIG ID:)|$)/i);
+  if (m && m[1].trim()) return m[1].trim();
+  m = raw.match(/IND NAME:\s*([^]*?)(?=\s+TRN:|$)/i);
+  if (m && m[1].trim()) return m[1].trim();
+  return raw
+    .replace(/\bORIG ID:\S+/gi, "")
+    .replace(/\bDESC DATE:\S*/gi, "")
+    .replace(/\bCO ENTRY DESCR:\S*/gi, "")
+    .replace(/\bSEC:\S+/gi, "")
+    .replace(/\bTRACE#:\S+/gi, "")
+    .replace(/\bEED:\S+/gi, "")
+    .replace(/\bIND ID:\S*/gi, "")
+    .replace(/\bTRN:\S+/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function _titleCaseMerchant(s) {
+  if (!s) return s;
+  return s.split(/\s+/).map((w) => {
+    if (w.length <= 3) return w; // keep TX, LLC, ACH, etc.
+    if (/^[A-Z]+$/.test(w))  return w.charAt(0) + w.slice(1).toLowerCase();
+    return w;
+  }).join(" ");
+}
+
+function _truncate(s, n) {
+  if (!s) return "—";
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
 /** Format an ISO date (YYYY-MM-DD) as a friendlier label. */
 function formatDate(iso, style = "short") {
   if (!iso) return "—";
@@ -5799,6 +5857,8 @@ function setSelectedCompany(id) {
   _persistSelection();
   document.getElementById("company-switcher-menu").classList.remove("open");
   renderCompanySwitcher();
+  // Re-sync report/dashboard company multi-selects to follow the new sidebar pick.
+  _syncCompanyMultiSelect();
   // If on a per-company page and switched to All, go to dashboard
   const currentPage = (location.hash || "#dashboard").slice(1);
   const perCompanyPages = ["transactions", "coa", "rules", "manual-journal", "bank-accounts"];
@@ -5811,6 +5871,12 @@ function setSelectedCompany(id) {
     navigateTo(currentPage);
   } else if (currentPage === "dashboard") {
     dashInit();
+  } else if (currentPage === "profit-loss") {
+    loadPL();
+  } else if (currentPage === "balance-sheet") {
+    loadBS();
+  } else if (currentPage === "cash-flow") {
+    loadCF();
   }
 }
 
@@ -6639,6 +6705,20 @@ async function _supaApplyMatch(txId, m) {
     apikey: SUPABASE_ANON_KEY,
     Authorization: `Bearer ${supabaseAccessToken}`,
   };
+  // 0. Idempotency: refuse if this txn already has a payment. Without this
+  //    guard, re-clicking Match (or matching from a different view after the
+  //    txn was hidden post-categorize) silently double-pays — one bank txn
+  //    can clear two bills.
+  const dupeRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/payments?matched_transaction_id=eq.${tx.id}&select=id&limit=1`,
+    { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` } }
+  );
+  if (dupeRes.ok) {
+    const dupes = await dupeRes.json();
+    if (Array.isArray(dupes) && dupes.length > 0) {
+      throw new Error("transaction is already matched; unmatch it first");
+    }
+  }
   // 1. Insert payment
   const payRes = await fetch(`${SUPABASE_URL}/rest/v1/payments`, {
     method: "POST",
@@ -9329,7 +9409,7 @@ function _renderPerCompanyDashboard(data) {
         <h3 style="font-size:var(--text-sm);margin-bottom:8px;">Top Expenses YTD</h3>
         ${topExp.length ? topExp.map((t) => `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:var(--text-sm);">
           <span>${_escapeHtml(t.name)}</span>
-          <strong>${t.total.toFixed(2)}</strong>
+          <strong>${formatCurrency(t.total)}</strong>
         </div>`).join("") : '<div style="font-size:var(--text-sm);color:var(--color-text-muted);">No expenses yet.</div>'}
       </div>
       <h3 style="font-size:var(--text-sm);margin:16px 0 8px;">Recent Activity</h3>
@@ -9337,7 +9417,7 @@ function _renderPerCompanyDashboard(data) {
         <thead><tr><th>Date</th><th>Merchant</th><th style="text-align:right;">Amount</th></tr></thead>
         <tbody>${recent.length ? recent.map((t) => `<tr>
           <td style="font-size:var(--text-xs);">${formatDate(t.date)}</td>
-          <td>${_escapeHtml(t.merchant_name || t.description || "—")}</td>
+          <td>${_escapeHtml(prettifyMerchant(t))}</td>
           <td style="text-align:right;color:${(t.amount || 0) > 0 ? "var(--color-text-primary)" : "var(--color-success)"};">${formatCurrency(t.amount)}</td>
         </tr>`).join("") : '<tr><td colspan="3" style="text-align:center;color:var(--color-text-muted);padding:12px;">No transactions yet.</td></tr>'}</tbody>
       </table>
