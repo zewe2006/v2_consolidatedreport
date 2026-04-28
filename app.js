@@ -6020,7 +6020,7 @@ async function _supaApplyMatch(txId, m) {
       company_id: selectedCompanyId,
       date: tx.date,
       amount,
-      kind: m.kind === "invoice" ? "receipt" : "disbursement",
+      kind: m.kind === "invoice" ? "invoice_payment" : "bill_payment",
       bank_account_id: tx.account_id,
       matched_transaction_id: tx.id,
       memo: tx.merchant_name || tx.description?.slice(0, 80) || null,
