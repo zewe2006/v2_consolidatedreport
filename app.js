@@ -1025,10 +1025,22 @@ async function _supaBalanceSheet(companyId, endDate) {
   ]);
 
   // Per-CoA derived balance: sum of linked bank accounts' current_balance.
+  // Bank accounts without a coa_account_id link show up as their own
+  // standalone rows below (depository → Asset, loan → Liability).
   const bankByCoa = new Map();
+  const unlinkedBankRows = [];
   for (const a of accounts) {
-    if (!a.coa_account_id) continue;
-    bankByCoa.set(a.coa_account_id, (bankByCoa.get(a.coa_account_id) || 0) + parseFloat(a.current_balance || 0));
+    const bal = parseFloat(a.current_balance || 0);
+    if (a.coa_account_id) {
+      bankByCoa.set(a.coa_account_id, (bankByCoa.get(a.coa_account_id) || 0) + bal);
+    } else if (Math.abs(bal) > 0.005) {
+      const isLiability = a.type === "loan";
+      unlinkedBankRows.push({
+        id: a.id, code: "—", name: a.name,
+        type: isLiability ? "liability" : "asset",
+        balance: bal,
+      });
+    }
   }
   const totalAP = openBills.reduce((s, b) => s + parseFloat(b.balance || 0), 0);
   const totalAR = openInvoices.reduce((s, i) => s + parseFloat(i.balance || 0), 0);
@@ -1053,6 +1065,9 @@ async function _supaBalanceSheet(companyId, endDate) {
   if (!arAssigned && totalAR > 0) {
     accountsWithBalance.push({ id: "_synth_ar", code: "—", name: "Accounts Receivable (open invoices)", type: "asset", balance: totalAR });
   }
+  // Fold standalone bank rows (no CoA link) into the same list so they
+  // appear under Assets / Liabilities.
+  accountsWithBalance.push(...unlinkedBankRows);
 
   const buildGroup = (label, type) => {
     const rows = accountsWithBalance.filter((a) => a.type === type && Math.abs(a.balance) > 0.005);
@@ -1116,16 +1131,26 @@ async function _supaProfitLoss(companyId, startDate, endDate) {
   const start = startDate || `${new Date().getFullYear()}-01-01`;
   const end = endDate || new Date().toISOString().slice(0, 10);
 
-  const [coa, txns] = await Promise.all([
+  const [coa, categories, txns] = await Promise.all([
     fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts?company_id=eq.${companyId}&is_active=eq.true&type=in.(income,expense)&select=id,code,name,type,subtype&order=code`, { headers }).then((r) => r.ok ? r.json() : []),
+    // transactions.category_id → categories.id → categories.coa_account_id → chart_of_accounts.id
+    fetch(`${SUPABASE_URL}/rest/v1/categories?company_id=eq.${companyId}&select=id,coa_account_id`, { headers }).then((r) => r.ok ? r.json() : []),
     // Pull only the txns we need: in-period, not transfers, not split parents
     fetch(`${SUPABASE_URL}/rest/v1/transactions?company_id=eq.${companyId}&date=gte.${start}&date=lte.${end}&is_transfer=eq.false&parent_transaction_id=is.null&select=amount,category_id&limit=10000`, { headers }).then((r) => r.ok ? r.json() : []),
   ]);
 
+  // Build the category → CoA bridge
+  const catToCoa = new Map();
+  for (const c of categories) {
+    if (c.coa_account_id) catToCoa.set(c.id, c.coa_account_id);
+  }
+
   const byCoa = new Map();
   for (const t of txns) {
     if (!t.category_id) continue;
-    byCoa.set(t.category_id, (byCoa.get(t.category_id) || 0) + parseFloat(t.amount || 0));
+    const coaId = catToCoa.get(t.category_id);
+    if (!coaId) continue;
+    byCoa.set(coaId, (byCoa.get(coaId) || 0) + parseFloat(t.amount || 0));
   }
 
   const incomeRows = [];
