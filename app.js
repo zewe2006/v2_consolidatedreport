@@ -916,20 +916,33 @@ async function loadPL() {
     const viewEl = document.getElementById("pl-view-mode");
     const byCompany = viewEl ? viewEl.value === "by_company" : false;
     const summarize = (document.getElementById("pl-summarize")?.value || "") || null;
-    const data = await apiPost("/api/reports/profit-loss", {
-      start_date: document.getElementById("pl-start-date").value || null,
-      end_date: document.getElementById("pl-end-date").value || null,
-      date_macro: document.getElementById("pl-date-macro").value || null,
-      accounting_method: document.getElementById("pl-method").value,
-      compare_prior_year: document.getElementById("pl-compare").value === "prior_year",
-      compare_prior_month: document.getElementById("pl-compare").value === "prior_month",
-      company_id: sel.company_id,
-      company_ids: sel.company_ids,
-      by_company: byCompany,
-      summarize_column_by: summarize,
-    });
+    const startVal = document.getElementById("pl-start-date").value || null;
+    const endVal = document.getElementById("pl-end-date").value || null;
+    // Source-based routing: QBO → Railway; Plaid/Manual → Supabase direct.
+    const company = _getSelectedCompany();
+    const isQbo = ((company?.source) || "qbo") === "qbo";
+    const useSupa = !isQbo && supabaseAccessToken && !byCompany;
+    let data;
+    if (useSupa) {
+      data = await _supaProfitLoss(sel.company_id, startVal, endVal);
+    } else {
+      data = await apiPost("/api/reports/profit-loss", {
+        start_date: startVal,
+        end_date: endVal,
+        date_macro: document.getElementById("pl-date-macro").value || null,
+        accounting_method: document.getElementById("pl-method").value,
+        compare_prior_year: document.getElementById("pl-compare").value === "prior_year",
+        compare_prior_month: document.getElementById("pl-compare").value === "prior_month",
+        company_id: sel.company_id,
+        company_ids: sel.company_ids,
+        by_company: byCompany,
+        summarize_column_by: summarize,
+      });
+    }
     currentReportData.pl = data;
-    if (byCompany && data.company_breakdowns) {
+    if (useSupa) {
+      _renderSupaPLReport(data, "pl-table-wrapper");
+    } else if (byCompany && data.company_breakdowns) {
       renderByCompanyReport(data, "pl-table-wrapper");
     } else {
       renderQBOReport(data, "pl-table-wrapper");
@@ -959,25 +972,285 @@ async function loadBS() {
     if (summarize && endVal && !startVal) {
       startVal = endVal.slice(0, 4) + "-01-01";
     }
-    const data = await apiPost("/api/reports/balance-sheet", {
-      start_date: startVal,
-      end_date: endVal,
-      date_macro: document.getElementById("bs-date-macro").value || null,
-      accounting_method: document.getElementById("bs-method").value,
-      compare_prior_year: document.getElementById("bs-compare").value === "prior_year",
-      company_id: sel.company_id,
-      company_ids: sel.company_ids,
-      by_company: byCompany,
-      summarize_column_by: summarize,
-    });
+    // Non-QBO companies (manual + Plaid) live in Supabase only — Railway's
+    // /api/reports/balance-sheet returns nothing for them. Use a direct
+    // Supabase build instead. Single-column "as of <end_date>" — periods,
+    // by-company, prior-year compare are still Railway-only for now.
+    const company = _getSelectedCompany();
+    const useSupa = company && (company.source || "qbo") !== "qbo" && supabaseAccessToken && !byCompany;
+    let data;
+    if (useSupa) {
+      data = await _supaBalanceSheet(sel.company_id, endVal);
+    } else {
+      data = await apiPost("/api/reports/balance-sheet", {
+        start_date: startVal,
+        end_date: endVal,
+        date_macro: document.getElementById("bs-date-macro").value || null,
+        accounting_method: document.getElementById("bs-method").value,
+        compare_prior_year: document.getElementById("bs-compare").value === "prior_year",
+        company_id: sel.company_id,
+        company_ids: sel.company_ids,
+        by_company: byCompany,
+        summarize_column_by: summarize,
+      });
+    }
     currentReportData.bs = data;
-    if (byCompany && data.company_breakdowns) {
+    if (useSupa) {
+      _renderSupaBSReport(data, "bs-table-wrapper");
+    } else if (byCompany && data.company_breakdowns) {
       renderByCompanyReport(data, "bs-table-wrapper");
     } else {
       renderQBOReport(data, "bs-table-wrapper");
     }
     ld.classList.add("hidden"); wr.classList.remove("hidden");
   } catch (e) { ld.innerHTML = `<p style="color:var(--color-error);">Error: ${e.message}</p>`; }
+}
+
+// Build a basic Balance Sheet directly from Supabase for non-QBO companies.
+// No double-entry GL exists for these (journal_entries is empty), so balances
+// are derived: bank/loan accounts via accounts.current_balance, A/P from
+// open bills, A/R from open invoices, equity is a single derived plug.
+// Period activity (P&L / CF) is intentionally not folded in here — that
+// would need a Supabase-side P&L which lives in a separate function.
+async function _supaBalanceSheet(companyId, endDate) {
+  if (!supabaseAccessToken) throw new Error("Supabase session required.");
+  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+  const asOf = endDate || new Date().toISOString().slice(0, 10);
+
+  const [coa, accounts, openBills, openInvoices] = await Promise.all([
+    fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts?company_id=eq.${companyId}&is_active=eq.true&select=id,code,name,type,subtype&order=code`, { headers }).then((r) => r.ok ? r.json() : []),
+    fetch(`${SUPABASE_URL}/rest/v1/accounts?company_id=eq.${companyId}&select=id,name,type,subtype,current_balance,coa_account_id`, { headers }).then((r) => r.ok ? r.json() : []),
+    fetch(`${SUPABASE_URL}/rest/v1/bills?company_id=eq.${companyId}&status=in.(open,partially_paid,overdue)&date=lte.${asOf}&select=balance`, { headers }).then((r) => r.ok ? r.json() : []),
+    fetch(`${SUPABASE_URL}/rest/v1/invoices?company_id=eq.${companyId}&status=in.(sent,partially_paid,overdue)&date=lte.${asOf}&select=balance`, { headers }).then((r) => r.ok ? r.json() : []),
+  ]);
+
+  // Per-CoA derived balance: sum of linked bank accounts' current_balance.
+  const bankByCoa = new Map();
+  for (const a of accounts) {
+    if (!a.coa_account_id) continue;
+    bankByCoa.set(a.coa_account_id, (bankByCoa.get(a.coa_account_id) || 0) + parseFloat(a.current_balance || 0));
+  }
+  const totalAP = openBills.reduce((s, b) => s + parseFloat(b.balance || 0), 0);
+  const totalAR = openInvoices.reduce((s, i) => s + parseFloat(i.balance || 0), 0);
+
+  let apAssigned = false;
+  let arAssigned = false;
+  const accountsWithBalance = coa.map((c) => {
+    let balance = bankByCoa.get(c.id) || 0;
+    const nameLc = (c.name || "").toLowerCase();
+    const isAP = c.type === "liability" && /payable/.test(nameLc) && !apAssigned;
+    const isAR = c.type === "asset" && /receivable/.test(nameLc) && !arAssigned;
+    if (isAP) { balance += totalAP; apAssigned = true; }
+    if (isAR) { balance += totalAR; arAssigned = true; }
+    return { id: c.id, code: c.code, name: c.name, type: c.type, subtype: c.subtype, balance };
+  });
+
+  // If no Payable/Receivable accounts existed in the CoA, fold the totals
+  // into synthetic rows so they still show up.
+  if (!apAssigned && totalAP > 0) {
+    accountsWithBalance.push({ id: "_synth_ap", code: "—", name: "Accounts Payable (open bills)", type: "liability", balance: totalAP });
+  }
+  if (!arAssigned && totalAR > 0) {
+    accountsWithBalance.push({ id: "_synth_ar", code: "—", name: "Accounts Receivable (open invoices)", type: "asset", balance: totalAR });
+  }
+
+  const buildGroup = (label, type) => {
+    const rows = accountsWithBalance.filter((a) => a.type === type && Math.abs(a.balance) > 0.005);
+    rows.sort((a, b) => (a.code || "").localeCompare(b.code || ""));
+    const total = rows.reduce((s, a) => s + a.balance, 0);
+    return { label, type, rows, total };
+  };
+
+  const assets = buildGroup("Assets", "asset");
+  const liabilities = buildGroup("Liabilities", "liability");
+  const equityFromCoa = buildGroup("Equity", "equity");
+  // Plug equity so the sheet balances. Without journal data we can't
+  // compute retained earnings / current-year net income separately.
+  const derivedEquity = assets.total - liabilities.total - equityFromCoa.total;
+  if (Math.abs(derivedEquity) > 0.005) {
+    equityFromCoa.rows.push({ id: "_plug", code: "—", name: "Retained Earnings (derived)", type: "equity", balance: derivedEquity });
+    equityFromCoa.total += derivedEquity;
+  }
+
+  return {
+    asOf,
+    companyId,
+    groups: [assets, liabilities, equityFromCoa],
+    totalAssets: assets.total,
+    totalLiabilities: liabilities.total,
+    totalEquity: equityFromCoa.total,
+    notice: "Derived from Supabase — no double-entry GL data, so balances reflect bank/loan accounts, open A/P, open A/R, and a derived equity plug.",
+  };
+}
+
+function _renderSupaBSReport(data, wrapperId) {
+  const wrap = document.getElementById(wrapperId);
+  const fmt = (n) => (n < 0 ? `(${Math.abs(n).toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2})})` : n.toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2}));
+  let html = `<div style="padding:var(--space-3) var(--space-4);background:var(--color-bg-muted);border-radius:var(--radius-md);margin-bottom:var(--space-3);font-size:var(--text-xs);color:var(--color-text-secondary);">${_escapeHtml(data.notice || "")}</div>`;
+  html += `<div style="margin-bottom:var(--space-2);font-weight:600;">Balance Sheet — As of ${data.asOf}</div>`;
+  html += `<table class="qbo-report-table" style="width:100%;border-collapse:collapse;">`;
+  html += `<thead><tr><th style="text-align:left;padding:var(--space-2);">Account</th><th style="text-align:right;padding:var(--space-2);">Balance</th></tr></thead><tbody>`;
+  for (const g of data.groups) {
+    html += `<tr><td colspan="2" style="font-weight:600;padding:var(--space-3) var(--space-2) var(--space-1);border-top:1px solid var(--color-border);">${_escapeHtml(g.label)}</td></tr>`;
+    if (!g.rows.length) {
+      html += `<tr><td style="padding:0 var(--space-2);color:var(--color-text-muted);">(none)</td><td></td></tr>`;
+    } else {
+      for (const r of g.rows) {
+        html += `<tr><td style="padding:2px var(--space-2);padding-left:var(--space-5);">${_escapeHtml(r.code || "—")} ${_escapeHtml(r.name)}</td><td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${fmt(r.balance)}</td></tr>`;
+      }
+    }
+    html += `<tr><td style="padding:var(--space-1) var(--space-2);font-weight:600;border-top:1px dashed var(--color-border);">Total ${_escapeHtml(g.label)}</td><td style="text-align:right;padding:var(--space-1) var(--space-2);font-weight:600;font-variant-numeric:tabular-nums;border-top:1px dashed var(--color-border);">${fmt(g.total)}</td></tr>`;
+  }
+  const liabPlusEquity = data.totalLiabilities + data.totalEquity;
+  html += `<tr><td style="padding:var(--space-3) var(--space-2);font-weight:700;border-top:2px solid var(--color-border);">Total Liabilities + Equity</td><td style="text-align:right;padding:var(--space-3) var(--space-2);font-weight:700;font-variant-numeric:tabular-nums;border-top:2px solid var(--color-border);">${fmt(liabPlusEquity)}</td></tr>`;
+  html += `</tbody></table>`;
+  wrap.innerHTML = html;
+}
+
+// Cash-basis P&L from Supabase. Sums transactions by category (= CoA id)
+// for the period, grouped into income vs expense. App amount convention:
+// positive = outflow (expense direction), negative = inflow (income).
+async function _supaProfitLoss(companyId, startDate, endDate) {
+  if (!supabaseAccessToken) throw new Error("Supabase session required.");
+  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+  const start = startDate || `${new Date().getFullYear()}-01-01`;
+  const end = endDate || new Date().toISOString().slice(0, 10);
+
+  const [coa, txns] = await Promise.all([
+    fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts?company_id=eq.${companyId}&is_active=eq.true&type=in.(income,expense)&select=id,code,name,type,subtype&order=code`, { headers }).then((r) => r.ok ? r.json() : []),
+    // Pull only the txns we need: in-period, not transfers, not split parents
+    fetch(`${SUPABASE_URL}/rest/v1/transactions?company_id=eq.${companyId}&date=gte.${start}&date=lte.${end}&is_transfer=eq.false&parent_transaction_id=is.null&select=amount,category_id&limit=10000`, { headers }).then((r) => r.ok ? r.json() : []),
+  ]);
+
+  const byCoa = new Map();
+  for (const t of txns) {
+    if (!t.category_id) continue;
+    byCoa.set(t.category_id, (byCoa.get(t.category_id) || 0) + parseFloat(t.amount || 0));
+  }
+
+  const incomeRows = [];
+  const expenseRows = [];
+  for (const c of coa) {
+    const raw = byCoa.get(c.id) || 0;
+    if (Math.abs(raw) < 0.005) continue;
+    if (c.type === "income") {
+      // Negative amount = inflow → flip sign so income shows positive.
+      incomeRows.push({ id: c.id, code: c.code, name: c.name, balance: -raw });
+    } else {
+      // Expense: positive amount = outflow, leave as-is.
+      expenseRows.push({ id: c.id, code: c.code, name: c.name, balance: raw });
+    }
+  }
+  incomeRows.sort((a, b) => (a.code || "").localeCompare(b.code || ""));
+  expenseRows.sort((a, b) => (a.code || "").localeCompare(b.code || ""));
+  const totalIncome = incomeRows.reduce((s, r) => s + r.balance, 0);
+  const totalExpense = expenseRows.reduce((s, r) => s + r.balance, 0);
+
+  return {
+    start, end,
+    groups: [
+      { label: "Income",   rows: incomeRows,  total: totalIncome },
+      { label: "Expense",  rows: expenseRows, total: totalExpense },
+    ],
+    totalIncome,
+    totalExpense,
+    netIncome: totalIncome - totalExpense,
+    notice: "Cash basis · derived from categorized transactions in Supabase. No prior-period compare or summarize-by-month yet.",
+  };
+}
+
+function _renderSupaPLReport(data, wrapperId) {
+  const wrap = document.getElementById(wrapperId);
+  const fmt = (n) => (n < 0 ? `(${Math.abs(n).toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2})})` : n.toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2}));
+  let html = `<div style="padding:var(--space-3) var(--space-4);background:var(--color-bg-muted);border-radius:var(--radius-md);margin-bottom:var(--space-3);font-size:var(--text-xs);color:var(--color-text-secondary);">${_escapeHtml(data.notice || "")}</div>`;
+  html += `<div style="margin-bottom:var(--space-2);font-weight:600;">Profit &amp; Loss — ${data.start} to ${data.end}</div>`;
+  html += `<table class="qbo-report-table" style="width:100%;border-collapse:collapse;">`;
+  html += `<thead><tr><th style="text-align:left;padding:var(--space-2);">Account</th><th style="text-align:right;padding:var(--space-2);">Total</th></tr></thead><tbody>`;
+  for (const g of data.groups) {
+    html += `<tr><td colspan="2" style="font-weight:600;padding:var(--space-3) var(--space-2) var(--space-1);border-top:1px solid var(--color-border);">${_escapeHtml(g.label)}</td></tr>`;
+    if (!g.rows.length) {
+      html += `<tr><td style="padding:0 var(--space-2);color:var(--color-text-muted);">(none)</td><td></td></tr>`;
+    } else {
+      for (const r of g.rows) {
+        html += `<tr><td style="padding:2px var(--space-2);padding-left:var(--space-5);">${_escapeHtml(r.code || "—")} ${_escapeHtml(r.name)}</td><td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${fmt(r.balance)}</td></tr>`;
+      }
+    }
+    html += `<tr><td style="padding:var(--space-1) var(--space-2);font-weight:600;border-top:1px dashed var(--color-border);">Total ${_escapeHtml(g.label)}</td><td style="text-align:right;padding:var(--space-1) var(--space-2);font-weight:600;font-variant-numeric:tabular-nums;border-top:1px dashed var(--color-border);">${fmt(g.total)}</td></tr>`;
+  }
+  html += `<tr><td style="padding:var(--space-3) var(--space-2);font-weight:700;border-top:2px solid var(--color-border);">Net Income</td><td style="text-align:right;padding:var(--space-3) var(--space-2);font-weight:700;font-variant-numeric:tabular-nums;border-top:2px solid var(--color-border);">${fmt(data.netIncome)}</td></tr>`;
+  html += `</tbody></table>`;
+  wrap.innerHTML = html;
+}
+
+// Cash Flow: per-bank-account net cash movement over the period. We don't
+// derive Operating/Investing/Financing categorization (would need
+// per-category metadata) — this is a simple net-cash view.
+async function _supaCashFlow(companyId, startDate, endDate) {
+  if (!supabaseAccessToken) throw new Error("Supabase session required.");
+  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+  const start = startDate || `${new Date().getFullYear()}-01-01`;
+  const end = endDate || new Date().toISOString().slice(0, 10);
+
+  const [accounts, txns] = await Promise.all([
+    fetch(`${SUPABASE_URL}/rest/v1/accounts?company_id=eq.${companyId}&type=in.(depository,loan)&select=id,name,type,subtype,current_balance&order=name`, { headers }).then((r) => r.ok ? r.json() : []),
+    fetch(`${SUPABASE_URL}/rest/v1/transactions?company_id=eq.${companyId}&date=gte.${start}&date=lte.${end}&is_transfer=eq.false&parent_transaction_id=is.null&select=account_id,amount&limit=20000`, { headers }).then((r) => r.ok ? r.json() : []),
+  ]);
+
+  const byAcct = new Map();
+  for (const t of txns) {
+    const k = t.account_id;
+    if (!k) continue;
+    const v = byAcct.get(k) || { inflows: 0, outflows: 0 };
+    const amt = parseFloat(t.amount || 0);
+    if (amt < 0) v.inflows += -amt;       // negative = money in
+    else v.outflows += amt;                // positive = money out
+    byAcct.set(k, v);
+  }
+
+  const rows = [];
+  for (const a of accounts) {
+    const m = byAcct.get(a.id) || { inflows: 0, outflows: 0 };
+    const net = m.inflows - m.outflows;
+    if (Math.abs(net) < 0.005 && Math.abs(m.inflows) < 0.005 && Math.abs(m.outflows) < 0.005) continue;
+    rows.push({ id: a.id, name: a.name, type: a.type, inflows: m.inflows, outflows: m.outflows, net });
+  }
+  const totalNet = rows.reduce((s, r) => s + r.net, 0);
+  const totalInflows = rows.reduce((s, r) => s + r.inflows, 0);
+  const totalOutflows = rows.reduce((s, r) => s + r.outflows, 0);
+
+  return {
+    start, end,
+    accounts: rows,
+    totalInflows,
+    totalOutflows,
+    totalNet,
+    notice: "Net cash movement per bank account · derived from transactions in Supabase. No Operating/Investing/Financing split or compare yet.",
+  };
+}
+
+function _renderSupaCFReport(data, wrapperId) {
+  const wrap = document.getElementById(wrapperId);
+  const fmt = (n) => (n < 0 ? `(${Math.abs(n).toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2})})` : n.toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2}));
+  let html = `<div style="padding:var(--space-3) var(--space-4);background:var(--color-bg-muted);border-radius:var(--radius-md);margin-bottom:var(--space-3);font-size:var(--text-xs);color:var(--color-text-secondary);">${_escapeHtml(data.notice || "")}</div>`;
+  html += `<div style="margin-bottom:var(--space-2);font-weight:600;">Cash Flow — ${data.start} to ${data.end}</div>`;
+  html += `<table class="qbo-report-table" style="width:100%;border-collapse:collapse;">`;
+  html += `<thead><tr><th style="text-align:left;padding:var(--space-2);">Account</th><th style="text-align:right;padding:var(--space-2);">Inflows</th><th style="text-align:right;padding:var(--space-2);">Outflows</th><th style="text-align:right;padding:var(--space-2);">Net</th></tr></thead><tbody>`;
+  if (!data.accounts.length) {
+    html += `<tr><td colspan="4" style="padding:var(--space-4);text-align:center;color:var(--color-text-muted);">No transactions in this period.</td></tr>`;
+  } else {
+    for (const r of data.accounts) {
+      html += `<tr><td style="padding:2px var(--space-2);">${_escapeHtml(r.name)}</td>`
+        + `<td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${fmt(r.inflows)}</td>`
+        + `<td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${fmt(r.outflows)}</td>`
+        + `<td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${fmt(r.net)}</td></tr>`;
+    }
+  }
+  html += `<tr><td style="padding:var(--space-3) var(--space-2);font-weight:700;border-top:2px solid var(--color-border);">Net Change in Cash</td>`
+    + `<td style="text-align:right;padding:var(--space-3) var(--space-2);font-weight:700;font-variant-numeric:tabular-nums;border-top:2px solid var(--color-border);">${fmt(data.totalInflows)}</td>`
+    + `<td style="text-align:right;padding:var(--space-3) var(--space-2);font-weight:700;font-variant-numeric:tabular-nums;border-top:2px solid var(--color-border);">${fmt(data.totalOutflows)}</td>`
+    + `<td style="text-align:right;padding:var(--space-3) var(--space-2);font-weight:700;font-variant-numeric:tabular-nums;border-top:2px solid var(--color-border);">${fmt(data.totalNet)}</td></tr>`;
+  html += `</tbody></table>`;
+  wrap.innerHTML = html;
 }
 
 async function loadCF() {
@@ -992,18 +1265,30 @@ async function loadCF() {
     const viewEl = document.getElementById("cf-view-mode");
     const byCompany = viewEl ? viewEl.value === "by_company" : false;
     const summarize = (document.getElementById("cf-summarize")?.value || "") || null;
-    const data = await apiPost("/api/reports/cash-flow", {
-      start_date: document.getElementById("cf-start-date").value || null,
-      end_date: document.getElementById("cf-end-date").value || null,
-      date_macro: document.getElementById("cf-date-macro").value || null,
-      compare_prior_year: document.getElementById("cf-compare").value === "prior_year",
-      company_id: sel.company_id,
-      company_ids: sel.company_ids,
-      by_company: byCompany,
-      summarize_column_by: summarize,
-    });
+    const startVal = document.getElementById("cf-start-date").value || null;
+    const endVal = document.getElementById("cf-end-date").value || null;
+    const company = _getSelectedCompany();
+    const isQbo = ((company?.source) || "qbo") === "qbo";
+    const useSupa = !isQbo && supabaseAccessToken && !byCompany;
+    let data;
+    if (useSupa) {
+      data = await _supaCashFlow(sel.company_id, startVal, endVal);
+    } else {
+      data = await apiPost("/api/reports/cash-flow", {
+        start_date: startVal,
+        end_date: endVal,
+        date_macro: document.getElementById("cf-date-macro").value || null,
+        compare_prior_year: document.getElementById("cf-compare").value === "prior_year",
+        company_id: sel.company_id,
+        company_ids: sel.company_ids,
+        by_company: byCompany,
+        summarize_column_by: summarize,
+      });
+    }
     currentReportData.cf = data;
-    if (byCompany && data.company_breakdowns) {
+    if (useSupa) {
+      _renderSupaCFReport(data, "cf-table-wrapper");
+    } else if (byCompany && data.company_breakdowns) {
       renderByCompanyReport(data, "cf-table-wrapper");
     } else {
       renderQBOReport(data, "cf-table-wrapper");
