@@ -5844,33 +5844,144 @@ let _txMatchMap = null;
 async function _txLoadMatchHints(txs) {
   if (!selectedCompanyId || !txs || !txs.length) { _txMatchMap = null; return; }
   // Only consider Plaid-auto-categorized or uncategorized rows worth matching.
-  // User-set rows are already decided.
   const candidates = txs.filter((t) => !t.is_transfer && (t.categorized_by === "plaid" || !t.category_id));
   if (!candidates.length) { _txMatchMap = null; return; }
+  let railwayWorked = false;
   try {
     const r = await apiPost("/api/payments/match-suggestions/batch", {
       company_id: selectedCompanyId,
       transaction_ids: candidates.map((t) => t.id),
     });
     _txMatchMap = r.matches || {};
+    if (Object.keys(_txMatchMap).length) railwayWorked = true;
   } catch (e) {
     _txMatchMap = null;
   }
+  if (!railwayWorked && supabaseAccessToken) {
+    _txMatchMap = await _supaMatchSuggestions(candidates) || _txMatchMap;
+  }
+}
+
+// Supabase-side match-hint scanner. For each candidate transaction, find an
+// open bill (outflow / positive amount) or invoice (inflow / negative
+// amount) whose total matches the txn amount within ±0.01 and whose date
+// is within ±7 days. Returns the same { txId → { kind, id, number, date,
+// party, balance, score } } shape Railway returns.
+async function _supaMatchSuggestions(candidates) {
+  if (!supabaseAccessToken || !selectedCompanyId || !candidates.length) return null;
+  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+  // Fetch open bills + invoices once for the company
+  const [bills, invs] = await Promise.all([
+    fetch(`${SUPABASE_URL}/rest/v1/bills?company_id=eq.${selectedCompanyId}&status=in.(open,partially_paid,overdue)&select=id,number,date,due_date,total,balance,vendor:vendors(display_name)`, { headers }).then((r) => r.ok ? r.json() : []),
+    fetch(`${SUPABASE_URL}/rest/v1/invoices?company_id=eq.${selectedCompanyId}&status=in.(open,partially_paid,overdue,sent)&select=id,number,date,due_date,total,balance,customer:customers(display_name)`, { headers }).then((r) => r.ok ? r.json() : []),
+  ]);
+
+  const dayDiff = (a, b) => Math.abs((new Date(a) - new Date(b)) / 86400000);
+  const out = {};
+  for (const t of candidates) {
+    const amt = Math.abs(parseFloat(t.amount));
+    const isOutflow = parseFloat(t.amount) > 0;
+    const pool = isOutflow ? bills : invs;
+    let best = null;
+    let bestScore = -1;
+    for (const d of pool) {
+      const balance = parseFloat(d.balance ?? d.total ?? 0);
+      if (Math.abs(balance - amt) > 0.01) continue;
+      const dRef = d.due_date || d.date;
+      const dd = dayDiff(t.date, dRef);
+      if (dd > 14) continue;
+      const score = Math.round(100 - dd * 5);
+      if (score > bestScore) { bestScore = score; best = d; }
+    }
+    if (best) {
+      out[t.id] = {
+        kind: isOutflow ? "bill" : "invoice",
+        id: best.id,
+        number: best.number,
+        date: best.due_date || best.date,
+        party: isOutflow ? best.vendor?.display_name : best.customer?.display_name,
+        balance: parseFloat(best.balance ?? best.total ?? 0),
+        score: bestScore,
+      };
+    }
+  }
+  return out;
 }
 
 async function txApplyMatchHint(txId) {
   if (!_txMatchMap || !_txMatchMap[txId]) { showToast("No match available.", "error"); return; }
   const m = _txMatchMap[txId];
   try {
-    const body = m.kind === "invoice"
-      ? { plaid_txn_id: txId, invoice_id: m.id }
-      : { plaid_txn_id: txId, bill_id: m.id };
-    await apiPost("/api/payments/apply-match", body);
+    let railwayWorked = false;
+    try {
+      const body = m.kind === "invoice"
+        ? { plaid_txn_id: txId, invoice_id: m.id }
+        : { plaid_txn_id: txId, bill_id: m.id };
+      await apiPost("/api/payments/apply-match", body);
+      railwayWorked = true;
+    } catch { /* fall through */ }
+    if (!railwayWorked) await _supaApplyMatch(txId, m);
     showToast(`Matched to ${m.kind} ${m.number || ""}.`, "success");
     await txReload();
   } catch (e) {
     showToast("Match failed: " + (e.message || e), "error");
   }
+}
+
+// Supabase-side apply-match: create a payment row + payment_application
+// linking the transaction to the bill/invoice + update the parent's
+// balance/status. Two REST calls (insert payment, insert application)
+// + one PATCH to bump the bill/invoice. Returns when all complete.
+async function _supaApplyMatch(txId, m) {
+  // Find the transaction in our cached state for date / amount / account
+  const tx = (_txState.txs || []).find((t) => t.id === txId);
+  if (!tx) throw new Error("transaction not in current view; reload and retry");
+  const amount = Math.abs(parseFloat(tx.amount));
+  const headers = {
+    "Content-Type": "application/json",
+    Prefer: "return=representation",
+    apikey: SUPABASE_ANON_KEY,
+    Authorization: `Bearer ${supabaseAccessToken}`,
+  };
+  // 1. Insert payment
+  const payRes = await fetch(`${SUPABASE_URL}/rest/v1/payments`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      company_id: selectedCompanyId,
+      date: tx.date,
+      amount,
+      kind: m.kind === "invoice" ? "receipt" : "disbursement",
+      bank_account_id: tx.account_id,
+      matched_transaction_id: tx.id,
+      memo: tx.merchant_name || tx.description?.slice(0, 80) || null,
+    }),
+  });
+  if (!payRes.ok) throw new Error(`payment insert: ${payRes.status} ${(await payRes.text()).slice(0, 150)}`);
+  const [payment] = await payRes.json();
+
+  // 2. Insert payment_application
+  const appRes = await fetch(`${SUPABASE_URL}/rest/v1/payment_applications`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      payment_id: payment.id,
+      [m.kind === "invoice" ? "invoice_id" : "bill_id"]: m.id,
+      amount,
+    }),
+  });
+  if (!appRes.ok) throw new Error(`application insert: ${appRes.status} ${(await appRes.text()).slice(0, 150)}`);
+
+  // 3. Update bill/invoice balance and status
+  const newBalance = Math.max(0, parseFloat(m.balance) - amount);
+  const newStatus = newBalance < 0.01 ? "paid" : "partially_paid";
+  const table = m.kind === "invoice" ? "invoices" : "bills";
+  const updRes = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${m.id}`, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({ balance: newBalance, status: newStatus }),
+  });
+  if (!updRes.ok) throw new Error(`${table} update: ${updRes.status} ${(await updRes.text()).slice(0, 150)}`);
 }
 
 
@@ -9677,13 +9788,23 @@ async function transferScan() {
   const summary = document.getElementById("xfer-summary");
   btn.disabled = true; btn.textContent = "Scanning...";
   results.innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">Scanning transactions...</div>';
+  const opts = {
+    date_from: document.getElementById("xfer-date-from").value,
+    date_to: document.getElementById("xfer-date-to").value,
+    date_window_days: parseInt(document.getElementById("xfer-window").value || "3", 10),
+    same_company_only: document.getElementById("xfer-same-co-only").checked,
+  };
   try {
-    const r = await apiPost("/api/transfers/detect", {
-      date_from: document.getElementById("xfer-date-from").value,
-      date_to: document.getElementById("xfer-date-to").value,
-      date_window_days: parseInt(document.getElementById("xfer-window").value || "3", 10),
-      same_company_only: document.getElementById("xfer-same-co-only").checked,
-    });
+    let r = null;
+    let railwayWorked = false;
+    try {
+      r = await apiPost("/api/transfers/detect", opts);
+      railwayWorked = !!(r && (r.pairs || r.scanned != null));
+    } catch { /* fall through to Supabase */ }
+    if (!railwayWorked && supabaseAccessToken) {
+      r = await _supaTransferScan(opts);
+    }
+    if (!r) throw new Error("No data source available for transfer detection");
     _xferPairs = r.pairs || [];
     summary.textContent = `Scanned ${r.scanned.toLocaleString()} txns (${r.outflows_scanned} outflows · ${r.inflows_scanned} inflows) → ${_xferPairs.length} suggested pair${_xferPairs.length === 1 ? "" : "s"}`;
     _renderTransferResults();
@@ -9693,6 +9814,112 @@ async function transferScan() {
     results.innerHTML = "";
   } finally {
     btn.disabled = false; btn.textContent = "Scan for pairs";
+  }
+}
+
+// Supabase-side transfer detection. Pairs each outflow (positive amount)
+// with a candidate inflow (negative amount, equal abs value, different
+// account, within ±date_window_days). Excludes already-categorized,
+// already-transferred, or pending transactions.
+async function _supaTransferScan(opts) {
+  if (!supabaseAccessToken || !selectedCompanyId) return null;
+  const sp = new URLSearchParams();
+  sp.append("company_id", `eq.${selectedCompanyId}`);
+  sp.append("select", "id,date,amount,description,merchant_name,account_id,category_id,is_transfer,transfer_pair_id,pending");
+  sp.append("order", "date.asc");
+  sp.append("limit", "5000");
+  if (opts.date_from) sp.append("date", `gte.${opts.date_from}`);
+  if (opts.date_to)   sp.append("date", `lte.${opts.date_to}`);
+  // Skip QBO journal imports — those already net to zero internally
+  sp.append("plaid_txn_id", "not.like.qbo:*");
+
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/transactions?${sp.toString()}`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
+  });
+  if (!r.ok) return null;
+  const all = await r.json();
+
+  // Eligible txns: not pending, not already transferred, no category yet
+  const eligible = all.filter((t) =>
+    !t.pending && !t.is_transfer && !t.transfer_pair_id && !t.category_id,
+  );
+  const outflows = eligible.filter((t) => parseFloat(t.amount) > 0);
+  const inflows  = eligible.filter((t) => parseFloat(t.amount) < 0);
+
+  // For each outflow, find best inflow within window with matching abs amount
+  const window = opts.date_window_days || 3;
+  const acctById = Object.fromEntries((_txState.accounts || []).map((a) => [a.id, a]));
+  const pairs = [];
+  const usedInflowIds = new Set();
+  const dayDiff = (a, b) => Math.abs((new Date(a) - new Date(b)) / 86400000);
+
+  for (const out of outflows) {
+    const outAmt = Math.abs(parseFloat(out.amount));
+    let best = null;
+    let bestScore = -Infinity;
+    for (const inn of inflows) {
+      if (usedInflowIds.has(inn.id)) continue;
+      if (inn.account_id === out.account_id) continue;          // different accounts only
+      const innAmt = Math.abs(parseFloat(inn.amount));
+      if (Math.abs(outAmt - innAmt) > 0.01) continue;           // amount must match
+      const dd = dayDiff(out.date, inn.date);
+      if (dd > window) continue;                                // within window
+      // Score: closer dates = higher; same merchant adds bonus
+      const merchMatch = out.merchant_name && inn.merchant_name &&
+        out.merchant_name.toLowerCase() === inn.merchant_name.toLowerCase();
+      const score = (window - dd) * 10 + (merchMatch ? 5 : 0);
+      if (score > bestScore) { best = inn; bestScore = score; }
+    }
+    if (!best) continue;
+    usedInflowIds.add(best.id);
+    const outAcct = acctById[out.account_id]?.name || "—";
+    const inAcct  = acctById[best.account_id]?.name || "—";
+    pairs.push({
+      outflow: {
+        id: out.id, date: out.date, amount: out.amount,
+        merchant: out.merchant_name || (out.description ? out.description.slice(0, 60) : ""),
+        company_name: outAcct,
+      },
+      inflow: {
+        id: best.id, date: best.date, amount: best.amount,
+        merchant: best.merchant_name || (best.description ? best.description.slice(0, 60) : ""),
+        company_name: inAcct,
+      },
+      score: Math.round(bestScore),
+      days_diff: dayDiff(out.date, best.date),
+      is_intercompany: false,
+    });
+  }
+  return {
+    scanned: all.length,
+    outflows_scanned: outflows.length,
+    inflows_scanned: inflows.length,
+    pairs: pairs.sort((a, b) => b.score - a.score),
+  };
+}
+
+// Supabase-side transfer confirm: link two transactions via a shared
+// transfer_pair_id and mark both is_transfer=true. Also clears category.
+async function _supaTransferConfirm(outflowId, inflowId) {
+  const pairId = crypto.randomUUID();
+  const body = { is_transfer: true, transfer_pair_id: pairId, category_id: null };
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/transactions?id=in.(${outflowId},${inflowId})`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Prefer: "return=representation",
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${supabaseAccessToken}`,
+      },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!r.ok) throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  const rows = await r.json();
+  if (!Array.isArray(rows) || rows.length !== 2) {
+    throw new Error(`expected 2 rows updated, got ${rows.length}`);
   }
 }
 
@@ -9747,15 +9974,15 @@ async function transferConfirmOne(idx) {
   const p = _xferPairs[idx];
   if (!p) return;
   try {
-    await apiPost("/api/transfers/confirm", {
-      outflow_id: p.outflow.id,
-      inflow_id:  p.inflow.id,
-    });
-    // Remove from list
+    let railwayWorked = false;
+    try {
+      await apiPost("/api/transfers/confirm", { outflow_id: p.outflow.id, inflow_id: p.inflow.id });
+      railwayWorked = true;
+    } catch { /* fall through */ }
+    if (!railwayWorked) await _supaTransferConfirm(p.outflow.id, p.inflow.id);
     _xferPairs.splice(idx, 1);
     _renderTransferResults();
     showToast("Transfer confirmed", "success");
-    // Refresh transactions page in the background
     if ((location.hash || "").includes("transactions")) txReload();
   } catch (e) {
     showToast("Failed: " + e.message, "error");
@@ -9773,10 +10000,12 @@ async function transferConfirmAll() {
   let ok = 0, fail = 0;
   for (const p of [..._xferPairs]) {
     try {
-      await apiPost("/api/transfers/confirm", {
-        outflow_id: p.outflow.id,
-        inflow_id:  p.inflow.id,
-      });
+      let railwayWorked = false;
+      try {
+        await apiPost("/api/transfers/confirm", { outflow_id: p.outflow.id, inflow_id: p.inflow.id });
+        railwayWorked = true;
+      } catch { /* fall through */ }
+      if (!railwayWorked) await _supaTransferConfirm(p.outflow.id, p.inflow.id);
       ok++;
     } catch (e) { fail++; }
   }
