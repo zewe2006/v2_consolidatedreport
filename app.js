@@ -6474,10 +6474,17 @@ async function _supaMatchSuggestions(candidates) {
     for (const d of pool) {
       const balance = parseFloat(d.balance ?? d.total ?? 0);
       if (Math.abs(balance - amt) > 0.01) continue;
-      const dRef = d.due_date || d.date;
-      const dd = dayDiff(t.date, dRef);
-      if (dd > 14) continue;
-      const score = Math.round(100 - dd * 5);
+      // Take the smaller of (date, due_date) — a payment can land near
+      // either the bill date or the due date. Window widened to 30 days
+      // to cover monthly recurring bills paid mid-cycle.
+      const candidates = [d.date, d.due_date].filter(Boolean);
+      let dd = Infinity;
+      for (const ref of candidates) {
+        const x = dayDiff(t.date, ref);
+        if (x < dd) dd = x;
+      }
+      if (dd > 30) continue;
+      const score = Math.round(100 - dd * 3);
       if (score > bestScore) { bestScore = score; best = d; }
     }
     if (best) {
@@ -10807,12 +10814,63 @@ async function openDocDetail(kind, id) {
   _docDetailState = { kind, id, data: null };
   const endpoint = kind === "invoice" ? `/api/invoices/detail/${id}` : `/api/bills/detail/${id}`;
   try {
-    const r = await apiGet(endpoint);
+    const r = _shouldUseRailway()
+      ? await apiGet(endpoint)
+      : await _supaDocDetail(kind, id);
     _docDetailState.data = r;
     _renderDocDetail();
     document.getElementById("doc-detail-modal").classList.add("active");
     document.getElementById("doc-detail-modal").style.display = "flex";
   } catch (e) { showToast("Load failed: " + e.message, "error"); }
+}
+
+// Supabase-side equivalent of Railway's /api/{bills,invoices}/detail/{id}.
+// Returns { bill|invoice, vendor|customer, lines, payments } so
+// _renderDocDetail works unchanged. Lines are joined to chart_of_accounts
+// for the line "Account" column label.
+async function _supaDocDetail(kind, id) {
+  if (!supabaseAccessToken) throw new Error("Supabase session required.");
+  const isInvoice = kind === "invoice";
+  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+  const base = `${SUPABASE_URL}/rest/v1`;
+  const headerTable = isInvoice ? "invoices" : "bills";
+  const linesTable = isInvoice ? "invoice_lines" : "bill_lines";
+  const fkField = isInvoice ? "invoice_id" : "bill_id";
+  const partyTable = isInvoice ? "customers" : "vendors";
+  const partyKey = isInvoice ? "customer_id" : "vendor_id";
+
+  // Header includes the party embed so we can split it out for renderer.
+  const headerSel = `*,party:${partyTable}(*)`;
+  const docs = await fetch(`${base}/${headerTable}?id=eq.${id}&select=${encodeURIComponent(headerSel)}`, { headers })
+    .then((r) => r.ok ? r.json() : []);
+  if (!docs.length) throw new Error(`${kind} not found`);
+  const doc = docs[0];
+  const party = doc.party || null;
+  delete doc.party;
+
+  const linesSel = "id,description,quantity,unit_price,tax_rate,amount,account:chart_of_accounts(id,code,name)";
+  const lines = await fetch(`${base}/${linesTable}?${fkField}=eq.${id}&order=id&select=${encodeURIComponent(linesSel)}`, { headers })
+    .then((r) => r.ok ? r.json() : []);
+  const linesShaped = lines.map((l) => ({
+    id: l.id,
+    description: l.description,
+    quantity: l.quantity,
+    unit_price: l.unit_price,
+    tax_rate: l.tax_rate,
+    amount: l.amount,
+    account_name: l.account ? `${l.account.code ? l.account.code + " " : ""}${l.account.name}` : "",
+  }));
+
+  // Payments table is shared across kinds; filter by FK to either bill or invoice.
+  const payments = await fetch(`${base}/payments?${fkField}=eq.${id}&order=date.desc&select=*`, { headers })
+    .then((r) => r.ok ? r.json() : []);
+
+  return {
+    [headerTable.slice(0, -1)]: doc,            // "bill" or "invoice"
+    [partyTable.slice(0, -1)]: party,            // "vendor" or "customer"
+    lines: linesShaped,
+    payments,
+  };
 }
 
 function closeDocDetail() {
