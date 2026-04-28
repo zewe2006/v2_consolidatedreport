@@ -10426,8 +10426,11 @@ async function _agingInit(kind) {
   const body = document.getElementById(`${kind}-aging-body`);
   if (!selectedCompanyId) { body.innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">Pick a company.</div>'; return; }
   const company = _getSelectedCompany();
-  if (!company || company.source !== "manual") { body.innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">Aging is only for manual companies.</div>'; return; }
-  document.getElementById(`${kind}-aging-page-title`).textContent = `${kind.toUpperCase()} Aging — ${company.name}`;
+  // Page works for manual/Plaid companies (Supabase) and unknown source
+  // when we have a Supabase session (e.g. Railway company list failed to
+  // load but we still have access).
+  if (company && company.source === "qbo") { body.innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">Aging report is for non-QBO companies. QBO companies use the QuickBooks aging report.</div>'; return; }
+  document.getElementById(`${kind}-aging-page-title`).textContent = `${kind.toUpperCase()} Aging — ${company?.name || ""}`.trim();
   const asOf = document.getElementById(`${kind}-aging-as-of`);
   if (!asOf.value) asOf.value = new Date().toISOString().slice(0, 10);
   await _agingLoad(kind);
@@ -10437,13 +10440,65 @@ async function _agingLoad(kind) {
   const body = document.getElementById(`${kind}-aging-body`);
   body.innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">Loading...</div>';
   const asOf = document.getElementById(`${kind}-aging-as-of`).value || new Date().toISOString().slice(0, 10);
-  const url = `/api/reports/${kind}-aging/${selectedCompanyId}?as_of=${asOf}`;
   try {
-    const r = await apiGet(url);
+    let r;
+    if (!_shouldUseRailway()) {
+      r = await _supaAgingReport(kind, asOf);
+    } else {
+      r = await apiGet(`/api/reports/${kind}-aging/${selectedCompanyId}?as_of=${asOf}`);
+    }
     _agingRender(kind, r);
   } catch (e) {
     body.innerHTML = `<div style="text-align:center;padding:24px;color:var(--color-error);">${_escapeHtml(e.message)}</div>`;
   }
+}
+
+// AR/AP aging report from Supabase. Buckets open bills/invoices by days
+// overdue (current, 1-30, 31-60, 61-90, 90+) and groups by party.
+async function _supaAgingReport(kind, asOf) {
+  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+  const isAR = kind === "ar";
+  const url = isAR
+    ? `${SUPABASE_URL}/rest/v1/invoices?company_id=eq.${selectedCompanyId}&status=in.(sent,partially_paid,overdue)&select=id,number,date,due_date,total,balance,party:customers(id,display_name)`
+    : `${SUPABASE_URL}/rest/v1/bills?company_id=eq.${selectedCompanyId}&status=in.(open,partially_paid,overdue)&select=id,number,date,due_date,total,balance,party:vendors(id,display_name)`;
+  const resp = await fetch(url, { headers });
+  if (!resp.ok) throw new Error(`Supabase ${resp.status}`);
+  const docs = await resp.json();
+
+  const asOfMs = new Date(asOf + "T00:00:00Z").getTime();
+  const dayMs = 86400000;
+  const partiesMap = new Map();
+  for (const d of docs) {
+    const ref = d.due_date || d.date;
+    const refMs = new Date(ref + "T00:00:00Z").getTime();
+    const daysOverdue = Math.floor((asOfMs - refMs) / dayMs);
+    const balance = parseFloat(d.balance ?? d.total ?? 0);
+    if (Math.abs(balance) < 0.005) continue;
+    const partyName = d.party?.display_name || "(unknown)";
+    const partyId = d.party?.id || "_unknown";
+    let p = partiesMap.get(partyId);
+    if (!p) {
+      p = { party_id: partyId, party_name: partyName, current: 0, d1_30: 0, d31_60: 0, d61_90: 0, d90_plus: 0, total: 0, docs: [] };
+      partiesMap.set(partyId, p);
+    }
+    p.docs.push({ date: d.date, due_date: d.due_date, number: d.number, days_overdue: Math.max(0, daysOverdue), total: parseFloat(d.total || 0), balance });
+    if (daysOverdue <= 0) p.current += balance;
+    else if (daysOverdue <= 30) p.d1_30 += balance;
+    else if (daysOverdue <= 60) p.d31_60 += balance;
+    else if (daysOverdue <= 90) p.d61_90 += balance;
+    else p.d90_plus += balance;
+    p.total += balance;
+  }
+  const parties = Array.from(partiesMap.values()).sort((a, b) => b.total - a.total);
+  const totals = parties.reduce((s, p) => ({
+    current: s.current + p.current,
+    d1_30: s.d1_30 + p.d1_30,
+    d31_60: s.d31_60 + p.d31_60,
+    d61_90: s.d61_90 + p.d61_90,
+    d90_plus: s.d90_plus + p.d90_plus,
+    total: s.total + p.total,
+  }), { current: 0, d1_30: 0, d31_60: 0, d61_90: 0, d90_plus: 0, total: 0 });
+  return { as_of: asOf, parties, totals };
 }
 
 function _agingRender(kind, r) {
@@ -10516,7 +10571,9 @@ function apAgingExportCsv() { return _agingExport("ap"); }
 async function _agingExport(kind) {
   const asOf = document.getElementById(`${kind}-aging-as-of`).value || new Date().toISOString().slice(0, 10);
   try {
-    const r = await apiGet(`/api/reports/${kind}-aging/${selectedCompanyId}?as_of=${asOf}`);
+    const r = !_shouldUseRailway()
+      ? await _supaAgingReport(kind, asOf)
+      : await apiGet(`/api/reports/${kind}-aging/${selectedCompanyId}?as_of=${asOf}`);
     const header = [kind === "ar" ? "Customer" : "Vendor", "Current", "1-30", "31-60", "61-90", "90+", "Total"];
     const lines = [header.join(",")];
     for (const p of r.parties || []) {
