@@ -6126,13 +6126,22 @@ async function txReload() {
     // Railway. _shouldUseRailway() picks the right backend, with a safe
     // Supabase fallback when the company list isn't loaded but a Supabase
     // session exists.
-    if (_shouldUseRailway()) {
+    //
+    // Edge case: QBO Import placeholder accounts on a manual+Plaid company
+    // — the placeholder account row and its transactions live in Railway
+    // (the import flow is Railway-based). When the user clicks that chip,
+    // Supabase has nothing to return, so route just that filter through
+    // Railway. Detected by name prefix "QBO Import · " on the cached account.
+    const acctRow = (_txState.accounts || []).find((a) => a.id === acct);
+    const isQboImportFilter = !!(acct && acctRow && !acctRow.plaid_item_id && (acctRow.name || "").startsWith("QBO Import · "));
+    if (_shouldUseRailway() || isQboImportFilter) {
       const resp = await apiGet(`/api/transactions/${selectedCompanyId}?${params.toString()}`);
       txs = resp.transactions || [];
       hasMore = !!resp.has_more;
       // Defensive: if Railway returns empty for what's actually a Supabase
-      // company (stale source flag, etc.), fall through to Supabase.
-      if (!txs.length && supabaseAccessToken) {
+      // company (stale source flag, etc.), fall through to Supabase. Skip
+      // for QBO Import — there is genuinely no Supabase mirror to fall to.
+      if (!txs.length && supabaseAccessToken && !isQboImportFilter) {
         const fb = await _txFetchFromSupabase(params);
         if (fb && fb.rows && fb.rows.length) { txs = fb.rows; hasMore = !!fb.has_more; }
       }
