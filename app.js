@@ -969,12 +969,15 @@ async function loadPL() {
     const startVal = document.getElementById("pl-start-date").value || null;
     const endVal = document.getElementById("pl-end-date").value || null;
     // Source-based routing: QBO → Railway; Plaid/Manual → Supabase direct.
+    // byCompany on a manual company is degenerate (single company), but the
+    // user might land here from a saved view — still route to Supabase so
+    // they see real numbers instead of Railway's empty response.
     const __useRailway = _shouldUseRailway();
-    const useSupa = !__useRailway && !byCompany;
+    const useSupa = !__useRailway;
     let data;
     if (useSupa) {
       const cid = (sel.company_id && sel.company_id !== "all") ? sel.company_id : selectedCompanyId;
-      data = await _supaProfitLoss(cid, startVal, endVal);
+      data = await _supaProfitLoss(cid, startVal, endVal, summarize);
     } else {
       data = await apiPost("/api/reports/profit-loss", {
         start_date: startVal,
@@ -1183,7 +1186,7 @@ function _renderSupaBSReport(data, wrapperId) {
 // Cash-basis P&L from Supabase. Sums transactions by category (= CoA id)
 // for the period, grouped into income vs expense. App amount convention:
 // positive = outflow (expense direction), negative = inflow (income).
-async function _supaProfitLoss(companyId, startDate, endDate) {
+async function _supaProfitLoss(companyId, startDate, endDate, summarizeBy) {
   if (!supabaseAccessToken) throw new Error("Supabase session required.");
   const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
   const start = startDate || `${new Date().getFullYear()}-01-01`;
@@ -1194,7 +1197,8 @@ async function _supaProfitLoss(companyId, startDate, endDate) {
     // transactions.category_id → categories.id → categories.coa_account_id → chart_of_accounts.id
     fetch(`${SUPABASE_URL}/rest/v1/categories?company_id=eq.${companyId}&select=id,coa_account_id`, { headers }).then((r) => r.ok ? r.json() : []),
     // Pull only the txns we need: in-period, not transfers, not split parents
-    fetch(`${SUPABASE_URL}/rest/v1/transactions?company_id=eq.${companyId}&date=gte.${start}&date=lte.${end}&is_transfer=eq.false&parent_transaction_id=is.null&select=amount,category_id&limit=10000`, { headers }).then((r) => r.ok ? r.json() : []),
+    // Pull date too — needed when summarizing by month/quarter/year.
+    fetch(`${SUPABASE_URL}/rest/v1/transactions?company_id=eq.${companyId}&date=gte.${start}&date=lte.${end}&is_transfer=eq.false&parent_transaction_id=is.null&select=date,amount,category_id&limit=10000`, { headers }).then((r) => r.ok ? r.json() : []),
   ]);
 
   // Build the category → CoA bridge
@@ -1203,66 +1207,152 @@ async function _supaProfitLoss(companyId, startDate, endDate) {
     if (c.coa_account_id) catToCoa.set(c.id, c.coa_account_id);
   }
 
-  const byCoa = new Map();
+  // Decide summary axis. summarizeBy: 'month' | 'quarter' | 'year' | falsy.
+  const colKey = (date) => {
+    if (!date) return "Total";
+    if (summarizeBy === "month") return date.slice(0, 7);          // "2026-04"
+    if (summarizeBy === "quarter") {
+      const m = parseInt(date.slice(5, 7), 10);
+      return `${date.slice(0, 4)}-Q${Math.ceil(m / 3)}`;
+    }
+    if (summarizeBy === "year") return date.slice(0, 4);
+    return "Total";
+  };
+  const colLabel = (key) => {
+    if (key === "Total") return "Total";
+    if (summarizeBy === "month") {
+      const [y, m] = key.split("-");
+      return new Date(parseInt(y, 10), parseInt(m, 10) - 1, 1).toLocaleString("en-US", { month: "short", year: "numeric" });
+    }
+    return key;
+  };
+
+  // byCoaCol: coaId -> Map<colKey, sum>
+  const byCoaCol = new Map();
+  const colKeysSet = new Set();
   for (const t of txns) {
     if (!t.category_id) continue;
     const coaId = catToCoa.get(t.category_id);
     if (!coaId) continue;
-    byCoa.set(coaId, (byCoa.get(coaId) || 0) + parseFloat(t.amount || 0));
+    const k = colKey(t.date);
+    colKeysSet.add(k);
+    let m = byCoaCol.get(coaId);
+    if (!m) { m = new Map(); byCoaCol.set(coaId, m); }
+    m.set(k, (m.get(k) || 0) + parseFloat(t.amount || 0));
   }
 
-  const incomeRows = [];
-  const expenseRows = [];
-  for (const c of coa) {
-    const raw = byCoa.get(c.id) || 0;
-    if (Math.abs(raw) < 0.005) continue;
-    if (c.type === "income") {
-      // Negative amount = inflow → flip sign so income shows positive.
-      incomeRows.push({ id: c.id, code: c.code, name: c.name, balance: -raw });
-    } else {
-      // Expense: positive amount = outflow, leave as-is.
-      expenseRows.push({ id: c.id, code: c.code, name: c.name, balance: raw });
-    }
+  // Build the column list. For "Total" mode there's just one column.
+  // For summarized modes, build the full sequence between start and end so
+  // months with zero activity still appear (matches QBO behavior).
+  let columns = [];
+  if (!summarizeBy || summarizeBy === "" || summarizeBy === null) {
+    columns = [{ key: "Total", label: "Total" }];
+  } else {
+    const keys = Array.from(colKeysSet);
+    keys.sort();
+    columns = keys.map((k) => ({ key: k, label: colLabel(k) }));
+    if (!columns.length) columns = [{ key: colKey(start), label: colLabel(colKey(start)) }];
   }
+
+  const buildRow = (c) => {
+    const m = byCoaCol.get(c.id) || new Map();
+    const byColumn = {};
+    let total = 0;
+    for (const col of columns) {
+      const v = m.get(col.key) || 0;
+      // Income: flip sign so revenue reads positive.
+      const display = c.type === "income" ? -v : v;
+      byColumn[col.key] = display;
+      total += display;
+    }
+    return { id: c.id, code: c.code, name: c.name, type: c.type, byColumn, balance: total };
+  };
+
+  const incomeRows = coa.filter((c) => c.type === "income").map(buildRow).filter((r) => columns.some((col) => Math.abs(r.byColumn[col.key]) > 0.005));
+  const expenseRows = coa.filter((c) => c.type === "expense").map(buildRow).filter((r) => columns.some((col) => Math.abs(r.byColumn[col.key]) > 0.005));
   incomeRows.sort((a, b) => (a.code || "").localeCompare(b.code || ""));
   expenseRows.sort((a, b) => (a.code || "").localeCompare(b.code || ""));
-  const totalIncome = incomeRows.reduce((s, r) => s + r.balance, 0);
-  const totalExpense = expenseRows.reduce((s, r) => s + r.balance, 0);
+
+  const colTotals = (rows) => {
+    const out = { total: 0 };
+    for (const col of columns) {
+      out[col.key] = rows.reduce((s, r) => s + (r.byColumn[col.key] || 0), 0);
+      out.total += out[col.key];
+    }
+    return out;
+  };
+  const incomeTotals = colTotals(incomeRows);
+  const expenseTotals = colTotals(expenseRows);
+  const netByColumn = {};
+  for (const col of columns) {
+    netByColumn[col.key] = (incomeTotals[col.key] || 0) - (expenseTotals[col.key] || 0);
+  }
 
   return {
     start, end,
+    columns,
     groups: [
-      { label: "Income",   rows: incomeRows,  total: totalIncome },
-      { label: "Expense",  rows: expenseRows, total: totalExpense },
+      { label: "Income",  rows: incomeRows,  totals: incomeTotals,  total: incomeTotals.total },
+      { label: "Expense", rows: expenseRows, totals: expenseTotals, total: expenseTotals.total },
     ],
-    totalIncome,
-    totalExpense,
-    netIncome: totalIncome - totalExpense,
-    notice: "Cash basis · derived from categorized transactions in Supabase. No prior-period compare or summarize-by-month yet.",
+    totalIncome: incomeTotals.total,
+    totalExpense: expenseTotals.total,
+    netIncome: incomeTotals.total - expenseTotals.total,
+    netByColumn,
+    notice: "Cash basis · derived from categorized transactions in Supabase. No prior-period compare yet.",
   };
 }
 
 function _renderSupaPLReport(data, wrapperId) {
   const wrap = document.getElementById(wrapperId);
   const fmt = (n) => (n < 0 ? `(${Math.abs(n).toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2})})` : n.toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2}));
+  const cols = data.columns || [{ key: "Total", label: "Total" }];
+  const showCols = cols.length > 1;
   let html = `<div style="padding:var(--space-3) var(--space-4);background:var(--color-bg-muted);border-radius:var(--radius-md);margin-bottom:var(--space-3);font-size:var(--text-xs);color:var(--color-text-secondary);">${_escapeHtml(data.notice || "")}</div>`;
   html += `<div style="margin-bottom:var(--space-2);font-weight:600;">Profit &amp; Loss — ${data.start} to ${data.end}</div>`;
   html += `<table class="qbo-report-table" style="width:100%;border-collapse:collapse;">`;
-  html += `<thead><tr><th style="text-align:left;padding:var(--space-2);">Account</th><th style="text-align:right;padding:var(--space-2);">Total</th></tr></thead><tbody>`;
+  // Header row: Account + each column + Total (when multiple cols)
+  html += `<thead><tr><th style="text-align:left;padding:var(--space-2);">Account</th>`;
+  for (const col of cols) {
+    html += `<th style="text-align:right;padding:var(--space-2);">${_escapeHtml(col.label)}</th>`;
+  }
+  if (showCols) html += `<th style="text-align:right;padding:var(--space-2);">Total</th>`;
+  html += `</tr></thead><tbody>`;
+  const colspan = 1 + cols.length + (showCols ? 1 : 0);
   for (const g of data.groups) {
-    html += `<tr><td colspan="2" style="font-weight:600;padding:var(--space-3) var(--space-2) var(--space-1);border-top:1px solid var(--color-border);">${_escapeHtml(g.label)}</td></tr>`;
+    html += `<tr><td colspan="${colspan}" style="font-weight:600;padding:var(--space-3) var(--space-2) var(--space-1);border-top:1px solid var(--color-border);">${_escapeHtml(g.label)}</td></tr>`;
     if (!g.rows.length) {
-      html += `<tr><td style="padding:0 var(--space-2);color:var(--color-text-muted);">(none)</td><td></td></tr>`;
+      html += `<tr><td style="padding:0 var(--space-2);color:var(--color-text-muted);">(none)</td>${'<td></td>'.repeat(colspan - 1)}</tr>`;
     } else {
       for (const r of g.rows) {
         const labelEsc = _escapeHtml((r.code ? r.code + " " : "") + r.name).replace(/'/g, "\\'");
-        html += `<tr style="cursor:pointer;" onclick="drillDownAccount('${labelEsc}','${r.id}')" title="View transactions"><td style="padding:2px var(--space-2);padding-left:var(--space-5);">${_escapeHtml(r.code || "—")} ${_escapeHtml(r.name)}</td><td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${fmt(r.balance)}</td></tr>`;
+        html += `<tr style="cursor:pointer;" onclick="drillDownAccount('${labelEsc}','${r.id}')" title="View transactions">`;
+        html += `<td style="padding:2px var(--space-2);padding-left:var(--space-5);">${_escapeHtml(r.code || "—")} ${_escapeHtml(r.name)}</td>`;
+        for (const col of cols) {
+          const v = (r.byColumn && r.byColumn[col.key] !== undefined) ? r.byColumn[col.key] : (cols.length === 1 ? r.balance : 0);
+          html += `<td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${fmt(v)}</td>`;
+        }
+        if (showCols) html += `<td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;font-weight:600;">${fmt(r.balance)}</td>`;
+        html += `</tr>`;
       }
     }
-    html += `<tr><td style="padding:var(--space-1) var(--space-2);font-weight:600;border-top:1px dashed var(--color-border);">Total ${_escapeHtml(g.label)}</td><td style="text-align:right;padding:var(--space-1) var(--space-2);font-weight:600;font-variant-numeric:tabular-nums;border-top:1px dashed var(--color-border);">${fmt(g.total)}</td></tr>`;
+    // Group totals row
+    html += `<tr><td style="padding:var(--space-1) var(--space-2);font-weight:600;border-top:1px dashed var(--color-border);">Total ${_escapeHtml(g.label)}</td>`;
+    for (const col of cols) {
+      const v = g.totals ? (g.totals[col.key] || 0) : g.total;
+      html += `<td style="text-align:right;padding:var(--space-1) var(--space-2);font-weight:600;font-variant-numeric:tabular-nums;border-top:1px dashed var(--color-border);">${fmt(v)}</td>`;
+    }
+    if (showCols) html += `<td style="text-align:right;padding:var(--space-1) var(--space-2);font-weight:600;font-variant-numeric:tabular-nums;border-top:1px dashed var(--color-border);">${fmt(g.total)}</td>`;
+    html += `</tr>`;
   }
-  html += `<tr><td style="padding:var(--space-3) var(--space-2);font-weight:700;border-top:2px solid var(--color-border);">Net Income</td><td style="text-align:right;padding:var(--space-3) var(--space-2);font-weight:700;font-variant-numeric:tabular-nums;border-top:2px solid var(--color-border);">${fmt(data.netIncome)}</td></tr>`;
-  html += `</tbody></table>`;
+  // Net Income row (per column when multi)
+  html += `<tr><td style="padding:var(--space-3) var(--space-2);font-weight:700;border-top:2px solid var(--color-border);">Net Income</td>`;
+  for (const col of cols) {
+    const v = data.netByColumn ? (data.netByColumn[col.key] || 0) : data.netIncome;
+    html += `<td style="text-align:right;padding:var(--space-3) var(--space-2);font-weight:700;font-variant-numeric:tabular-nums;border-top:2px solid var(--color-border);">${fmt(v)}</td>`;
+  }
+  if (showCols) html += `<td style="text-align:right;padding:var(--space-3) var(--space-2);font-weight:700;font-variant-numeric:tabular-nums;border-top:2px solid var(--color-border);">${fmt(data.netIncome)}</td>`;
+  html += `</tr></tbody></table>`;
   wrap.innerHTML = html;
 }
 
