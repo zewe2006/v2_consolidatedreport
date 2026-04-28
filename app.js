@@ -354,9 +354,59 @@ async function apiDelete(path) {
 async function loadCompanyList() {
   try {
     allCompanies = await apiGet("/api/companies");
+    // Railway sometimes returns plaid_items: [] for manual+Plaid companies
+    // even when Supabase has the items. That makes the company switcher
+    // and Companies page display "No bank linked" and downstream UIs gate
+    // off bank features. For manual companies, treat Supabase as the source
+    // of truth for plaid_items / accounts_count.
+    if (supabaseAccessToken) {
+      try { await _enrichManualPlaidItems(); }
+      catch (e) { console.warn("plaid_items enrichment failed", e); }
+    }
     populateCompanySelectors();
   } catch {
     allCompanies = [];
+  }
+}
+
+// Pull plaid_items + accounts for every manual company from Supabase and
+// overlay onto allCompanies[i].plaid_items. Done in two parallel calls so
+// it's one round trip per table regardless of company count.
+async function _enrichManualPlaidItems() {
+  const manuals = (allCompanies || []).filter((c) => (c.source || "qbo") === "manual");
+  if (!manuals.length) return;
+  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+  const ids = manuals.map((c) => c.id).join(",");
+  const [items, accts] = await Promise.all([
+    fetch(`${SUPABASE_URL}/rest/v1/plaid_items?company_id=in.(${ids})&select=id,company_id,institution_name,institution_id,status,last_synced_at`, { headers })
+      .then((r) => r.ok ? r.json() : []),
+    fetch(`${SUPABASE_URL}/rest/v1/accounts?company_id=in.(${ids})&select=id,company_id,plaid_item_id,mask`, { headers })
+      .then((r) => r.ok ? r.json() : []),
+  ]);
+  const acctCountByItem = new Map();
+  const maskByItem = new Map();
+  for (const a of accts) {
+    if (!a.plaid_item_id) continue;
+    acctCountByItem.set(a.plaid_item_id, (acctCountByItem.get(a.plaid_item_id) || 0) + 1);
+    if (!maskByItem.has(a.plaid_item_id) && a.mask) maskByItem.set(a.plaid_item_id, a.mask);
+  }
+  const itemsByCompany = new Map();
+  for (const it of items) {
+    const arr = itemsByCompany.get(it.company_id) || [];
+    arr.push({
+      id: it.id,
+      institution_id: it.institution_id,
+      institution_name: it.institution_name,
+      status: it.status,
+      last_synced_at: it.last_synced_at,
+      accounts_count: acctCountByItem.get(it.id) || 0,
+      mask_preview: maskByItem.get(it.id) || null,
+    });
+    itemsByCompany.set(it.company_id, arr);
+  }
+  for (const c of manuals) {
+    const supaItems = itemsByCompany.get(c.id);
+    if (supaItems && supaItems.length) c.plaid_items = supaItems;
   }
 }
 
