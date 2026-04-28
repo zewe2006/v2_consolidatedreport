@@ -6557,25 +6557,34 @@ async function _txComboCreateAndCommit() {
   const listEl = document.getElementById("tx-combo-list");
   if (listEl) listEl.innerHTML = `<div class="tx-combo-empty">Creating “${_escapeHtml(text)}”…</div>`;
 
+  const company = _getSelectedCompany();
+  const isQbo = ((company?.source) || "qbo") === "qbo";
+  const useSupa = !isQbo && supabaseAccessToken;
+  const supaHeaders = useSupa ? { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}`, Prefer: "return=representation" } : null;
   try {
     if (kind === "category") {
       const type = _txDetectCoaType(text);
       const code = _txNextCoaCode(type, _txState.categories || []);
-      await apiPost(`/api/coa/${selectedCompanyId}`, {
-        name: text, code, type, is_active: true,
-      });
-      // Re-fetch categories to pick up the mirrored category row
-      const r = await apiGet(`/api/transactions/categories/${selectedCompanyId}`).catch(() => null);
-      if (r && r.categories) {
-        _txState.categories = r.categories;
+      if (useSupa) {
+        // The coa_insert_mirror trigger creates the matching categories row.
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts`, {
+          method: "POST", headers: supaHeaders,
+          body: JSON.stringify({ company_id: selectedCompanyId, name: text, code, type, is_active: true }),
+        });
+        if (!r.ok) throw new Error(`Supabase coa ${r.status}: ${(await r.text()).slice(0, 200)}`);
+        if (typeof _txLoadCategories === "function") await _txLoadCategories();
       } else {
-        // Fallback: fetch CoA and rebuild categories best-effort
-        try {
-          const resp = await apiGet(`/api/coa/${selectedCompanyId}`);
-          _coaState.accounts = resp.accounts || [];
-          // If there's no dedicated endpoint, trigger a tx-categories refresh via existing loader
-          if (typeof _txLoadCategories === "function") await _txLoadCategories();
-        } catch {}
+        await apiPost(`/api/coa/${selectedCompanyId}`, { name: text, code, type, is_active: true });
+        const r = await apiGet(`/api/transactions/categories/${selectedCompanyId}`).catch(() => null);
+        if (r && r.categories) {
+          _txState.categories = r.categories;
+        } else {
+          try {
+            const resp = await apiGet(`/api/coa/${selectedCompanyId}`);
+            _coaState.accounts = resp.accounts || [];
+            if (typeof _txLoadCategories === "function") await _txLoadCategories();
+          } catch {}
+        }
       }
       const newCat = (_txState.categories || []).find((c) => (c.name || "").toLowerCase() === text.toLowerCase());
       if (newCat) {
@@ -6586,11 +6595,26 @@ async function _txComboCreateAndCommit() {
         _closeTxCombo();
       }
     } else {
-      const r = await apiPost(`/api/vendors/${selectedCompanyId}`, { display_name: text });
-      const newId = r.vendor?.id || r.id;
-      const resp = await apiGet(`/api/vendors/${selectedCompanyId}`);
-      _txState.vendors = resp.vendors || [];
-      _txState._vendorsLoaded = true;
+      let newId = null;
+      if (useSupa) {
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/vendors`, {
+          method: "POST", headers: supaHeaders,
+          body: JSON.stringify({ company_id: selectedCompanyId, display_name: text }),
+        });
+        if (!r.ok) throw new Error(`Supabase vendors ${r.status}: ${(await r.text()).slice(0, 200)}`);
+        newId = (await r.json())[0]?.id;
+        // Refresh local cache
+        const r2 = await fetch(`${SUPABASE_URL}/rest/v1/vendors?company_id=eq.${selectedCompanyId}&is_active=eq.true&select=id,display_name&order=display_name`, {
+          headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
+        });
+        if (r2.ok) { _txState.vendors = await r2.json(); _txState._vendorsLoaded = true; }
+      } else {
+        const r = await apiPost(`/api/vendors/${selectedCompanyId}`, { display_name: text });
+        newId = r.vendor?.id || r.id;
+        const resp = await apiGet(`/api/vendors/${selectedCompanyId}`);
+        _txState.vendors = resp.vendors || [];
+        _txState._vendorsLoaded = true;
+      }
       if (newId) {
         await _txComboCommit(newId);
         showToast(`Created vendor "${text}".`, "success");
@@ -6741,17 +6765,34 @@ async function vendorPickerCreateAndApply(displayName) {
   const txId = _vendorPickerState.txId;
   if (!txId || !displayName.trim()) return;
   try {
-    const r = await apiPost(`/api/vendors/${selectedCompanyId}`, {
-      display_name: displayName.trim(),
-    });
-    const newVendorId = r.vendor?.id;
-    if (!newVendorId) throw new Error("Vendor not created");
-    await apiPatch(`/api/transactions/${txId}`, { vendor_id: newVendorId });
+    const company = _getSelectedCompany();
+    const isQbo = ((company?.source) || "qbo") === "qbo";
+    let newVendorId = null;
+    if (!isQbo && supabaseAccessToken) {
+      const headers = { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}`, Prefer: "return=representation" };
+      const cr = await fetch(`${SUPABASE_URL}/rest/v1/vendors`, {
+        method: "POST", headers,
+        body: JSON.stringify({ company_id: selectedCompanyId, display_name: displayName.trim() }),
+      });
+      if (!cr.ok) throw new Error(`Supabase vendors ${cr.status}: ${(await cr.text()).slice(0, 200)}`);
+      newVendorId = (await cr.json())[0]?.id;
+      if (!newVendorId) throw new Error("Vendor not created");
+      const tr = await fetch(`${SUPABASE_URL}/rest/v1/transactions?id=eq.${txId}`, {
+        method: "PATCH", headers, body: JSON.stringify({ vendor_id: newVendorId }),
+      });
+      if (!tr.ok) throw new Error(`Supabase tx update ${tr.status}: ${(await tr.text()).slice(0, 200)}`);
+    } else {
+      const r = await apiPost(`/api/vendors/${selectedCompanyId}`, {
+        display_name: displayName.trim(),
+      });
+      newVendorId = r.vendor?.id;
+      if (!newVendorId) throw new Error("Vendor not created");
+      await apiPatch(`/api/transactions/${txId}`, { vendor_id: newVendorId });
+    }
     showToast(`Created vendor "${displayName}" and linked`, "success");
     closeCategoryPicker();
     _resetCategoryPickerDefaults();
-    // Refresh in-memory vendors cache for subsequent picks
-    _contactsState.rows = [];  // force reload next time
+    _contactsState.rows = [];
     await txReload();
   } catch (e) { showToast(friendlyError(e), "error"); }
 }
@@ -7682,12 +7723,29 @@ async function _ruleComboCommit(kind) {
   if (kind === "vendor") {
     if (confirm(`Vendor "${text}" doesn't exist yet. Create it now?`)) {
       try {
-        const r = await apiPost(`/api/vendors/${selectedCompanyId}`, { display_name: text });
-        const newId = r.vendor?.id || r.id;
-        if (newId) {
-          // Refresh list
+        const company = _getSelectedCompany();
+        const isQbo = ((company?.source) || "qbo") === "qbo";
+        let newId = null;
+        if (!isQbo && supabaseAccessToken) {
+          const headers = { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}`, Prefer: "return=representation" };
+          const cr = await fetch(`${SUPABASE_URL}/rest/v1/vendors`, {
+            method: "POST", headers,
+            body: JSON.stringify({ company_id: selectedCompanyId, display_name: text }),
+          });
+          if (!cr.ok) throw new Error(`Supabase vendors ${cr.status}: ${(await cr.text()).slice(0, 200)}`);
+          newId = (await cr.json())[0]?.id;
+          // Refresh list from Supabase
+          const lr = await fetch(`${SUPABASE_URL}/rest/v1/vendors?company_id=eq.${selectedCompanyId}&is_active=eq.true&select=id,display_name&order=display_name`, {
+            headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
+          });
+          if (lr.ok) _rulesState.vendors = await lr.json();
+        } else {
+          const r = await apiPost(`/api/vendors/${selectedCompanyId}`, { display_name: text });
+          newId = r.vendor?.id || r.id;
           const resp = await apiGet(`/api/vendors/${selectedCompanyId}`);
           _rulesState.vendors = resp.vendors || [];
+        }
+        if (newId) {
           _ruleRenderComboOptions("vendor");
           _ruleSetComboValue("vendor", newId);
           showToast(`Created vendor "${text}".`, "success");
