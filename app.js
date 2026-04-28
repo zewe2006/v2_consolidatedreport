@@ -6719,12 +6719,52 @@ function _txComboFilter(text) {
 async function _txComboCommit(id) {
   const { txId, kind } = _txComboCtx;
   _closeTxCombo();
+  // Capture the merchant before reload swaps the row out from under us.
+  const txBefore = (_txState.txs || []).find((t) => t.id === txId);
   const patch = kind === "category" ? { category_id: id } : { vendor_id: id };
   try {
     if (_shouldUseRailway()) await apiPatch(`/api/transactions/${txId}`, patch);
     else await _supaTxnPatch(txId, patch);
     await txReload();
+    if (kind === "category" && id) await _maybePromptSaveAsRule(txBefore, id);
   } catch (e) { showToast("Update failed: " + (e.message || e), "error"); }
+}
+
+// After a manual category change, offer to save it as a rule that
+// auto-applies to other transactions with the same merchant. Only fires
+// when the merchant name is set (otherwise there's nothing useful to
+// match on). On manual+Plaid companies the rule is written directly to
+// Supabase; on QBO companies it goes through Railway.
+async function _maybePromptSaveAsRule(txBefore, newCategoryId) {
+  const merchant = (txBefore && (txBefore.merchant_name || "")).trim();
+  if (!merchant) return;
+  const cat = (_txState.categories || []).find((c) => c.id === newCategoryId);
+  const catLabel = cat ? cat.name : "this category";
+  const ok = confirm(
+    `Save as a rule?\n\n` +
+    `Whenever a transaction's merchant matches "${merchant}", set the category to "${catLabel}". ` +
+    `Existing transactions are not changed; future ones (and a manual re-run of rules) will pick this up.`
+  );
+  if (!ok) return;
+  const body = {
+    name: `${merchant} → ${catLabel}`,
+    priority: 100,
+    match: { merchant },
+    action: { set_category_id: newCategoryId },
+    enabled: true,
+  };
+  try {
+    if (_shouldUseRailway()) {
+      await apiPost(`/api/rules/${selectedCompanyId}`, body);
+    } else {
+      const headers = { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/rules`, { method: "POST", headers, body: JSON.stringify({ ...body, company_id: selectedCompanyId }) });
+      if (!r.ok) throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    }
+    showToast(`Rule saved: "${merchant}" → ${catLabel}`, "success");
+  } catch (e) {
+    showToast("Save rule failed: " + (e.message || e), "error");
+  }
 }
 
 async function _txComboCreateAndCommit() {
@@ -7372,11 +7412,13 @@ async function categoryPickerSelect(categoryId) {
   if (_bulkCategorizeMode) return _bulkCategorizeApply(categoryId);
   const txId = _catPickerState.txId;
   if (!txId) return;
+  const txBefore = (_txState.txs || []).find((t) => t.id === txId);
   try {
     if (_shouldUseRailway()) await apiPatch(`/api/transactions/${txId}`, { category_id: categoryId });
     else await _supaTxnPatch(txId, { category_id: categoryId });
     closeCategoryPicker();
     await txReload();
+    if (categoryId) await _maybePromptSaveAsRule(txBefore, categoryId);
   } catch (e) { showToast(friendlyError(e), "error"); }
 }
 
