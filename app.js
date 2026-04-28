@@ -320,7 +320,9 @@ async function apiPost(path, body) {
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
+    const raw = await res.text().catch(() => "");
+    let data = {}; try { data = raw ? JSON.parse(raw) : {}; } catch {}
+    window.__lastApiError = { path, status: res.status, raw, data, reqBody: body, ts: new Date().toISOString() };
     throw new Error(data.detail || `API Error: ${res.status}`);
   }
   return res.json();
@@ -8825,7 +8827,13 @@ async function prefillBillFromLoanStatement(payload) {
   const mapping = payload.mapping || null;   // saved CoA picks per vendor | null
 
   // Fields
-  if (ex.loan_account_number) document.getElementById("doc-number").value = ex.loan_account_number;
+  if (ex.loan_account_number) {
+    // Append billing month so monthly statements from the same lender don't
+    // collide with the bills(company_id, vendor_id, number) unique key.
+    const ym = (ex.billing_date || "").slice(0, 7); // "YYYY-MM"
+    document.getElementById("doc-number").value =
+      ym ? `${ex.loan_account_number}-${ym}` : ex.loan_account_number;
+  }
   if (ex.billing_date)        document.getElementById("doc-date").value = ex.billing_date;
   if (ex.due_date)            document.getElementById("doc-due-date").value = ex.due_date;
   const memoBits = [];
@@ -9395,7 +9403,32 @@ async function docSave() {
     if (_docState.editing) {
       await apiPatch(`${base}/${_docState.editing}`, body);
     } else {
-      await apiPost(`${base}/${selectedCompanyId}`, body);
+      // Railway's POST /api/bills/<id> currently fails with a
+      // bills_company_id_fkey violation for manual+Plaid companies whose data
+      // lives in Supabase. Always prefer Supabase direct for bills when we
+      // can; if there's no session, prompt for the password (the parallel
+      // sign-in at login can fail silently).
+      let saved = false;
+      if (kind === "bill" && selectedCompanyId) {
+        if (!supabaseAccessToken && currentUser?.email) {
+          const pw = window.prompt(
+            `To save bills, we need a Supabase session.\nRe-enter the password for ${currentUser.email}:`,
+          );
+          if (pw) {
+            const ok = await _supabaseSignIn(currentUser.email, pw);
+            if (!ok) throw new Error("Supabase sign-in failed — password may differ from Railway. Ask Rachel to reset your Supabase password.");
+          } else {
+            throw new Error("Bill save requires Supabase session — password prompt cancelled.");
+          }
+        }
+        if (supabaseAccessToken) {
+          await _billCreateViaSupabase(selectedCompanyId, body);
+          saved = true;
+        }
+      }
+      if (!saved) {
+        await apiPost(`${base}/${selectedCompanyId}`, body);
+      }
     }
     if (kind === "bill" && _docState.isLoanBill) {
       _maybeSaveLoanCoaMapping(party_id).catch((err) => console.warn("loan CoA mapping save failed:", err));
@@ -9406,9 +9439,90 @@ async function docSave() {
     closeDocEdit();
     if (kind === "invoice") await invoicesReload(); else await billsReload();
   } catch (e) {
-    errEl.textContent = "Failed: " + (e.message || "unknown");
+    const last = window.__lastApiError;
+    let detail = e.message || "unknown";
+    if (last && last.raw) {
+      detail += " — server response: " + last.raw.slice(0, 800);
+    }
+    errEl.textContent = "Failed: " + detail;
     errEl.style.display = "block";
+    errEl.style.whiteSpace = "pre-wrap";
+    errEl.style.maxHeight = "200px";
+    errEl.style.overflow = "auto";
+    console.error("docSave failed", { error: e, lastApiError: last, reqBody: body });
   }
+}
+
+// Insert a bill + bill_lines directly into Supabase. Used when Railway's
+// POST /api/bills/<id> is broken for the company (manual+Plaid companies
+// whose company_id Railway doesn't map correctly to the Supabase row).
+async function _billCreateViaSupabase(companyId, body) {
+  const supaHeaders = {
+    "Content-Type": "application/json",
+    apikey: SUPABASE_ANON_KEY,
+    Authorization: `Bearer ${supabaseAccessToken}`,
+  };
+
+  const lines = (body.lines || []).map((l, i) => {
+    const qty = parseFloat(l.quantity) || 0;
+    const price = parseFloat(l.unit_price) || 0;
+    const tax_rate = parseFloat(l.tax_rate) || 0;
+    const amount = qty * price;
+    const tax_amount = amount * tax_rate;
+    return {
+      line_no: i + 1,
+      description: l.description || null,
+      quantity: qty,
+      unit_price: price,
+      amount,
+      tax_rate,
+      tax_amount,
+      coa_account_id: l.coa_account_id || null,
+    };
+  });
+  const subtotal = lines.reduce((s, l) => s + l.amount, 0);
+  const tax_total = lines.reduce((s, l) => s + l.tax_amount, 0);
+  const total = subtotal + tax_total;
+  const status = body.status || "open";
+  const balance = status === "paid" ? 0 : total;
+
+  const billRes = await fetch(`${SUPABASE_URL}/rest/v1/bills`, {
+    method: "POST",
+    headers: { ...supaHeaders, Prefer: "return=representation" },
+    body: JSON.stringify({
+      company_id: companyId,
+      vendor_id: body.vendor_id,
+      number: body.number || null,
+      date: body.date,
+      due_date: body.due_date || null,
+      status,
+      memo: body.memo || null,
+      subtotal, tax_total, total, balance,
+      currency: "USD",
+    }),
+  });
+  if (!billRes.ok) {
+    throw new Error(`Supabase bills ${billRes.status}: ${(await billRes.text()).slice(0, 300)}`);
+  }
+  const rows = await billRes.json();
+  const bill = Array.isArray(rows) ? rows[0] : rows;
+
+  if (lines.length) {
+    const linesRes = await fetch(`${SUPABASE_URL}/rest/v1/bill_lines`, {
+      method: "POST",
+      headers: { ...supaHeaders, Prefer: "return=minimal" },
+      body: JSON.stringify(lines.map((l) => ({ ...l, bill_id: bill.id }))),
+    });
+    if (!linesRes.ok) {
+      // Roll back the header so we don't leave an orphan with no lines.
+      await fetch(`${SUPABASE_URL}/rest/v1/bills?id=eq.${bill.id}`, {
+        method: "DELETE",
+        headers: supaHeaders,
+      }).catch(() => {});
+      throw new Error(`Supabase bill_lines ${linesRes.status}: ${(await linesRes.text()).slice(0, 300)}`);
+    }
+  }
+  return bill;
 }
 
 // After saving a loan bill, persist the vendor → CoA mapping for next time.
