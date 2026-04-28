@@ -11389,6 +11389,7 @@ async function transferConfirmAll() {
 const _origLoadCompanyList = typeof loadCompanyList === "function" ? loadCompanyList : null;
 if (_origLoadCompanyList) {
   window.loadCompanyList = async function(...args) {
+    const wasNull = !selectedCompanyId;
     const r = await _origLoadCompanyList.apply(this, args);
     _loadPersistedSelection();
     // If the persisted id no longer exists, reset
@@ -11397,6 +11398,19 @@ if (_origLoadCompanyList) {
       _persistSelection();
     }
     renderCompanySwitcher();
+    // On initial page load, txInit/coaInit/etc. may have already run with
+    // selectedCompanyId === null and rendered "Select a company" empty
+    // states. Now that we restored the persisted selection, re-init the
+    // active per-company page so it actually renders.
+    if (wasNull && selectedCompanyId) {
+      const currentPage = (location.hash || "#dashboard").slice(1);
+      const perCompanyPages = ["transactions", "coa", "rules", "manual-journal", "bank-accounts"];
+      if (perCompanyPages.includes(currentPage)) {
+        try { navigateTo(currentPage); } catch (e) { /* non-fatal */ }
+      } else if (currentPage === "dashboard" && typeof dashInit === "function") {
+        try { dashInit(); } catch (e) { /* non-fatal */ }
+      }
+    }
     return r;
   };
 }
