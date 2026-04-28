@@ -924,7 +924,8 @@ async function loadPL() {
     const useSupa = !isQbo && supabaseAccessToken && !byCompany;
     let data;
     if (useSupa) {
-      data = await _supaProfitLoss(sel.company_id, startVal, endVal);
+      const cid = (sel.company_id && sel.company_id !== "all") ? sel.company_id : selectedCompanyId;
+      data = await _supaProfitLoss(cid, startVal, endVal);
     } else {
       data = await apiPost("/api/reports/profit-loss", {
         start_date: startVal,
@@ -980,7 +981,11 @@ async function loadBS() {
     const useSupa = company && (company.source || "qbo") !== "qbo" && supabaseAccessToken && !byCompany;
     let data;
     if (useSupa) {
-      data = await _supaBalanceSheet(sel.company_id, endVal);
+      // sel.company_id can be the literal "all" when the on-page picker
+      // has no/all boxes checked. The Supabase builder needs the actual
+      // UUID, so prefer the sidebar's selectedCompanyId.
+      const cid = (sel.company_id && sel.company_id !== "all") ? sel.company_id : selectedCompanyId;
+      data = await _supaBalanceSheet(cid, endVal);
     } else {
       data = await apiPost("/api/reports/balance-sheet", {
         start_date: startVal,
@@ -1297,7 +1302,8 @@ async function loadCF() {
     const useSupa = !isQbo && supabaseAccessToken && !byCompany;
     let data;
     if (useSupa) {
-      data = await _supaCashFlow(sel.company_id, startVal, endVal);
+      const cid = (sel.company_id && sel.company_id !== "all") ? sel.company_id : selectedCompanyId;
+      data = await _supaCashFlow(cid, startVal, endVal);
     } else {
       data = await apiPost("/api/reports/cash-flow", {
         start_date: startVal,
