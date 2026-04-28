@@ -475,6 +475,9 @@ function _syncCompanyMultiSelect() {
     optionsDiv.innerHTML = html;
     updateMultiSelectLabel(prefix);
   });
+  // Method dropdown is only meaningful for QBO companies — sync state now
+  // that the company list is loaded and the selected company is known.
+  _syncMethodDropdownState();
 }
 
 // --- Multi-select helpers ---
@@ -5808,15 +5811,40 @@ function _getSelectedCompany() {
   return (allCompanies || []).find((c) => c.id === selectedCompanyId) || null;
 }
 
-// True when we should route writes through Railway (QBO companies). When
-// the company list isn't loaded (Railway down, fresh tab, etc.) but we
-// have a Supabase session, prefer Supabase — it's the safer default for
-// manual+Plaid companies, which is most of what's broken when Railway
-// flakes anyway.
+// True when we should route writes through Railway (QBO companies). Railway
+// is opt-in: only companies with source explicitly "qbo" use it. Manual +
+// Plaid companies (and anything with a missing/unknown source) go to
+// Supabase. Previous behavior defaulted unknown sources to "qbo", which
+// silently routed manual+Plaid companies to Railway whenever the company
+// hadn't loaded yet — surfacing as empty P&L / failed bill matches / etc.
 function _shouldUseRailway() {
   const company = _getSelectedCompany();
-  if (company) return (company.source || "qbo") === "qbo";
+  if (company) return company.source === "qbo";
+  // No company resolved yet (fresh tab, race on first paint). Prefer Supabase
+  // when we have a session; only fall back to Railway if we genuinely have
+  // nothing else.
   return !supabaseAccessToken;
+}
+
+// Method dropdowns (Cash/Accrual) are only meaningful for QBO companies —
+// the Supabase report builders are cash-basis only. For manual+Plaid we
+// force the visible value to "Cash" and disable the control so the user
+// isn't tricked into thinking changing it does anything. Called after
+// company selection changes and on initial company load.
+function _syncMethodDropdownState() {
+  const isRailway = _shouldUseRailway();
+  ["pl-method", "bs-method"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (isRailway) {
+      el.disabled = false;
+      el.title = "";
+    } else {
+      el.value = "Cash";
+      el.disabled = true;
+      el.title = "Cash basis only on manual + Plaid companies";
+    }
+  });
 }
 
 function _loadPersistedSelection() {
@@ -5888,6 +5916,7 @@ function setSelectedCompany(id) {
   renderCompanySwitcher();
   // Re-sync report/dashboard company multi-selects to follow the new sidebar pick.
   _syncCompanyMultiSelect();
+  _syncMethodDropdownState();
   // If on a per-company page and switched to All, go to dashboard
   const currentPage = (location.hash || "#dashboard").slice(1);
   const perCompanyPages = ["transactions", "coa", "rules", "manual-journal", "bank-accounts"];
