@@ -9549,8 +9549,21 @@ async function openVendorTransactions(vendorId, vendorName) {
   table.innerHTML = "";
   modal.classList.add("active");
   try {
-    const r = await apiGet(`/api/transactions/${selectedCompanyId}?vendor_id=${encodeURIComponent(vendorId)}&limit=500&sort=date.desc`);
-    const rows = (r.transactions || []).map((t) => {
+    let raw;
+    if (_shouldUseRailway()) {
+      const r = await apiGet(`/api/transactions/${selectedCompanyId}?vendor_id=${encodeURIComponent(vendorId)}&limit=500&sort=date.desc`);
+      raw = r.transactions || [];
+    } else {
+      // Manual+Plaid companies: transactions.vendor_id is populated in
+      // Supabase. Mirror Railway's response shape so the mapping below
+      // works unchanged.
+      const sel = "id,date,amount,description,merchant_name,notes,category:categories(name)";
+      const url = `${SUPABASE_URL}/rest/v1/transactions?company_id=eq.${selectedCompanyId}&vendor_id=eq.${encodeURIComponent(vendorId)}&order=date.desc&limit=500&select=${encodeURIComponent(sel)}`;
+      const resp = await fetch(url, { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` } });
+      if (!resp.ok) throw new Error(`Supabase ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+      raw = await resp.json();
+    }
+    const rows = raw.map((t) => {
       const amt = parseFloat(t.amount) || 0;
       return {
         id: t.id,
