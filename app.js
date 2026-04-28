@@ -6387,9 +6387,11 @@ async function txReload() {
     }
     _txState.has_more = hasMore;
     _txState.txs = txs;
-    // Fetch match hints first so the render shows inline Match buttons
-    // for any Plaid-categorized rows that line up with an open invoice/bill.
-    await _txLoadMatchHints(txs);
+    // Fetch match hints + already-applied matches in parallel. Hints surface
+    // an inline Match button for Plaid-categorized rows lining up with an
+    // open bill/invoice; applied matches show what each txn is *already*
+    // linked to so the user doesn't have to dig into the bill detail page.
+    await Promise.all([_txLoadMatchHints(txs), _txLoadAppliedMatches(txs)]);
     _txRender(txs);
     document.getElementById("tx-summary").textContent = `${txs.length} shown`;
     const pageNum = Math.floor(_txState.offset / _txState.limit) + 1;
@@ -6590,16 +6592,30 @@ function _txRender(txs) {
     const isSplit = !!t.split_parent_id;
     const pencil = `<span class="inline-edit-pencil" aria-hidden="true">✎</span>`;
 
-    // Auto-match hint (populated asynchronously by _txApplyMatchHints)
-    const matchHint = _txMatchMap ? _txMatchMap[t.id] : null;
-    const matchHtml = matchHint
-      ? `<div style="font-size:var(--text-xs);color:var(--color-success);line-height:1.3;">`
-      + `<div style="font-weight:600;">${matchHint.kind === "invoice" ? "Invoice" : "Bill"} ${_escapeHtml(matchHint.number || "")}${matchHint.date ? " — " + formatDate(matchHint.date) : ""}</div>`
-      + `${matchHint.party ? `<div>${_escapeHtml(matchHint.party)}</div>` : ""}`
-      + `<div style="margin-top:3px;"><button class="btn btn-sm btn-primary" style="padding:2px 10px;" onclick="txApplyMatchHint('${t.id}')">Match</button> `
-      + `<button class="btn btn-sm btn-ghost" style="padding:2px 8px;" onclick="_txBeginInlineEdit(event, '${t.id}', 'category')" title="Categorize instead">Categorize</button></div>`
-      + `</div>`
-      : `<span class="tx-editable-content" style="${catClass}">${_escapeHtml(catName)}${isSplit ? ' <span class="badge badge-neutral" style="font-size:var(--text-xxs, 0.625rem);">split</span>' : ""}</span>${pencil}`;
+    // Three-state match column: already-applied beats suggested-hint beats
+    // plain category. Applied is the truth from payment_applications;
+    // hint is just a suggestion from _supaMatchSuggestions.
+    const applied = _txAppliedMap ? _txAppliedMap[t.id] : null;
+    const matchHint = !applied && _txMatchMap ? _txMatchMap[t.id] : null;
+    let matchHtml;
+    if (applied) {
+      const kindLabel = applied.kind === "invoice" ? "Invoice" : "Bill";
+      const numLabel = applied.number ? _escapeHtml(applied.number) : "—";
+      matchHtml = `<div style="font-size:var(--text-xs);line-height:1.3;">`
+        + `<div style="font-weight:600;color:var(--color-success);">✓ ${kindLabel} ${numLabel}${applied.date ? " — " + formatDate(applied.date) : ""}</div>`
+        + `${applied.party ? `<div style="color:var(--color-text-secondary);">${_escapeHtml(applied.party)}</div>` : ""}`
+        + `<div style="margin-top:3px;"><button class="btn btn-sm btn-ghost" style="padding:2px 8px;" onclick="viewMatchedDoc('${applied.kind}','${applied.target_id}')" title="Open the linked ${kindLabel.toLowerCase()}">View</button></div>`
+        + `</div>`;
+    } else if (matchHint) {
+      matchHtml = `<div style="font-size:var(--text-xs);color:var(--color-success);line-height:1.3;">`
+        + `<div style="font-weight:600;">${matchHint.kind === "invoice" ? "Invoice" : "Bill"} ${_escapeHtml(matchHint.number || "")}${matchHint.date ? " — " + formatDate(matchHint.date) : ""}</div>`
+        + `${matchHint.party ? `<div>${_escapeHtml(matchHint.party)}</div>` : ""}`
+        + `<div style="margin-top:3px;"><button class="btn btn-sm btn-primary" style="padding:2px 10px;" onclick="txApplyMatchHint('${t.id}')">Match</button> `
+        + `<button class="btn btn-sm btn-ghost" style="padding:2px 8px;" onclick="_txBeginInlineEdit(event, '${t.id}', 'category')" title="Categorize instead">Categorize</button></div>`
+        + `</div>`;
+    } else {
+      matchHtml = `<span class="tx-editable-content" style="${catClass}">${_escapeHtml(catName)}${isSplit ? ' <span class="badge badge-neutral" style="font-size:var(--text-xxs, 0.625rem);">split</span>' : ""}</span>${pencil}`;
+    }
 
     return `<tr data-tx-id="${t.id}" data-is-transfer="${t.is_transfer ? "1" : "0"}" data-has-category="${t.category_id ? "1" : "0"}" data-has-vendor="${t.vendor_id ? "1" : "0"}">
       <td><input type="checkbox" class="tx-row-check" value="${t.id}" onchange="txUpdateBulkBar()"></td>
@@ -6611,7 +6627,7 @@ function _txRender(txs) {
       <td class="tx-editable" onclick="_txBeginInlineEdit(event, '${t.id}', 'vendor')" title="Click to set vendor">
         <span class="tx-editable-content" style="font-size:var(--text-xs);">${vendorCell}</span>${pencil}
       </td>
-      <td class="tx-editable" ${!matchHint ? `onclick="_txBeginInlineEdit(event, '${t.id}', 'category')"` : ""} title="${matchHint ? "Suggested match — click Match to apply" : "Click to set category"}">${matchHtml}</td>
+      <td class="tx-editable" ${(!matchHint && !applied) ? `onclick="_txBeginInlineEdit(event, '${t.id}', 'category')"` : ""} title="${applied ? "Already matched — click View to open the linked document" : matchHint ? "Suggested match — click Match to apply" : "Click to set category"}">${matchHtml}</td>
       <td style="text-align:right;">
         <button class="btn btn-sm btn-ghost" onclick="txActionsMenu('${t.id}', event)" title="More">⋯</button>
       </td>
@@ -6622,6 +6638,87 @@ function _txRender(txs) {
 // ---- Auto-match (QBO bank feed style) ----
 // _txMatchMap: txnId -> { kind, id, number, date, party, balance, score }
 let _txMatchMap = null;
+// _txAppliedMap: txnId -> { kind, target_id, number, date, party } where the
+// txn is already linked to a bill/invoice via payment_applications.
+let _txAppliedMap = null;
+
+// Fetch the bill/invoice each transaction is already matched to via the
+// payments + payment_applications tables. Lets the Transactions list show
+// "✓ Bill 302706398-2026-03" inline instead of just the underlying category.
+async function _txLoadAppliedMatches(txs) {
+  if (!supabaseAccessToken || !selectedCompanyId || !txs || !txs.length) {
+    _txAppliedMap = null;
+    return;
+  }
+  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+  const txIds = txs.map((t) => t.id);
+  try {
+    const payRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/payments?company_id=eq.${selectedCompanyId}&matched_transaction_id=in.(${txIds.join(",")})&select=id,kind,matched_transaction_id`,
+      { headers }
+    );
+    const pays = payRes.ok ? await payRes.json() : [];
+    if (!pays.length) { _txAppliedMap = {}; return; }
+    const payIds = pays.map((p) => p.id);
+    const appRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/payment_applications?payment_id=in.(${payIds.join(",")})&select=payment_id,bill_id,invoice_id,amount`,
+      { headers }
+    );
+    const apps = appRes.ok ? await appRes.json() : [];
+    const billIds = [...new Set(apps.map((a) => a.bill_id).filter(Boolean))];
+    const invIds = [...new Set(apps.map((a) => a.invoice_id).filter(Boolean))];
+    const [bills, invs] = await Promise.all([
+      billIds.length ? fetch(`${SUPABASE_URL}/rest/v1/bills?id=in.(${billIds.join(",")})&select=id,number,date,due_date,vendor:vendors(display_name)`, { headers }).then((r) => r.ok ? r.json() : []) : Promise.resolve([]),
+      invIds.length ? fetch(`${SUPABASE_URL}/rest/v1/invoices?id=in.(${invIds.join(",")})&select=id,number,date,due_date,customer:customers(display_name)`, { headers }).then((r) => r.ok ? r.json() : []) : Promise.resolve([]),
+    ]);
+    const billsById = new Map(bills.map((b) => [b.id, b]));
+    const invsById = new Map(invs.map((i) => [i.id, i]));
+    // payment_id -> first application (most matches are one-to-one)
+    const appByPayment = new Map();
+    for (const a of apps) if (!appByPayment.has(a.payment_id)) appByPayment.set(a.payment_id, a);
+    const out = {};
+    for (const p of pays) {
+      const a = appByPayment.get(p.id);
+      if (!a) continue;
+      if (a.bill_id) {
+        const b = billsById.get(a.bill_id);
+        if (!b) continue;
+        out[p.matched_transaction_id] = {
+          kind: "bill",
+          target_id: b.id,
+          number: b.number,
+          date: b.date,
+          party: b.vendor?.display_name || "",
+        };
+      } else if (a.invoice_id) {
+        const inv = invsById.get(a.invoice_id);
+        if (!inv) continue;
+        out[p.matched_transaction_id] = {
+          kind: "invoice",
+          target_id: inv.id,
+          number: inv.number,
+          date: inv.date,
+          party: inv.customer?.display_name || "",
+        };
+      }
+    }
+    _txAppliedMap = out;
+  } catch (e) {
+    console.warn("[supa] applied-match fetch failed", e);
+    _txAppliedMap = null;
+  }
+}
+
+// Open the bill/invoice page filtered to the linked document so the user can
+// review or unmatch it.
+function viewMatchedDoc(kind, targetId) {
+  if (!targetId) return;
+  if (kind === "invoice") {
+    location.hash = `#invoices?id=${targetId}`;
+  } else {
+    location.hash = `#bills?id=${targetId}`;
+  }
+}
 
 async function _txLoadMatchHints(txs) {
   if (!selectedCompanyId || !txs || !txs.length) { _txMatchMap = null; return; }
