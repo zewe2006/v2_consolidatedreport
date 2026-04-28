@@ -4445,12 +4445,22 @@ async function _openMatchModal(txId, kind) {
   const modal = document.getElementById("match-modal");
   modal.classList.add("active"); modal.style.display = "flex";
   try {
-    const r = await apiGet(`/api/payments/match-suggestions/${txId}?kind=${kind}&top_n=10`);
-    if (!r.candidates?.length) {
+    let candidates = null;
+    try {
+      const r = await apiGet(`/api/payments/match-suggestions/${txId}?kind=${kind}&top_n=10`);
+      candidates = r.candidates || [];
+    } catch { /* fall through to Supabase */ }
+    // Railway's match-suggestions endpoint 404s for manual+Plaid companies.
+    // Same shape as the auto-match Supabase fallback (_supaMatchSuggestions):
+    // pull open bills/invoices, rank by amount + date proximity.
+    if ((!candidates || !candidates.length) && supabaseAccessToken) {
+      candidates = await _supaMatchCandidatesFor(txId, kind, amount);
+    }
+    if (!candidates || !candidates.length) {
       list.innerHTML = `<div style="color:var(--color-text-muted);padding:12px;text-align:center;">No matching open ${kind}s within the amount tolerance.</div>`;
       return;
     }
-    list.innerHTML = r.candidates.map((c) => `
+    list.innerHTML = candidates.map((c) => `
       <div style="border:1px solid var(--color-border);border-radius:var(--radius-md);padding:10px;display:flex;justify-content:space-between;align-items:center;">
         <div>
           <strong>${_escapeHtml(c.number || "—")}</strong> · ${c.date}
@@ -4478,14 +4488,28 @@ async function _applyMatch(targetId, maxAmount) {
   const ctx = _matchContext;
   const amt = Math.min(ctx.txAmount, parseFloat(maxAmount) || ctx.txAmount);
   try {
-    const body = {
-      plaid_txn_id: ctx.txId,
-      amount: amt,
-      payment_method: "ach",
-      memo: `Auto-matched from transaction: ${ctx.txMerchant}`.slice(0, 200),
-    };
-    if (ctx.kind === "invoice") body.invoice_id = targetId; else body.bill_id = targetId;
-    await apiPost("/api/payments/apply-match", body);
+    let railwayWorked = false;
+    try {
+      const body = {
+        plaid_txn_id: ctx.txId,
+        amount: amt,
+        payment_method: "ach",
+        memo: `Auto-matched from transaction: ${ctx.txMerchant}`.slice(0, 200),
+      };
+      if (ctx.kind === "invoice") body.invoice_id = targetId; else body.bill_id = targetId;
+      await apiPost("/api/payments/apply-match", body);
+      railwayWorked = true;
+    } catch { /* fall through to Supabase */ }
+    if (!railwayWorked) {
+      // Same shape as txApplyMatchHint's fallback: build the m record and
+      // delegate to _supaApplyMatch (inserts payment + payment_application,
+      // updates parent balance/status).
+      await _supaApplyMatch(ctx.txId, {
+        kind: ctx.kind,
+        id: targetId,
+        balance: parseFloat(maxAmount) || amt,
+      });
+    }
     showToast(`Applied ${amt.toFixed(2)} to ${ctx.kind}`, "success");
     closeMatchModal();
     await txReload();
@@ -4493,6 +4517,47 @@ async function _applyMatch(targetId, maxAmount) {
     errEl.textContent = "Failed: " + (e.message || "unknown");
     errEl.style.display = "block";
   }
+}
+
+// Match candidates from Supabase for the manual match modal. Returns
+// the same shape Railway's /api/payments/match-suggestions/<id> uses:
+// [{ id, number, date, party: { display_name }, balance, total, score }, ...]
+async function _supaMatchCandidatesFor(txId, kind, amount) {
+  if (!supabaseAccessToken || !selectedCompanyId) return null;
+  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+  const tx = (_txState.txs || []).find((t) => t.id === txId);
+  const txDate = tx?.date;
+  const isInvoice = kind === "invoice";
+  const url = isInvoice
+    ? `${SUPABASE_URL}/rest/v1/invoices?company_id=eq.${selectedCompanyId}&status=in.(open,partially_paid,overdue,sent,draft)&select=id,number,date,due_date,total,balance,party:customers(display_name)`
+    : `${SUPABASE_URL}/rest/v1/bills?company_id=eq.${selectedCompanyId}&status=in.(open,partially_paid,overdue)&select=id,number,date,due_date,total,balance,party:vendors(display_name)`;
+  const r = await fetch(url, { headers });
+  if (!r.ok) return null;
+  const rows = await r.json();
+  const dayDiff = (a, b) => Math.abs((new Date(a) - new Date(b)) / 86400000);
+  const amt = Math.abs(parseFloat(amount) || 0);
+  const out = [];
+  for (const d of rows) {
+    const balance = parseFloat(d.balance ?? d.total ?? 0);
+    const dRef = d.due_date || d.date;
+    const dd = txDate ? dayDiff(txDate, dRef) : 0;
+    // Looser than auto-match (the user is manually choosing): allow any
+    // amount, score by amount-fit + date-fit so the closest one is on top.
+    const amtScore = Math.max(0, 100 - Math.abs(balance - amt));
+    const dateScore = Math.max(0, 100 - dd * 5);
+    const score = Math.round((amtScore + dateScore) / 2);
+    out.push({
+      id: d.id,
+      number: d.number,
+      date: dRef,
+      party: d.party,
+      total: parseFloat(d.total || 0),
+      balance,
+      score,
+    });
+  }
+  out.sort((a, b) => b.score - a.score);
+  return out.slice(0, 10);
 }
 
 
@@ -5845,8 +5910,10 @@ let _txMatchMap = null;
 
 async function _txLoadMatchHints(txs) {
   if (!selectedCompanyId || !txs || !txs.length) { _txMatchMap = null; return; }
-  // Only consider Plaid-auto-categorized or uncategorized rows worth matching.
-  const candidates = txs.filter((t) => !t.is_transfer && (t.categorized_by === "plaid" || !t.category_id));
+  // Plaid-auto-categorized, uncategorized, or QBO-imported A/P|A/R rows are
+  // all match candidates — QBO bill payments arrive with category_id already
+  // set to A/P, but they're exactly the rows users want to link to bills.
+  const candidates = txs.filter((t) => !t.is_transfer && (t.categorized_by === "plaid" || t.categorized_by === "qbo_import" || !t.category_id));
   if (!candidates.length) { _txMatchMap = null; return; }
   let railwayWorked = false;
   try {
@@ -6887,8 +6954,21 @@ async function coaReload() {
   const body = document.getElementById("coa-body");
   body.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--color-text-muted);">Loading...</td></tr>';
   try {
-    const resp = await apiGet(`/api/coa/${selectedCompanyId}`);
-    _coaState.accounts = resp.accounts || [];
+    let accounts = [];
+    try {
+      const resp = await apiGet(`/api/coa/${selectedCompanyId}`);
+      accounts = resp.accounts || [];
+    } catch { /* fall through to Supabase */ }
+    // Same pattern as 55fd369: Railway returns empty/404 for manual+Plaid
+    // companies whose CoA lives only in Supabase. Pull it directly.
+    if (!accounts.length && supabaseAccessToken) {
+      const rows = await _supaFetch("chart_of_accounts", {
+        select: "id,code,name,type,subtype,parent_id,is_active",
+        order: "code",
+      });
+      if (rows && rows.length) accounts = rows;
+    }
+    _coaState.accounts = accounts;
     _coaRender();
   } catch (e) {
     body.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--color-error);">Load failed: ${_escapeHtml(e.message)}</td></tr>`;
