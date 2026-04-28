@@ -9403,26 +9403,26 @@ async function docSave() {
     if (_docState.editing) {
       await apiPatch(`${base}/${_docState.editing}`, body);
     } else {
-      // Railway's POST /api/bills/<id> currently fails with a
-      // bills_company_id_fkey violation for manual+Plaid companies whose data
-      // lives in Supabase. Always prefer Supabase direct for bills when we
-      // can; if there's no session, prompt for the password (the parallel
-      // sign-in at login can fail silently).
+      // Railway's POST /api/{bills,invoices}/<id> hits a {bills,invoices}_company_id_fkey
+      // violation for manual+Plaid companies whose data lives in Supabase.
+      // Always prefer Supabase direct for both; if there's no session,
+      // prompt for the password (the parallel sign-in at login can fail
+      // silently when Railway and Supabase passwords drift).
       let saved = false;
-      if (kind === "bill" && selectedCompanyId) {
+      if ((kind === "bill" || kind === "invoice") && selectedCompanyId) {
         if (!supabaseAccessToken && currentUser?.email) {
           const pw = window.prompt(
-            `To save bills, we need a Supabase session.\nRe-enter the password for ${currentUser.email}:`,
+            `To save ${kind}s, we need a Supabase session.\nRe-enter the password for ${currentUser.email}:`,
           );
           if (pw) {
             const ok = await _supabaseSignIn(currentUser.email, pw);
             if (!ok) throw new Error("Supabase sign-in failed — password may differ from Railway. Ask Rachel to reset your Supabase password.");
           } else {
-            throw new Error("Bill save requires Supabase session — password prompt cancelled.");
+            throw new Error(`${kind === "invoice" ? "Invoice" : "Bill"} save requires Supabase session — password prompt cancelled.`);
           }
         }
         if (supabaseAccessToken) {
-          await _billCreateViaSupabase(selectedCompanyId, body);
+          await _docCreateViaSupabase(kind, selectedCompanyId, body);
           saved = true;
         }
       }
@@ -9453,10 +9453,19 @@ async function docSave() {
   }
 }
 
-// Insert a bill + bill_lines directly into Supabase. Used when Railway's
-// POST /api/bills/<id> is broken for the company (manual+Plaid companies
-// whose company_id Railway doesn't map correctly to the Supabase row).
-async function _billCreateViaSupabase(companyId, body) {
+// Insert a bill/invoice + its lines directly into Supabase. Used when
+// Railway's POST /api/{bills,invoices}/<id> is broken for the company
+// (manual+Plaid companies whose company_id Railway doesn't map correctly
+// to the Supabase row).
+async function _docCreateViaSupabase(kind, companyId, body) {
+  const isInvoice = kind === "invoice";
+  const headerTable = isInvoice ? "invoices" : "bills";
+  const linesTable = isInvoice ? "invoice_lines" : "bill_lines";
+  const fkField = isInvoice ? "invoice_id" : "bill_id";
+  const partyField = isInvoice ? "customer_id" : "vendor_id";
+  const partyId = isInvoice ? body.customer_id : body.vendor_id;
+  const defaultStatus = isInvoice ? "draft" : "open";
+
   const supaHeaders = {
     "Content-Type": "application/json",
     apikey: SUPABASE_ANON_KEY,
@@ -9483,46 +9492,49 @@ async function _billCreateViaSupabase(companyId, body) {
   const subtotal = lines.reduce((s, l) => s + l.amount, 0);
   const tax_total = lines.reduce((s, l) => s + l.tax_amount, 0);
   const total = subtotal + tax_total;
-  const status = body.status || "open";
-  const balance = status === "paid" ? 0 : total;
+  const status = body.status || defaultStatus;
+  const paidStatuses = isInvoice ? ["paid"] : ["paid"];
+  const balance = paidStatuses.includes(status) ? 0 : total;
 
-  const billRes = await fetch(`${SUPABASE_URL}/rest/v1/bills`, {
+  const headerPayload = {
+    company_id: companyId,
+    [partyField]: partyId,
+    number: body.number || (isInvoice ? "" : null),
+    date: body.date,
+    due_date: body.due_date || null,
+    status,
+    memo: body.memo || null,
+    subtotal, tax_total, total, balance,
+    currency: "USD",
+  };
+
+  const headerRes = await fetch(`${SUPABASE_URL}/rest/v1/${headerTable}`, {
     method: "POST",
     headers: { ...supaHeaders, Prefer: "return=representation" },
-    body: JSON.stringify({
-      company_id: companyId,
-      vendor_id: body.vendor_id,
-      number: body.number || null,
-      date: body.date,
-      due_date: body.due_date || null,
-      status,
-      memo: body.memo || null,
-      subtotal, tax_total, total, balance,
-      currency: "USD",
-    }),
+    body: JSON.stringify(headerPayload),
   });
-  if (!billRes.ok) {
-    throw new Error(`Supabase bills ${billRes.status}: ${(await billRes.text()).slice(0, 300)}`);
+  if (!headerRes.ok) {
+    throw new Error(`Supabase ${headerTable} ${headerRes.status}: ${(await headerRes.text()).slice(0, 300)}`);
   }
-  const rows = await billRes.json();
-  const bill = Array.isArray(rows) ? rows[0] : rows;
+  const rows = await headerRes.json();
+  const header = Array.isArray(rows) ? rows[0] : rows;
 
   if (lines.length) {
-    const linesRes = await fetch(`${SUPABASE_URL}/rest/v1/bill_lines`, {
+    const linesRes = await fetch(`${SUPABASE_URL}/rest/v1/${linesTable}`, {
       method: "POST",
       headers: { ...supaHeaders, Prefer: "return=minimal" },
-      body: JSON.stringify(lines.map((l) => ({ ...l, bill_id: bill.id }))),
+      body: JSON.stringify(lines.map((l) => ({ ...l, [fkField]: header.id }))),
     });
     if (!linesRes.ok) {
       // Roll back the header so we don't leave an orphan with no lines.
-      await fetch(`${SUPABASE_URL}/rest/v1/bills?id=eq.${bill.id}`, {
+      await fetch(`${SUPABASE_URL}/rest/v1/${headerTable}?id=eq.${header.id}`, {
         method: "DELETE",
         headers: supaHeaders,
       }).catch(() => {});
-      throw new Error(`Supabase bill_lines ${linesRes.status}: ${(await linesRes.text()).slice(0, 300)}`);
+      throw new Error(`Supabase ${linesTable} ${linesRes.status}: ${(await linesRes.text()).slice(0, 300)}`);
     }
   }
-  return bill;
+  return header;
 }
 
 // After saving a loan bill, persist the vendor → CoA mapping for next time.
