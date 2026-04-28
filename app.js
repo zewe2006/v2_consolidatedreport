@@ -8926,13 +8926,102 @@ async function dashInit() {
     if (typeof loadDashboard === "function") loadDashboard();
     return;
   }
-  // Per-company dashboard
+  // Per-company dashboard. Manual+Plaid companies live in Supabase, so the
+  // Railway endpoint returns zeros — aggregate directly from Supabase.
   try {
-    const data = await apiGet(`/api/dashboard/${company.id}`);
+    const data = supabaseAccessToken
+      ? await _supaDashboard(company)
+      : await apiGet(`/api/dashboard/${company.id}`);
     _renderPerCompanyDashboard(data);
   } catch (e) {
     showToast("Dashboard load failed: " + (e.message || "unknown"), "error");
   }
+}
+
+// Supabase-side per-company dashboard aggregation. Mirrors Railway's
+// /api/dashboard/{companyId} response shape so _renderPerCompanyDashboard
+// works unchanged. Sources:
+//   cash_on_hand: sum of bank-account current_balance for depository accounts
+//   ytd_revenue / ytd_expense: sum of transaction amounts categorized to a
+//     CoA row of type 'income' / 'expense', YTD (Jan 1 → today)
+//   ytd_net: revenue - expense
+//   uncategorized_count: transactions with category_id null and not is_transfer
+//   top_expenses: group expense-categorized txns by category, top 5 by total
+//   recent_transactions: 10 most recent rows (date desc)
+async function _supaDashboard(company) {
+  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+  const base = `${SUPABASE_URL}/rest/v1`;
+  const cid = company.id;
+  const ytdStart = `${new Date().getFullYear()}-01-01`;
+
+  const [accounts, coa, ytdTxns, recent, uncatHead] = await Promise.all([
+    fetch(`${base}/accounts?company_id=eq.${cid}&select=id,name,type,current_balance`, { headers })
+      .then((r) => r.ok ? r.json() : []),
+    // Pull whole CoA so we can resolve category_id → CoA type for revenue/expense classification.
+    fetch(`${base}/chart_of_accounts?company_id=eq.${cid}&select=id,name,type`, { headers })
+      .then((r) => r.ok ? r.json() : []),
+    // YTD transactions, with category embed for the CoA join below.
+    fetch(`${base}/transactions?company_id=eq.${cid}&date=gte.${ytdStart}&is_transfer=eq.false&select=id,date,amount,merchant_name,description,category_id,category:categories(coa_account_id,name)`, { headers })
+      .then((r) => r.ok ? r.json() : []),
+    // Recent activity (last 10 rows regardless of YTD)
+    fetch(`${base}/transactions?company_id=eq.${cid}&order=date.desc&limit=10&select=date,merchant_name,description,amount`, { headers })
+      .then((r) => r.ok ? r.json() : []),
+    // Uncategorized count via Range header (no rows fetched — count only).
+    fetch(`${base}/transactions?company_id=eq.${cid}&category_id=is.null&is_transfer=eq.false&select=id`, {
+      headers: { ...headers, Prefer: "count=exact", Range: "0-0" },
+    }),
+  ]);
+
+  // Index CoA by id so each transaction's category → CoA type lookup is O(1).
+  const coaById = new Map(coa.map((c) => [c.id, c]));
+
+  // Cash on hand: depository accounts' current balance. (Loans are not cash.)
+  const cashOnHand = accounts
+    .filter((a) => a.type === "depository")
+    .reduce((s, a) => s + parseFloat(a.current_balance || 0), 0);
+
+  // Walk YTD transactions, partition into revenue/expense by CoA type.
+  // Plaid sign convention: positive amount = outflow (Spent), negative = inflow.
+  let ytdRevenue = 0, ytdExpense = 0;
+  const expenseByCat = new Map();
+  for (const t of ytdTxns) {
+    const coaId = t.category?.coa_account_id;
+    const coaRow = coaId ? coaById.get(coaId) : null;
+    const amt = Math.abs(parseFloat(t.amount || 0));
+    if (coaRow?.type === "income") {
+      ytdRevenue += amt;
+    } else if (coaRow?.type === "expense") {
+      ytdExpense += amt;
+      const key = t.category?.name || "Uncategorized";
+      expenseByCat.set(key, (expenseByCat.get(key) || 0) + amt);
+    }
+  }
+  const topExpenses = Array.from(expenseByCat.entries())
+    .map(([name, total]) => ({ name, total }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 5);
+
+  // Pull total count from Content-Range header on the count-only request.
+  let uncategorizedCount = 0;
+  if (uncatHead && uncatHead.ok) {
+    const cr = uncatHead.headers.get("content-range") || "";
+    const m = /\/(\d+|\*)/.exec(cr);
+    if (m && m[1] !== "*") uncategorizedCount = parseInt(m[1], 10);
+  }
+
+  return {
+    company: { id: cid, name: company.name },
+    kpi: {
+      cash_on_hand: cashOnHand,
+      ytd_revenue: ytdRevenue,
+      ytd_expense: ytdExpense,
+      ytd_net: ytdRevenue - ytdExpense,
+    },
+    uncategorized_count: uncategorizedCount,
+    top_expenses: topExpenses,
+    recent_transactions: recent,
+    trend_months: [], // Railway-only for now; render handles empty.
+  };
 }
 
 function _renderPerCompanyDashboard(data) {
