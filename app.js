@@ -9005,21 +9005,27 @@ async function _supaDashboard(company) {
 
   // Walk YTD transactions, partition into revenue/expense by CoA type.
   // Plaid sign convention: positive amount = outflow (Spent), negative = inflow.
+  // Use raw signed amounts so refunds offset the expense (matches the P&L
+  // builder _supaProfitLoss). Income flips sign so revenue reads positive;
+  // expense leaves as-is so refunds (negative amounts) reduce the total.
   let ytdRevenue = 0, ytdExpense = 0;
   const expenseByCat = new Map();
   for (const t of ytdTxns) {
     const coaId = t.category?.coa_account_id;
     const coaRow = coaId ? coaById.get(coaId) : null;
-    const amt = Math.abs(parseFloat(t.amount || 0));
+    const raw = parseFloat(t.amount || 0);
     if (coaRow?.type === "income") {
-      ytdRevenue += amt;
+      ytdRevenue += -raw;
     } else if (coaRow?.type === "expense") {
-      ytdExpense += amt;
+      ytdExpense += raw;
       const key = t.category?.name || "Uncategorized";
-      expenseByCat.set(key, (expenseByCat.get(key) || 0) + amt);
+      expenseByCat.set(key, (expenseByCat.get(key) || 0) + raw);
     }
   }
+  // Drop net-zero or negative-net categories from the "top expenses" list —
+  // they're informative on the P&L but visually weird on the dashboard.
   const topExpenses = Array.from(expenseByCat.entries())
+    .filter(([, total]) => total > 0.005)
     .map(([name, total]) => ({ name, total }))
     .sort((a, b) => b.total - a.total)
     .slice(0, 5);
