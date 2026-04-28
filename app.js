@@ -1221,20 +1221,23 @@ async function _supaProfitLoss(companyId, startDate, endDate, summarizeBy) {
     if (c.coa_account_id) catToCoa.set(c.id, c.coa_account_id);
   }
 
-  // Decide summary axis. summarizeBy: 'month' | 'quarter' | 'year' | falsy.
+  // Decide summary axis. The select sends "Month" / "Quarter" / "Year" with
+  // an initial cap, so normalise once up front — the comparisons below were
+  // all lowercase and silently fell through to the single-column path.
+  const sb = (summarizeBy || "").toLowerCase();
   const colKey = (date) => {
     if (!date) return "Total";
-    if (summarizeBy === "month") return date.slice(0, 7);          // "2026-04"
-    if (summarizeBy === "quarter") {
+    if (sb === "month") return date.slice(0, 7);          // "2026-04"
+    if (sb === "quarter") {
       const m = parseInt(date.slice(5, 7), 10);
       return `${date.slice(0, 4)}-Q${Math.ceil(m / 3)}`;
     }
-    if (summarizeBy === "year") return date.slice(0, 4);
+    if (sb === "year") return date.slice(0, 4);
     return "Total";
   };
   const colLabel = (key) => {
     if (key === "Total") return "Total";
-    if (summarizeBy === "month") {
+    if (sb === "month") {
       const [y, m] = key.split("-");
       return new Date(parseInt(y, 10), parseInt(m, 10) - 1, 1).toLocaleString("en-US", { month: "short", year: "numeric" });
     }
@@ -1259,7 +1262,7 @@ async function _supaProfitLoss(companyId, startDate, endDate, summarizeBy) {
   // For summarized modes, build the full sequence between start and end so
   // months with zero activity still appear (matches QBO behavior).
   let columns = [];
-  if (!summarizeBy || summarizeBy === "" || summarizeBy === null) {
+  if (!sb) {
     columns = [{ key: "Total", label: "Total" }];
   } else {
     const keys = Array.from(colKeysSet);
