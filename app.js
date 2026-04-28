@@ -5711,8 +5711,32 @@ async function txInit() {
 
 async function _txLoadCategories() {
   try {
-    const resp = await apiGet(`/api/categories/${selectedCompanyId}`);
-    _txState.categories = resp.categories || [];
+    // Source-based routing: QBO → Railway; Plaid/Manual → Supabase direct.
+    const company = _getSelectedCompany();
+    const isQbo = ((company?.source) || "qbo") === "qbo";
+    if (!isQbo && supabaseAccessToken) {
+      // Pull categories joined to chart_of_accounts so we can show the CoA
+      // code/name (which is what users want to see in the picker, not the
+      // raw category name).
+      const r = await fetch(
+        `${SUPABASE_URL}/rest/v1/categories?company_id=eq.${selectedCompanyId}&select=id,name,coa:chart_of_accounts(code,name,type)&order=name`,
+        { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` } },
+      );
+      if (r.ok) {
+        const rows = await r.json();
+        _txState.categories = rows.map((c) => ({
+          id: c.id,
+          name: c.coa?.name || c.name,
+          code: c.coa?.code || "",
+          type: c.coa?.type || null,
+        }));
+      } else {
+        _txState.categories = [];
+      }
+    } else {
+      const resp = await apiGet(`/api/categories/${selectedCompanyId}`);
+      _txState.categories = resp.categories || [];
+    }
     const sel = document.getElementById("tx-filter-category");
     if (sel) {
       sel.innerHTML = `<option value="">All categories</option>` +
