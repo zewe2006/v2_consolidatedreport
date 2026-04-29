@@ -1075,9 +1075,10 @@ async function loadBS() {
     } else if (useSupa) {
       // Single-company path. When the user picks By Month/Quarter/Year,
       // run a snapshot per period end and project a multi-column shape.
+      const method = document.getElementById("bs-method").value || "Accrual";
       data = summarize
-        ? await _supaBalanceSheetMulti(manualPlaidIds[0], startVal, endVal, summarize)
-        : await _supaBalanceSheet(manualPlaidIds[0], endVal);
+        ? await _supaBalanceSheetMulti(manualPlaidIds[0], startVal, endVal, summarize, { accountingMethod: method })
+        : await _supaBalanceSheet(manualPlaidIds[0], endVal, { accountingMethod: method });
     } else {
       data = await apiPost("/api/reports/balance-sheet", {
         start_date: startVal,
@@ -1115,10 +1116,14 @@ async function loadBS() {
 // options.bankBalanceOverrides: optional Map<account_id, balanceAsOf> letting
 // the multi-column caller walk bank balances back per period. When present,
 // each bank account's balance is read from the map instead of current_balance.
+// options.accountingMethod: 'Accrual' (default) includes A/R from open
+// invoices and A/P from open bills. 'Cash' hides them — those balances
+// represent unrealized cash flow that doesn't belong on a cash-basis BS.
 async function _supaBalanceSheet(companyId, endDate, options) {
   if (!supabaseAccessToken) throw new Error("Supabase session required.");
   const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
   const asOf = endDate || new Date().toISOString().slice(0, 10);
+  const isCash = ((options && options.accountingMethod) || "").toLowerCase() === "cash";
 
   // NOTE: A GL-based Balance Sheet exists at _supaBalanceSheetFromGL but it
   // requires opening-balance journal entries to be accurate (otherwise bank
@@ -1184,8 +1189,10 @@ async function _supaBalanceSheet(companyId, endDate, options) {
     bankByCoa.set(coaId, (bankByCoa.get(coaId) || 0) + contribution);
   }
 
-  const totalAP = openBills.reduce((s, b) => s + parseFloat(b.balance || 0), 0);
-  const totalAR = openInvoices.reduce((s, i) => s + parseFloat(i.balance || 0), 0);
+  // Cash basis: zero out A/R and A/P. Open bills / invoices are unrealized
+  // (no cash has moved yet) and don't belong on a cash-basis Balance Sheet.
+  const totalAP = isCash ? 0 : openBills.reduce((s, b) => s + parseFloat(b.balance || 0), 0);
+  const totalAR = isCash ? 0 : openInvoices.reduce((s, i) => s + parseFloat(i.balance || 0), 0);
 
   let apAssigned = false;
   let arAssigned = false;
@@ -1262,7 +1269,9 @@ async function _supaBalanceSheet(companyId, endDate, options) {
     totalAssets: assets.total,
     totalLiabilities: liabilities.total,
     totalEquity: equityFromCoa.total,
-    notice: "Derived from Supabase — no double-entry GL data, so balances reflect bank/loan accounts, open A/P, open A/R, and a derived equity plug.",
+    notice: "Derived from Supabase" + (isCash
+      ? " — Cash basis: bank/loan balances + transaction-derived COAs only; open A/R and A/P excluded."
+      : " — no double-entry GL data, so balances reflect bank/loan accounts, open A/P, open A/R, and a derived equity plug."),
   };
 }
 
@@ -1313,11 +1322,12 @@ function _bsPeriodEnds(startDate, endDate, summarizeBy) {
 // Caveat: bank rows read accounts.current_balance (today's value), so they
 // repeat across columns. Non-bank rows (loans, A/P, A/R, equity, transaction-
 // derived COAs) honor per-period 'as of' filtering and trend correctly.
-async function _supaBalanceSheetMulti(companyId, startDate, endDate, summarizeBy) {
+async function _supaBalanceSheetMulti(companyId, startDate, endDate, summarizeBy, options) {
   const sb = (summarizeBy || "").toLowerCase();
-  if (!sb) return _supaBalanceSheet(companyId, endDate);
+  const method = (options && options.accountingMethod) || "Accrual";
+  if (!sb) return _supaBalanceSheet(companyId, endDate, { accountingMethod: method });
   const periods = _bsPeriodEnds(startDate, endDate, sb);
-  if (!periods.length) return _supaBalanceSheet(companyId, endDate);
+  if (!periods.length) return _supaBalanceSheet(companyId, endDate, { accountingMethod: method });
 
   // Pre-fetch bank accounts + all their transactions so we can walk balances
   // back per period — same logic the Account Register uses. Without this, every
@@ -1349,7 +1359,10 @@ async function _supaBalanceSheetMulti(companyId, startDate, endDate, summarizeBy
   });
 
   const snapshots = await Promise.all(periods.map((p, i) =>
-    _supaBalanceSheet(companyId, p.endDate, { bankBalanceOverrides: overridesPerPeriod[i] })
+    _supaBalanceSheet(companyId, p.endDate, {
+      bankBalanceOverrides: overridesPerPeriod[i],
+      accountingMethod: method,
+    })
   ));
   const columns = periods.map((p) => ({ key: p.key, label: p.label }));
   const latest = snapshots[snapshots.length - 1];
