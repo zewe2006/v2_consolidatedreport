@@ -6996,21 +6996,24 @@ async function txReload() {
     // Supabase fallback when the company list isn't loaded but a Supabase
     // session exists.
     //
-    // Edge case: QBO Import placeholder accounts on a manual+Plaid company
-    // — the placeholder account row and its transactions live in Railway
-    // (the import flow is Railway-based). When the user clicks that chip,
-    // Supabase has nothing to return, so route just that filter through
-    // Railway. Detected by name prefix "QBO Import · " on the cached account.
+    // Edge case: QBO Import placeholder accounts. The QBO→Manual import
+    // writes its data into Supabase journal_entries / journal_lines (GL),
+    // not into the transactions table. Detect the chip and project the
+    // posted lines on this placeholder's cash COA into transaction-shaped
+    // rows for the table renderer. Read-only — no match/categorize/edit.
     const acctRow = (_txState.accounts || []).find((a) => a.id === acct);
     const isQboImportFilter = !!(acct && acctRow && !acctRow.plaid_item_id && (acctRow.name || "").startsWith("QBO Import · "));
-    if (_shouldUseRailway() || isQboImportFilter) {
+    if (isQboImportFilter) {
+      const fb = await _txFetchFromJournalEntriesAsTxns(acctRow, params);
+      txs = (fb && fb.rows) || [];
+      hasMore = !!(fb && fb.has_more);
+    } else if (_shouldUseRailway()) {
       const resp = await apiGet(`/api/transactions/${selectedCompanyId}?${params.toString()}`);
       txs = resp.transactions || [];
       hasMore = !!resp.has_more;
       // Defensive: if Railway returns empty for what's actually a Supabase
-      // company (stale source flag, etc.), fall through to Supabase. Skip
-      // for QBO Import — there is genuinely no Supabase mirror to fall to.
-      if (!txs.length && supabaseAccessToken && !isQboImportFilter) {
+      // company (stale source flag, etc.), fall through to Supabase.
+      if (!txs.length && supabaseAccessToken) {
         const fb = await _txFetchFromSupabase(params);
         if (fb && fb.rows && fb.rows.length) { txs = fb.rows; hasMore = !!fb.has_more; }
       }
@@ -7021,11 +7024,18 @@ async function txReload() {
     }
     _txState.has_more = hasMore;
     _txState.txs = txs;
-    // Fetch match hints + already-applied matches in parallel. Hints surface
-    // an inline Match button for Plaid-categorized rows lining up with an
-    // open bill/invoice; applied matches show what each txn is *already*
-    // linked to so the user doesn't have to dig into the bill detail page.
-    await Promise.all([_txLoadMatchHints(txs), _txLoadAppliedMatches(txs)]);
+    // Match hints + applied-match lookups don't apply to GL-derived JE rows
+    // (they have synthetic je:<id> ids that aren't in payments / payment_apps).
+    if (isQboImportFilter) {
+      _txMatchMap = null;
+      _txAppliedMap = null;
+    } else {
+      // Fetch match hints + already-applied matches in parallel. Hints surface
+      // an inline Match button for Plaid-categorized rows lining up with an
+      // open bill/invoice; applied matches show what each txn is *already*
+      // linked to so the user doesn't have to dig into the bill detail page.
+      await Promise.all([_txLoadMatchHints(txs), _txLoadAppliedMatches(txs)]);
+    }
     _txRender(txs);
     document.getElementById("tx-summary").textContent = `${txs.length} shown`;
     const pageNum = Math.floor(_txState.offset / _txState.limit) + 1;
@@ -7395,6 +7405,98 @@ async function _txFetchFromSupabase(params) {
   }
 }
 
+// QBO Import data lives in journal_entries / journal_lines (GL), not in the
+// transactions table. Fetch the lines posted to this placeholder's cash COA
+// and project them into transaction-shaped rows the table renderer accepts.
+// Read-only: rows carry is_journal_row so the renderer suppresses the inline
+// edit / match / actions UI (those operate on the transactions table by id).
+async function _txFetchFromJournalEntriesAsTxns(acctRow, params) {
+  if (!supabaseAccessToken || !selectedCompanyId) return { rows: [], has_more: false };
+  const cashCoa = acctRow && acctRow.coa_account_id;
+  if (!cashCoa) return { rows: [], has_more: false };
+
+  const limit = parseInt(params.get("limit") || "50", 10);
+  const offset = parseInt(params.get("offset") || "0", 10);
+  const dateFrom = params.get("date_from");
+  const dateTo = params.get("date_to");
+
+  // Embed the parent journal_entries row so we can filter on company_id +
+  // optional date range and read date/memo for each line.
+  const sp = new URLSearchParams();
+  sp.append("coa_account_id", `eq.${cashCoa}`);
+  sp.append("select", "id,debit,credit,description,journal_entry:journal_entries!inner(id,date,memo,company_id)");
+  sp.append("journal_entry.company_id", `eq.${selectedCompanyId}`);
+  if (dateFrom) sp.append("journal_entry.date", `gte.${dateFrom}`);
+  if (dateTo) sp.append("journal_entry.date", `lte.${dateTo}`);
+  sp.append("order", "journal_entry(date).desc");
+
+  let lines = [];
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/journal_lines?${sp.toString()}`, {
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${supabaseAccessToken}`,
+        Prefer: "count=exact",
+        Range: `${offset}-${offset + limit - 1}`,
+      },
+    });
+    if (!r.ok) {
+      console.warn("[je-as-tx]", r.status, (await r.text()).slice(0, 200));
+      return { rows: [], has_more: false };
+    }
+    lines = await r.json();
+    var contentRange = r.headers.get("content-range") || "";
+  } catch (e) {
+    console.warn("[je-as-tx] fetch failed", e);
+    return { rows: [], has_more: false };
+  }
+
+  // Cheap client-side search across description + memo (PostgREST OR-filter
+  // on embed targets is awkward, and we already paged by Range above).
+  const search = (params.get("search") || "").trim().toLowerCase();
+  if (search) {
+    lines = lines.filter((l) =>
+      (l.description || "").toLowerCase().includes(search) ||
+      (l.journal_entry && (l.journal_entry.memo || "").toLowerCase().includes(search))
+    );
+  }
+
+  let hasMore = false;
+  const m = /\/(\d+|\*)/.exec(contentRange || "");
+  if (m && m[1] !== "*") {
+    hasMore = (offset + lines.length) < parseInt(m[1], 10);
+  } else {
+    hasMore = lines.length >= limit;
+  }
+
+  // Bank/asset COA: debit = inflow (Received), credit = outflow (Spent).
+  // Renderer convention: amount > 0 = Spent, amount < 0 = Received → so
+  // amount = credit - debit.
+  const rows = lines.map((l) => {
+    const debit = parseFloat(l.debit) || 0;
+    const credit = parseFloat(l.credit) || 0;
+    const memo = (l.journal_entry && l.journal_entry.memo) || "";
+    return {
+      id: `je:${l.id}`,
+      date: (l.journal_entry && l.journal_entry.date) || null,
+      amount: credit - debit,
+      description: l.description || memo || "(journal entry)",
+      merchant_name: null,
+      account: { name: acctRow.name, mask: null },
+      vendor: null,
+      category: null,
+      category_id: null,
+      vendor_id: null,
+      is_transfer: false,
+      pending: false,
+      categorized_by: null,
+      is_journal_row: true,
+    };
+  });
+
+  return { rows, has_more: hasMore };
+}
+
 function _txRender(txs) {
   const body = document.getElementById("tx-body");
   if (!txs.length) {
@@ -7407,6 +7509,26 @@ function _txRender(txs) {
     const spent = amount > 0 ? amount : 0;
     const received = amount < 0 ? -amount : 0;
     const acct = t.account ? `${_escapeHtml(t.account.name)}${t.account.mask ? " ···" + t.account.mask : ""}` : "—";
+
+    // Read-only row for GL-derived QBO Import entries: no checkbox, no
+    // editable cells, no actions menu — those all operate on a real txn id
+    // and would 404 / inject invalid UUIDs into payments queries.
+    if (t.is_journal_row) {
+      const jeMerch = t.description || "—";
+      const jeBadge = '<span class="badge badge-neutral" style="font-size:var(--text-xxs, 0.625rem);margin-left:6px;">journal</span>';
+      return `<tr data-tx-id="${t.id}" data-is-journal="1">
+        <td></td>
+        <td style="font-size:var(--text-xs);white-space:nowrap;">${formatDate(t.date)}</td>
+        <td><div style="font-weight:500;">${_escapeHtml(jeMerch)}${jeBadge}</div></td>
+        <td style="font-size:var(--text-xs);">${acct}</td>
+        <td style="text-align:right;font-variant-numeric:tabular-nums;color:var(--color-text);">${spent > 0 ? formatNumber(spent) : ""}</td>
+        <td style="text-align:right;font-variant-numeric:tabular-nums;color:var(--color-success);">${received > 0 ? formatNumber(received) : ""}</td>
+        <td><span style="color:var(--color-text-muted);">—</span></td>
+        <td><span style="color:var(--color-text-muted);font-size:var(--text-xs);">—</span></td>
+        <td></td>
+      </tr>`;
+    }
+
     const catName = t.category ? t.category.name : (t.is_transfer ? "Transfer" : "Uncategorized");
     const catClass = t.category ? "" : (t.is_transfer ? "color:var(--color-text-secondary);font-style:italic;" : "color:var(--color-error);");
     const vendorName = t.vendor ? t.vendor.display_name : "";
