@@ -7420,17 +7420,19 @@ async function _txFetchFromJournalEntriesAsTxns(acctRow, params) {
   const dateFrom = params.get("date_from");
   const dateTo = params.get("date_to");
 
-  // Embed the parent journal_entries row so we can filter on company_id +
-  // optional date range and read date/memo for each line.
+  // Step 1 — fetch the cash-side lines on this placeholder's COA. Embed the
+  // parent journal_entries row to filter on company_id + optional date range
+  // and read date/memo for each line.
   const sp = new URLSearchParams();
   sp.append("coa_account_id", `eq.${cashCoa}`);
-  sp.append("select", "id,debit,credit,description,journal_entry:journal_entries!inner(id,date,memo,company_id)");
+  sp.append("select", "id,journal_entry_id,debit,credit,description,journal_entry:journal_entries!inner(id,date,memo,company_id)");
   sp.append("journal_entry.company_id", `eq.${selectedCompanyId}`);
   if (dateFrom) sp.append("journal_entry.date", `gte.${dateFrom}`);
   if (dateTo) sp.append("journal_entry.date", `lte.${dateTo}`);
   sp.append("order", "journal_entry(date).desc");
 
   let lines = [];
+  let contentRange = "";
   try {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/journal_lines?${sp.toString()}`, {
       headers: {
@@ -7445,7 +7447,7 @@ async function _txFetchFromJournalEntriesAsTxns(acctRow, params) {
       return { rows: [], has_more: false };
     }
     lines = await r.json();
-    var contentRange = r.headers.get("content-range") || "";
+    contentRange = r.headers.get("content-range") || "";
   } catch (e) {
     console.warn("[je-as-tx] fetch failed", e);
     return { rows: [], has_more: false };
@@ -7469,6 +7471,65 @@ async function _txFetchFromJournalEntriesAsTxns(acctRow, params) {
     hasMore = lines.length >= limit;
   }
 
+  // Step 2 — fetch sibling lines (the offsetting side of each JE) so each
+  // row can show the COA the cash leg was posted against — that's what the
+  // user thinks of as the "category" for this transaction.
+  const jeIds = [...new Set(lines.map((l) => l.journal_entry_id).filter(Boolean))];
+  const coaByJe = new Map();   // je_id → { code, name } | "Split" sentinel
+  if (jeIds.length) {
+    try {
+      const sibSp = new URLSearchParams();
+      sibSp.append("journal_entry_id", `in.(${jeIds.join(",")})`);
+      sibSp.append("coa_account_id", `neq.${cashCoa}`);
+      sibSp.append("select", "journal_entry_id,coa_account_id,debit,credit");
+      const sr = await fetch(`${SUPABASE_URL}/rest/v1/journal_lines?${sibSp.toString()}`, {
+        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
+      });
+      if (sr.ok) {
+        const sibs = await sr.json();
+        // Group siblings by je. If a JE has multiple distinct COAs on the
+        // non-cash side, mark it "Split"; otherwise pick the lone counter-COA.
+        const byJe = new Map();
+        for (const s of sibs) {
+          const arr = byJe.get(s.journal_entry_id) || [];
+          arr.push(s);
+          byJe.set(s.journal_entry_id, arr);
+        }
+        const coaIds = new Set();
+        for (const [jeId, arr] of byJe) {
+          const distinctCoas = [...new Set(arr.map((x) => x.coa_account_id))];
+          if (distinctCoas.length === 1) {
+            coaByJe.set(jeId, { coa_account_id: distinctCoas[0] });
+            coaIds.add(distinctCoas[0]);
+          } else {
+            coaByJe.set(jeId, { split: true });
+          }
+        }
+        // Resolve COA names in one batched query.
+        if (coaIds.size) {
+          const coaSp = new URLSearchParams();
+          coaSp.append("id", `in.(${[...coaIds].join(",")})`);
+          coaSp.append("select", "id,code,name");
+          const cr = await fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts?${coaSp.toString()}`, {
+            headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
+          });
+          if (cr.ok) {
+            const coaRows = await cr.json();
+            const byId = new Map(coaRows.map((c) => [c.id, c]));
+            for (const [jeId, v] of coaByJe) {
+              if (v.coa_account_id) {
+                const c = byId.get(v.coa_account_id);
+                if (c) coaByJe.set(jeId, { code: c.code, name: c.name });
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[je-as-tx] sibling-COA fetch failed", e);
+    }
+  }
+
   // Bank/asset COA: debit = inflow (Received), credit = outflow (Spent).
   // Renderer convention: amount > 0 = Spent, amount < 0 = Received → so
   // amount = credit - debit.
@@ -7476,6 +7537,10 @@ async function _txFetchFromJournalEntriesAsTxns(acctRow, params) {
     const debit = parseFloat(l.debit) || 0;
     const credit = parseFloat(l.credit) || 0;
     const memo = (l.journal_entry && l.journal_entry.memo) || "";
+    const sib = coaByJe.get(l.journal_entry_id);
+    let coaLabel = null;
+    if (sib && sib.split) coaLabel = "— Split —";
+    else if (sib && sib.name) coaLabel = sib.code ? `${sib.code} ${sib.name}` : sib.name;
     return {
       id: `je:${l.id}`,
       date: (l.journal_entry && l.journal_entry.date) || null,
@@ -7484,7 +7549,7 @@ async function _txFetchFromJournalEntriesAsTxns(acctRow, params) {
       merchant_name: null,
       account: { name: acctRow.name, mask: null },
       vendor: null,
-      category: null,
+      category: coaLabel ? { name: coaLabel } : null,
       category_id: null,
       vendor_id: null,
       is_transfer: false,
@@ -7516,6 +7581,9 @@ function _txRender(txs) {
     if (t.is_journal_row) {
       const jeMerch = t.description || "—";
       const jeBadge = '<span class="badge badge-neutral" style="font-size:var(--text-xxs, 0.625rem);margin-left:6px;">journal</span>';
+      const coaCell = t.category && t.category.name
+        ? `<span style="font-size:var(--text-xs);">${_escapeHtml(t.category.name)}</span>`
+        : '<span style="color:var(--color-text-muted);font-size:var(--text-xs);">—</span>';
       return `<tr data-tx-id="${t.id}" data-is-journal="1">
         <td></td>
         <td style="font-size:var(--text-xs);white-space:nowrap;">${formatDate(t.date, "long")}</td>
@@ -7524,7 +7592,7 @@ function _txRender(txs) {
         <td style="text-align:right;font-variant-numeric:tabular-nums;color:var(--color-text);">${spent > 0 ? formatNumber(spent) : ""}</td>
         <td style="text-align:right;font-variant-numeric:tabular-nums;color:var(--color-success);">${received > 0 ? formatNumber(received) : ""}</td>
         <td><span style="color:var(--color-text-muted);">—</span></td>
-        <td><span style="color:var(--color-text-muted);font-size:var(--text-xs);">—</span></td>
+        <td>${coaCell}</td>
         <td></td>
       </tr>`;
     }
