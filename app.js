@@ -7475,13 +7475,14 @@ async function _txFetchFromJournalEntriesAsTxns(acctRow, params) {
   // row can show the COA the cash leg was posted against — that's what the
   // user thinks of as the "category" for this transaction.
   const jeIds = [...new Set(lines.map((l) => l.journal_entry_id).filter(Boolean))];
-  const coaByJe = new Map();   // je_id → { code, name } | "Split" sentinel
+  const coaByJe = new Map();   // je_id → { code, name } | { split: true }
+  const sibDescByJe = new Map();   // je_id → first non-empty sibling description
   if (jeIds.length) {
     try {
       const sibSp = new URLSearchParams();
       sibSp.append("journal_entry_id", `in.(${jeIds.join(",")})`);
       sibSp.append("coa_account_id", `neq.${cashCoa}`);
-      sibSp.append("select", "journal_entry_id,coa_account_id,debit,credit");
+      sibSp.append("select", "journal_entry_id,coa_account_id,debit,credit,description");
       const sr = await fetch(`${SUPABASE_URL}/rest/v1/journal_lines?${sibSp.toString()}`, {
         headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
       });
@@ -7494,6 +7495,10 @@ async function _txFetchFromJournalEntriesAsTxns(acctRow, params) {
           const arr = byJe.get(s.journal_entry_id) || [];
           arr.push(s);
           byJe.set(s.journal_entry_id, arr);
+          const d = (s.description || "").trim();
+          if (d && !sibDescByJe.has(s.journal_entry_id)) {
+            sibDescByJe.set(s.journal_entry_id, d);
+          }
         }
         const coaIds = new Set();
         for (const [jeId, arr] of byJe) {
@@ -7533,10 +7538,24 @@ async function _txFetchFromJournalEntriesAsTxns(acctRow, params) {
   // Bank/asset COA: debit = inflow (Received), credit = outflow (Spent).
   // Renderer convention: amount > 0 = Spent, amount < 0 = Received → so
   // amount = credit - debit.
+  // Cash-leg descriptions emitted by the GL pipeline are placeholders
+  // ("Cash leg", "Cash out", "Cash in", "Categorize") — never useful to
+  // surface to the user. Prefer the JE memo (QBO transaction note), then
+  // the offsetting line's description, then the cash line as last resort.
+  const isPlaceholderDesc = (s) => /^(cash\s*(leg|in|out)|categorize)$/i.test((s || "").trim());
+
   const rows = lines.map((l) => {
     const debit = parseFloat(l.debit) || 0;
     const credit = parseFloat(l.credit) || 0;
-    const memo = (l.journal_entry && l.journal_entry.memo) || "";
+    const memo = ((l.journal_entry && l.journal_entry.memo) || "").trim();
+    const cashDesc = (l.description || "").trim();
+    const sibDesc = sibDescByJe.get(l.journal_entry_id) || "";
+    const description =
+      memo ||
+      (sibDesc && !isPlaceholderDesc(sibDesc) ? sibDesc : "") ||
+      (!isPlaceholderDesc(cashDesc) ? cashDesc : "") ||
+      cashDesc ||
+      "(journal entry)";
     const sib = coaByJe.get(l.journal_entry_id);
     let coaLabel = null;
     if (sib && sib.split) coaLabel = "— Split —";
@@ -7545,7 +7564,7 @@ async function _txFetchFromJournalEntriesAsTxns(acctRow, params) {
       id: `je:${l.id}`,
       date: (l.journal_entry && l.journal_entry.date) || null,
       amount: credit - debit,
-      description: l.description || memo || "(journal entry)",
+      description,
       merchant_name: null,
       account: { name: acctRow.name, mask: null },
       vendor: null,
