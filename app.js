@@ -1116,22 +1116,29 @@ async function _supaBalanceSheet(companyId, endDate) {
   // for every company. Switching companies onto the GL BS is a per-company
   // call once their opening balances are entered.
 
-  const [coa, accounts, openBills, openInvoices] = await Promise.all([
+  const [coa, accounts, openBills, openInvoices, txnsBs] = await Promise.all([
     fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts?company_id=eq.${companyId}&is_active=eq.true&select=id,code,name,type,subtype,qbo_account_type&order=code`, { headers }).then((r) => r.ok ? r.json() : []),
     fetch(`${SUPABASE_URL}/rest/v1/accounts?company_id=eq.${companyId}&select=id,name,type,subtype,current_balance,coa_account_id`, { headers }).then((r) => r.ok ? r.json() : []),
     fetch(`${SUPABASE_URL}/rest/v1/bills?company_id=eq.${companyId}&status=in.(open,partially_paid,overdue)&date=lte.${asOf}&select=balance`, { headers }).then((r) => r.ok ? r.json() : []),
     fetch(`${SUPABASE_URL}/rest/v1/invoices?company_id=eq.${companyId}&status=in.(sent,partially_paid,overdue)&date=lte.${asOf}&select=balance`, { headers }).then((r) => r.ok ? r.json() : []),
+    // For BS asset/liability/equity COAs that aren't bank-linked, the balance
+    // lives in transactions categorized to them (e.g. Loan from Farm Noodle
+    // gets its balance from JE/bank-txn rows hitting that liability COA).
+    // Pull amount + the COA type so we can roll up in JS without a server JOIN.
+    fetch(`${SUPABASE_URL}/rest/v1/transactions?company_id=eq.${companyId}&date=lte.${asOf}&parent_transaction_id=is.null&category_id=not.is.null&select=amount,category:categories(coa_account_id)&limit=20000`, { headers }).then((r) => r.ok ? r.json() : []),
   ]);
 
   // Per-CoA derived balance: sum of linked bank accounts' current_balance.
   // Bank accounts without a coa_account_id link show up as their own
   // standalone rows below (depository → Asset, loan → Liability).
   const bankByCoa = new Map();
+  const bankLinkedCoas = new Set();
   const unlinkedBankRows = [];
   for (const a of accounts) {
     const bal = parseFloat(a.current_balance || 0);
     if (a.coa_account_id) {
       bankByCoa.set(a.coa_account_id, (bankByCoa.get(a.coa_account_id) || 0) + bal);
+      bankLinkedCoas.add(a.coa_account_id);
     } else if (Math.abs(bal) > 0.005) {
       const isLiability = a.type === "loan";
       unlinkedBankRows.push({
@@ -1141,6 +1148,28 @@ async function _supaBalanceSheet(companyId, endDate) {
       });
     }
   }
+
+  // Roll transactions categorized to non-bank-linked asset/liability/equity
+  // CoAs into the bankByCoa map. Sign rule:
+  //   asset      contribution =  amount   (debit-positive)
+  //   liability  contribution = -amount   (credit-positive)
+  //   equity     contribution = -amount   (credit-positive)
+  // Skip any CoA that already has a bank-account linked to it — those get
+  // their balance from accounts.current_balance and would double-count.
+  // PL CoAs (income/expense) are not balance-sheet — handled by the
+  // Retained Earnings plug at the end.
+  const coaTypeById = new Map(coa.map((c) => [c.id, c.type]));
+  for (const t of (txnsBs || [])) {
+    const coaId = t.category?.coa_account_id;
+    if (!coaId) continue;
+    if (bankLinkedCoas.has(coaId)) continue;
+    const coaType = coaTypeById.get(coaId);
+    if (coaType !== "asset" && coaType !== "liability" && coaType !== "equity") continue;
+    const amt = parseFloat(t.amount || 0);
+    const contribution = coaType === "asset" ? amt : -amt;
+    bankByCoa.set(coaId, (bankByCoa.get(coaId) || 0) + contribution);
+  }
+
   const totalAP = openBills.reduce((s, b) => s + parseFloat(b.balance || 0), 0);
   const totalAR = openInvoices.reduce((s, i) => s + parseFloat(i.balance || 0), 0);
 
