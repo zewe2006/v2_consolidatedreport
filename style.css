@@ -601,6 +601,12 @@ html, body {
   color: var(--color-text);
   font-weight: 700;
 }
+
+/* Drill-down indication on Balance Sheet rows. */
+.bs-row-clickable { cursor: pointer; }
+.bs-row-clickable:hover td { background: var(--color-bg-muted); }
+.bs-cell-clickable { cursor: pointer; color: var(--color-link, #20808D); }
+.bs-cell-clickable:hover { background: var(--color-bg-muted); text-decoration: underline; }
 .by-company-table .total-row td {
   border-top: 2px solid var(--color-border);
   font-weight: 600;

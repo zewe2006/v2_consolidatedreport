@@ -1358,6 +1358,7 @@ async function _supaBalanceSheetByCompany(companyIds, endDate) {
             type: g.type,
             qbo_account_type: r.qbo_account_type || null,
             byCo: {},
+            byCoCoaId: {},
           });
         }
         const slot = rowMap.get(key);
@@ -1365,6 +1366,11 @@ async function _supaBalanceSheetByCompany(companyIds, endDate) {
         if (!slot.code && r.code) slot.code = r.code;
         if (!slot.qbo_account_type && r.qbo_account_type) slot.qbo_account_type = r.qbo_account_type;
         slot.byCo[pc.id] = (slot.byCo[pc.id] || 0) + (parseFloat(r.balance) || 0);
+        // Track this company's CoA id for the row so a cell click can
+        // drill into the right company's register.
+        if (r.id && !String(r.id).startsWith("_") && !String(r.id).startsWith("_qbo:")) {
+          slot.byCoCoaId[pc.id] = r.id;
+        }
         totalsByCompany[pc.id][g.type] = (totalsByCompany[pc.id][g.type] || 0) + (parseFloat(r.balance) || 0);
       }
     }
@@ -1488,10 +1494,16 @@ function _renderSupaBSByCompany(data, wrapperId) {
 
   const renderRow = (r, indentExtra) => {
     const label = r.code ? `${r.code} ${r.name}` : r.name;
+    const labelEsc = _escapeHtml(label).replace(/'/g, "\\'").replace(/"/g, "&quot;");
     let h = `<tr><td style="padding:2px var(--space-2);padding-left:calc(var(--space-5) + ${indentExtra || 0}px);">${_escapeHtml(label)}</td>`;
     for (const co of cos) {
       const v = r.byCo?.[co.id] || 0;
-      h += `<td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${Math.abs(v) > 0.005 ? fmt(v) : "—"}</td>`;
+      const coaId = r.byCoCoaId?.[co.id];
+      const drillable = !!coaId && Math.abs(v) > 0.005;
+      const cellAttrs = drillable
+        ? ` class="bs-cell-clickable" onclick="setSelectedCompany('${co.id}'); drillDownAccount('${labelEsc}','${coaId}')" title="View ${_escapeHtml(co.name).replace(/"/g, '&quot;')} register"`
+        : "";
+      h += `<td${cellAttrs} style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${Math.abs(v) > 0.005 ? fmt(v) : "—"}</td>`;
     }
     h += `<td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;font-weight:600;">${fmt(r.total)}</td>`;
     h += `</tr>`;
@@ -1625,8 +1637,11 @@ function _renderSupaBSReport(data, wrapperId) {
   html += `<thead><tr><th style="text-align:left;padding:var(--space-2);">Account</th><th style="text-align:right;padding:var(--space-2);">Balance</th></tr></thead><tbody>`;
   const renderRow = (r, indentExtra) => {
     const drillable = r.id && !String(r.id).startsWith("_");
-    const labelEsc = _escapeHtml((r.code ? r.code + " " : "") + r.name).replace(/'/g, "\\'");
-    const trAttrs = drillable ? `style="cursor:pointer;" onclick="drillDownAccount('${labelEsc}','${r.id}')" title="View transactions"` : "";
+    const labelEsc = _escapeHtml((r.code ? r.code + " " : "") + r.name).replace(/'/g, "\\'").replace(/"/g, "&quot;");
+    // Hover background makes it obvious which rows are clickable.
+    const trAttrs = drillable
+      ? `class="bs-row-clickable" onclick="drillDownAccount('${labelEsc}','${r.id}')" title="View transactions"`
+      : "";
     const label = r.code ? `${r.code} ${r.name}` : r.name;
     return `<tr ${trAttrs}><td style="padding:2px var(--space-2);padding-left:calc(var(--space-5) + ${indentExtra || 0}px);">${_escapeHtml(label)}</td><td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${fmt(r.balance)}</td></tr>`;
   };
