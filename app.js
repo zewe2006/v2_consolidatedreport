@@ -1099,7 +1099,7 @@ async function _supaBalanceSheet(companyId, endDate) {
   // call once their opening balances are entered.
 
   const [coa, accounts, openBills, openInvoices] = await Promise.all([
-    fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts?company_id=eq.${companyId}&is_active=eq.true&select=id,code,name,type,subtype&order=code`, { headers }).then((r) => r.ok ? r.json() : []),
+    fetch(`${SUPABASE_URL}/rest/v1/chart_of_accounts?company_id=eq.${companyId}&is_active=eq.true&select=id,code,name,type,subtype,qbo_account_type&order=code`, { headers }).then((r) => r.ok ? r.json() : []),
     fetch(`${SUPABASE_URL}/rest/v1/accounts?company_id=eq.${companyId}&select=id,name,type,subtype,current_balance,coa_account_id`, { headers }).then((r) => r.ok ? r.json() : []),
     fetch(`${SUPABASE_URL}/rest/v1/bills?company_id=eq.${companyId}&status=in.(open,partially_paid,overdue)&date=lte.${asOf}&select=balance`, { headers }).then((r) => r.ok ? r.json() : []),
     fetch(`${SUPABASE_URL}/rest/v1/invoices?company_id=eq.${companyId}&status=in.(sent,partially_paid,overdue)&date=lte.${asOf}&select=balance`, { headers }).then((r) => r.ok ? r.json() : []),
@@ -1135,26 +1135,52 @@ async function _supaBalanceSheet(companyId, endDate) {
     const isAR = c.type === "asset" && /receivable/.test(nameLc) && !arAssigned;
     if (isAP) { balance += totalAP; apAssigned = true; }
     if (isAR) { balance += totalAR; arAssigned = true; }
-    return { id: c.id, code: c.code, name: c.name, type: c.type, subtype: c.subtype, balance };
+    return { id: c.id, code: c.code, name: c.name, type: c.type, subtype: c.subtype, qbo_account_type: c.qbo_account_type || null, balance };
   });
 
   // If no Payable/Receivable accounts existed in the CoA, fold the totals
   // into synthetic rows so they still show up.
   if (!apAssigned && totalAP > 0) {
-    accountsWithBalance.push({ id: "_synth_ap", code: "—", name: "Accounts Payable (open bills)", type: "liability", balance: totalAP });
+    accountsWithBalance.push({ id: "_synth_ap", code: "—", name: "Accounts Payable (open bills)", type: "liability", qbo_account_type: "Accounts Payable", balance: totalAP });
   }
   if (!arAssigned && totalAR > 0) {
-    accountsWithBalance.push({ id: "_synth_ar", code: "—", name: "Accounts Receivable (open invoices)", type: "asset", balance: totalAR });
+    accountsWithBalance.push({ id: "_synth_ar", code: "—", name: "Accounts Receivable (open invoices)", type: "asset", qbo_account_type: "Accounts Receivable", balance: totalAR });
   }
   // Fold standalone bank rows (no CoA link) into the same list so they
   // appear under Assets / Liabilities.
   accountsWithBalance.push(...unlinkedBankRows);
 
+  // Sub-group order within each top-level type. Mirrors how QBO orders
+  // its Balance Sheet (current assets first, fixed assets next, etc).
+  // Rows without qbo_account_type fall into a flat "untyped" tail.
+  const QBO_SUBGROUP_ORDER = {
+    asset: ["Bank", "Accounts Receivable", "Other Current Asset", "Fixed Asset", "Other Asset"],
+    liability: ["Accounts Payable", "Credit Card", "Other Current Liability", "Long Term Liability", "Other Liability"],
+    equity: ["Equity"],
+  };
+
   const buildGroup = (label, type) => {
-    const rows = accountsWithBalance.filter((a) => a.type === type && Math.abs(a.balance) > 0.005);
-    rows.sort((a, b) => (a.code || "").localeCompare(b.code || ""));
-    const total = rows.reduce((s, a) => s + a.balance, 0);
-    return { label, type, rows, total };
+    const all = accountsWithBalance.filter((a) => a.type === type && Math.abs(a.balance) > 0.005);
+    all.sort((a, b) => (a.code || "").localeCompare(b.code || ""));
+    const total = all.reduce((s, a) => s + a.balance, 0);
+    const subOrder = QBO_SUBGROUP_ORDER[type] || [];
+    const seen = new Set();
+    const subgroups = [];
+    for (const subtype of subOrder) {
+      const sub = all.filter((a) => a.qbo_account_type === subtype);
+      if (sub.length) {
+        subgroups.push({ label: subtype, rows: sub, total: sub.reduce((s, a) => s + a.balance, 0) });
+        sub.forEach((a) => seen.add(a.id));
+      }
+    }
+    const unrecognized = all.filter((a) => a.qbo_account_type && !seen.has(a.id));
+    if (unrecognized.length) {
+      const otherLabel = "Other " + (type === "asset" ? "Assets" : type === "liability" ? "Liabilities" : "Equity");
+      subgroups.push({ label: otherLabel, rows: unrecognized, total: unrecognized.reduce((s, a) => s + a.balance, 0) });
+      unrecognized.forEach((a) => seen.add(a.id));
+    }
+    const untyped = all.filter((a) => !seen.has(a.id));
+    return { label, type, rows: all, total, subgroups, untyped };
   };
 
   const assets = buildGroup("Assets", "asset");
@@ -1262,18 +1288,27 @@ function _renderSupaBSReport(data, wrapperId) {
   html += `<div style="margin-bottom:var(--space-2);font-weight:600;">Balance Sheet — As of ${data.asOf}</div>`;
   html += `<table class="qbo-report-table" style="width:100%;border-collapse:collapse;">`;
   html += `<thead><tr><th style="text-align:left;padding:var(--space-2);">Account</th><th style="text-align:right;padding:var(--space-2);">Balance</th></tr></thead><tbody>`;
+  const renderRow = (r, indentExtra) => {
+    const drillable = r.id && !String(r.id).startsWith("_");
+    const labelEsc = _escapeHtml((r.code ? r.code + " " : "") + r.name).replace(/'/g, "\\'");
+    const trAttrs = drillable ? `style="cursor:pointer;" onclick="drillDownAccount('${labelEsc}','${r.id}')" title="View transactions"` : "";
+    return `<tr ${trAttrs}><td style="padding:2px var(--space-2);padding-left:calc(var(--space-5) + ${indentExtra || 0}px);">${_escapeHtml(r.code || "—")} ${_escapeHtml(r.name)}</td><td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${fmt(r.balance)}</td></tr>`;
+  };
   for (const g of data.groups) {
     html += `<tr><td colspan="2" style="font-weight:600;padding:var(--space-3) var(--space-2) var(--space-1);border-top:1px solid var(--color-border);">${_escapeHtml(g.label)}</td></tr>`;
     if (!g.rows.length) {
       html += `<tr><td style="padding:0 var(--space-2);color:var(--color-text-muted);">(none)</td><td></td></tr>`;
-    } else {
-      for (const r of g.rows) {
-        // Synthetic plug rows (id starts with "_") aren't real CoA — skip drilldown.
-        const drillable = r.id && !String(r.id).startsWith("_");
-        const labelEsc = _escapeHtml((r.code ? r.code + " " : "") + r.name).replace(/'/g, "\\'");
-        const trAttrs = drillable ? `style="cursor:pointer;" onclick="drillDownAccount('${labelEsc}','${r.id}')" title="View transactions"` : "";
-        html += `<tr ${trAttrs}><td style="padding:2px var(--space-2);padding-left:var(--space-5);">${_escapeHtml(r.code || "—")} ${_escapeHtml(r.name)}</td><td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${fmt(r.balance)}</td></tr>`;
+    } else if (g.subgroups && g.subgroups.length) {
+      // Render each QBO sub-classification as its own indented section
+      // followed by a subtotal. Untyped rows render flat after the subgroups.
+      for (const sg of g.subgroups) {
+        html += `<tr><td colspan="2" style="font-weight:500;padding:var(--space-2) var(--space-2) 2px;padding-left:var(--space-4);color:var(--color-text-secondary);font-size:var(--text-sm);">${_escapeHtml(sg.label)}</td></tr>`;
+        for (const r of sg.rows) html += renderRow(r, 8);
+        html += `<tr><td style="padding:2px var(--space-2);padding-left:var(--space-4);font-style:italic;color:var(--color-text-secondary);">Total ${_escapeHtml(sg.label)}</td><td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;font-style:italic;color:var(--color-text-secondary);">${fmt(sg.total)}</td></tr>`;
       }
+      for (const r of (g.untyped || [])) html += renderRow(r, 0);
+    } else {
+      for (const r of g.rows) html += renderRow(r, 0);
     }
     html += `<tr><td style="padding:var(--space-1) var(--space-2);font-weight:600;border-top:1px dashed var(--color-border);">Total ${_escapeHtml(g.label)}</td><td style="text-align:right;padding:var(--space-1) var(--space-2);font-weight:600;font-variant-numeric:tabular-nums;border-top:1px dashed var(--color-border);">${fmt(g.total)}</td></tr>`;
   }
@@ -10381,6 +10416,14 @@ async function runQboImportConfirm() {
         <button class="btn btn-sm" style="background:var(--color-error);color:white;border:none;margin-left:auto;" onclick="qboImportUndo('${r.placeholder_account_id}','${placeholderLabel.replace(/'/g,"\\'")}','${r.imported}')" type="button">Delete This Import</button>
       </div>`;
     resultEl.style.display = "block";
+
+    // Post-import: tag every newly-created CoA row with the QBO AccountType
+    // it came from (e.g. 'Other Current Liability'), so the Balance Sheet
+    // can sub-group the way QBO does. The Railway endpoint already returns
+    // qbo_type per created account; we just need to write it to Supabase.
+    try { await _qboImportTagAccountTypes(form.dest_manual_company_id, r.created_accounts || []); }
+    catch (e) { console.warn("[QBO import] tagging qbo_account_type failed", e); }
+
     showToast(`Imported ${r.imported.toLocaleString()} transactions`, "success");
     if (typeof loadCompanyList === "function") await loadCompanyList();
   } catch (e) {
@@ -10395,6 +10438,30 @@ async function runQboImportConfirm() {
   }
 }
 
+
+// After a QBO→Manual import, walk the created_accounts list and write
+// each row's QBO AccountType (e.g. 'Other Current Liability') back onto
+// the matching chart_of_accounts row in Supabase. Without this the BS
+// renderer can't sub-group QBO-style. Best-effort: failures are logged
+// but never re-thrown (the import itself already succeeded).
+async function _qboImportTagAccountTypes(destCompanyId, createdAccounts) {
+  if (!destCompanyId || !supabaseAccessToken || !Array.isArray(createdAccounts) || !createdAccounts.length) return;
+  const headers = {
+    "Content-Type": "application/json",
+    apikey: SUPABASE_ANON_KEY,
+    Authorization: `Bearer ${supabaseAccessToken}`,
+    Prefer: "return=minimal",
+  };
+  // Some Railway responses return the field as `qbo_type`, others as
+  // `qbo_account_type`. Accept either.
+  for (const row of createdAccounts) {
+    const qboType = row.qbo_type || row.qbo_account_type;
+    const qboName = row.qbo_name || row.name;
+    if (!qboType || !qboName) continue;
+    const url = `${SUPABASE_URL}/rest/v1/chart_of_accounts?company_id=eq.${destCompanyId}&name=eq.${encodeURIComponent(qboName)}&qbo_account_type=is.null`;
+    await fetch(url, { method: "PATCH", headers, body: JSON.stringify({ qbo_account_type: qboType }) }).catch(() => {});
+  }
+}
 
 // =====================================================================
 //  apiPatch helper (may not exist in older app.js)
