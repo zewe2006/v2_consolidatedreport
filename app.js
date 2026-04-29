@@ -1044,16 +1044,28 @@ async function loadBS() {
     }
     // Non-QBO companies (manual + Plaid) live in Supabase only — Railway's
     // /api/reports/balance-sheet returns nothing for them. Use a direct
-    // Supabase build instead. Single-column "as of <end_date>" — periods,
-    // by-company, prior-year compare are still Railway-only for now.
+    // Supabase build instead. Single-company AND multi-company by-company
+    // are both handled here. Periods + prior-year compare are still
+    // Railway-only.
     const company = _getSelectedCompany();
-    const useSupa = company && (company.source || "qbo") !== "qbo" && supabaseAccessToken && !byCompany;
+    // Determine the manual+Plaid candidate ids for this run.
+    const candidateIds = (() => {
+      if (sel.company_ids && sel.company_ids.length) return sel.company_ids;
+      if (sel.company_id && sel.company_id !== "all") return [sel.company_id];
+      if (selectedCompanyId) return [selectedCompanyId];
+      return (allCompanies || []).filter((c) => (c.source || "qbo") !== "qbo").map((c) => c.id);
+    })();
+    const manualPlaidIds = candidateIds.filter((id) => {
+      const c = (allCompanies || []).find((co) => co.id === id);
+      return c && (c.source || "qbo") !== "qbo";
+    });
+    const useSupa = manualPlaidIds.length > 0 && supabaseAccessToken;
     let data;
-    if (useSupa) {
-      // sel.company_id can be the literal "all" when the on-page picker
-      // has no/all boxes checked. The Supabase builder needs the actual
-      // UUID, so prefer the sidebar's selectedCompanyId.
-      const cid = (sel.company_id && sel.company_id !== "all") ? sel.company_id : selectedCompanyId;
+    if (useSupa && byCompany) {
+      data = await _supaBalanceSheetByCompany(manualPlaidIds, endVal);
+    } else if (useSupa) {
+      // Single-company path
+      const cid = manualPlaidIds[0];
       data = await _supaBalanceSheet(cid, endVal);
     } else {
       data = await apiPost("/api/reports/balance-sheet", {
@@ -1069,7 +1081,9 @@ async function loadBS() {
       });
     }
     currentReportData.bs = data;
-    if (useSupa) {
+    if (useSupa && byCompany) {
+      _renderSupaBSByCompany(data, "bs-table-wrapper");
+    } else if (useSupa) {
       _renderSupaBSReport(data, "bs-table-wrapper");
     } else if (byCompany && data.company_breakdowns) {
       renderByCompanyReport(data, "bs-table-wrapper");
@@ -1203,6 +1217,172 @@ async function _supaBalanceSheet(companyId, endDate) {
     totalEquity: equityFromCoa.total,
     notice: "Derived from Supabase — no double-entry GL data, so balances reflect bank/loan accounts, open A/P, open A/R, and a derived equity plug.",
   };
+}
+
+// Multi-company Balance Sheet: runs _supaBalanceSheet per company in
+// parallel and merges the results into one table with one column per
+// company plus a Total. Rows are matched across companies by (code, name)
+// — each company has its own chart_of_accounts ids so we can't merge by
+// id, but codes/names are stable within an org. Subgroups (QBO sub-class)
+// use whichever company has qbo_account_type set on a row.
+async function _supaBalanceSheetByCompany(companyIds, endDate) {
+  if (!supabaseAccessToken) throw new Error("Supabase session required.");
+  const asOf = endDate || new Date().toISOString().slice(0, 10);
+  const ids = companyIds.filter(Boolean);
+  if (!ids.length) return { asOf, companies: [], rowsByGroup: {}, totals: {} };
+
+  // Run each company's BS in parallel, then merge.
+  const perCompany = await Promise.all(ids.map(async (id) => {
+    const co = (allCompanies || []).find((c) => c.id === id);
+    const data = await _supaBalanceSheet(id, asOf);
+    return { id, name: co?.name || id, data };
+  }));
+
+  // Collect every (code, name, type) row from every company. Key by
+  // `${type}|${code}|${name}` so two companies with the same chart can
+  // line up.
+  const rowMap = new Map(); // key → { code, name, type, qbo_account_type, byCo: {coId: amount} }
+  const groupTypes = ["asset", "liability", "equity"];
+  const totalsByCompany = {}; // {coId: { asset: 0, liability: 0, equity: 0 }}
+  for (const pc of perCompany) {
+    totalsByCompany[pc.id] = { asset: 0, liability: 0, equity: 0 };
+    for (const g of (pc.data.groups || [])) {
+      for (const r of (g.rows || [])) {
+        const key = `${g.type}|${r.code || "—"}|${r.name}`;
+        if (!rowMap.has(key)) {
+          rowMap.set(key, {
+            code: r.code,
+            name: r.name,
+            type: g.type,
+            qbo_account_type: r.qbo_account_type || null,
+            byCo: {},
+          });
+        }
+        const slot = rowMap.get(key);
+        slot.byCo[pc.id] = (slot.byCo[pc.id] || 0) + (parseFloat(r.balance) || 0);
+        if (!slot.qbo_account_type && r.qbo_account_type) {
+          slot.qbo_account_type = r.qbo_account_type;
+        }
+        totalsByCompany[pc.id][g.type] = (totalsByCompany[pc.id][g.type] || 0) + (parseFloat(r.balance) || 0);
+      }
+    }
+  }
+
+  // Compute Total column on each row + per-type group totals across all companies.
+  const allRows = Array.from(rowMap.values()).map((r) => ({
+    ...r,
+    total: Object.values(r.byCo).reduce((s, v) => s + v, 0),
+  }));
+
+  const QBO_SUBGROUP_ORDER = {
+    asset: ["Bank", "Accounts Receivable", "Other Current Asset", "Fixed Asset", "Other Asset"],
+    liability: ["Accounts Payable", "Credit Card", "Other Current Liability", "Long Term Liability", "Other Liability"],
+    equity: ["Equity"],
+  };
+
+  const groups = groupTypes.map((type) => {
+    const rows = allRows.filter((r) => r.type === type && Math.abs(r.total) > 0.005);
+    rows.sort((a, b) => (a.code || "").localeCompare(b.code || ""));
+    const total = rows.reduce((s, r) => s + r.total, 0);
+    // Subgroup by qbo_account_type
+    const subOrder = QBO_SUBGROUP_ORDER[type] || [];
+    const seen = new Set();
+    const subgroups = [];
+    for (const subtype of subOrder) {
+      const sub = rows.filter((r) => r.qbo_account_type === subtype);
+      if (sub.length) {
+        subgroups.push({ label: subtype, rows: sub, total: sub.reduce((s, r) => s + r.total, 0) });
+        sub.forEach((r) => seen.add(r));
+      }
+    }
+    const unrecognized = rows.filter((r) => r.qbo_account_type && !seen.has(r));
+    if (unrecognized.length) {
+      const otherLabel = "Other " + (type === "asset" ? "Assets" : type === "liability" ? "Liabilities" : "Equity");
+      subgroups.push({ label: otherLabel, rows: unrecognized, total: unrecognized.reduce((s, r) => s + r.total, 0) });
+      unrecognized.forEach((r) => seen.add(r));
+    }
+    const untyped = rows.filter((r) => !seen.has(r));
+    return { label: type === "asset" ? "Assets" : type === "liability" ? "Liabilities" : "Equity", type, rows, total, subgroups, untyped };
+  });
+
+  return {
+    asOf,
+    companies: perCompany.map((pc) => ({ id: pc.id, name: pc.name })),
+    groups,
+    totalsByCompany,
+    notice: "By Company · derived from Supabase — bank/loan accounts, open A/P, open A/R, derived equity per company.",
+  };
+}
+
+// Renderer for the multi-company BS. Mirrors _renderSupaBSReport's
+// structure but adds one column per company plus a Total column.
+function _renderSupaBSByCompany(data, wrapperId) {
+  const wrap = document.getElementById(wrapperId);
+  const fmt = (n) => (n < 0 ? `(${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})` : n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  const cos = data.companies || [];
+  const colCount = 2 + cos.length; // Account + per-company + Total
+
+  let html = `<div style="padding:var(--space-3) var(--space-4);background:var(--color-bg-muted);border-radius:var(--radius-md);margin-bottom:var(--space-3);font-size:var(--text-xs);color:var(--color-text-secondary);">${_escapeHtml(data.notice || "")}</div>`;
+  html += `<div style="margin-bottom:var(--space-2);font-weight:600;">Balance Sheet · By Company — As of ${data.asOf}</div>`;
+  html += `<table class="qbo-report-table by-company-table" style="width:100%;border-collapse:collapse;">`;
+  html += `<thead><tr><th style="text-align:left;padding:var(--space-2);">Account</th>`;
+  for (const co of cos) {
+    html += `<th style="text-align:right;padding:var(--space-2);" title="${_escapeHtml(co.name)}">${_escapeHtml(co.name.replace(/^Food Terminal /, "FT ").replace(/^FT Barrett /, "FTB "))}</th>`;
+  }
+  html += `<th style="text-align:right;padding:var(--space-2);font-weight:700;">Total</th>`;
+  html += `</tr></thead><tbody>`;
+
+  const renderRow = (r, indentExtra) => {
+    let h = `<tr><td style="padding:2px var(--space-2);padding-left:calc(var(--space-5) + ${indentExtra || 0}px);">${_escapeHtml(r.code || "—")} ${_escapeHtml(r.name)}</td>`;
+    for (const co of cos) {
+      const v = r.byCo?.[co.id] || 0;
+      h += `<td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${Math.abs(v) > 0.005 ? fmt(v) : "—"}</td>`;
+    }
+    h += `<td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;font-weight:600;">${fmt(r.total)}</td>`;
+    h += `</tr>`;
+    return h;
+  };
+  const subTotalRow = (label, sumByCo, total, indent) => {
+    let h = `<tr><td style="padding:2px var(--space-2);padding-left:calc(var(--space-4) + ${indent || 0}px);font-style:italic;color:var(--color-text-secondary);">Total ${_escapeHtml(label)}</td>`;
+    for (const co of cos) {
+      const v = sumByCo[co.id] || 0;
+      h += `<td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;font-style:italic;color:var(--color-text-secondary);">${Math.abs(v) > 0.005 ? fmt(v) : "—"}</td>`;
+    }
+    h += `<td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;font-style:italic;color:var(--color-text-secondary);">${fmt(total)}</td></tr>`;
+    return h;
+  };
+  const groupTotalRow = (label, sumByCo, total) => {
+    let h = `<tr><td style="padding:var(--space-1) var(--space-2);font-weight:600;border-top:1px dashed var(--color-border);">Total ${_escapeHtml(label)}</td>`;
+    for (const co of cos) {
+      const v = sumByCo[co.id] || 0;
+      h += `<td style="text-align:right;padding:var(--space-1) var(--space-2);font-weight:600;font-variant-numeric:tabular-nums;border-top:1px dashed var(--color-border);">${fmt(v)}</td>`;
+    }
+    h += `<td style="text-align:right;padding:var(--space-1) var(--space-2);font-weight:600;font-variant-numeric:tabular-nums;border-top:1px dashed var(--color-border);">${fmt(total)}</td></tr>`;
+    return h;
+  };
+
+  for (const g of data.groups) {
+    html += `<tr><td colspan="${colCount}" style="font-weight:600;padding:var(--space-3) var(--space-2) var(--space-1);border-top:1px solid var(--color-border);">${_escapeHtml(g.label)}</td></tr>`;
+    if (!g.rows.length) {
+      html += `<tr><td colspan="${colCount}" style="padding:0 var(--space-2);color:var(--color-text-muted);">(none)</td></tr>`;
+    } else if (g.subgroups && g.subgroups.length) {
+      for (const sg of g.subgroups) {
+        html += `<tr><td colspan="${colCount}" style="font-weight:500;padding:var(--space-2) var(--space-2) 2px;padding-left:var(--space-4);color:var(--color-text-secondary);font-size:var(--text-sm);">${_escapeHtml(sg.label)}</td></tr>`;
+        for (const r of sg.rows) html += renderRow(r, 8);
+        const sgByCo = {};
+        for (const co of cos) sgByCo[co.id] = sg.rows.reduce((s, r) => s + (r.byCo?.[co.id] || 0), 0);
+        html += subTotalRow(sg.label, sgByCo, sg.total, 0);
+      }
+      for (const r of (g.untyped || [])) html += renderRow(r, 0);
+    } else {
+      for (const r of g.rows) html += renderRow(r, 0);
+    }
+    const gByCo = {};
+    for (const co of cos) gByCo[co.id] = data.totalsByCompany?.[co.id]?.[g.type] || 0;
+    html += groupTotalRow(g.label, gByCo, g.total);
+  }
+  html += `</tbody></table>`;
+  wrap.innerHTML = html;
 }
 
 // GL-based Balance Sheet: every COA's balance = sum of journal_lines as of
