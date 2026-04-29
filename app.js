@@ -9902,25 +9902,35 @@ async function _supaDashboard(company) {
   const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
   const base = `${SUPABASE_URL}/rest/v1`;
   const cid = company.id;
-  const ytdStart = `${new Date().getFullYear()}-01-01`;
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const ytdStart = `${yyyy}-01-01`;
+  // Pull a full 12-month rolling window so we can compute KPIs for
+  // Last Month + Year-to-Last-Month + YTD AND a 12-bar trend chart in
+  // one round-trip. PostgREST date filters match string lex order on
+  // ISO dates, which is fine.
+  const trendStart = new Date(today.getFullYear(), today.getMonth() - 11, 1);
+  const trendStartStr = `${trendStart.getFullYear()}-${String(trendStart.getMonth() + 1).padStart(2, '0')}-01`;
 
-  const [accounts, coa, ytdTxns, recent, uncatHead] = await Promise.all([
+  const [accounts, coa, txns, recent, uncatHead] = await Promise.all([
     fetch(`${base}/accounts?company_id=eq.${cid}&select=id,name,type,current_balance`, { headers })
       .then((r) => r.ok ? r.json() : []),
-    // Pull whole CoA so we can resolve category_id → CoA type for revenue/expense classification.
     fetch(`${base}/chart_of_accounts?company_id=eq.${cid}&select=id,name,type`, { headers })
       .then((r) => r.ok ? r.json() : []),
-    // YTD transactions, with category embed for the CoA join below.
-    fetch(`${base}/transactions?company_id=eq.${cid}&date=gte.${ytdStart}&is_transfer=eq.false&select=id,date,amount,merchant_name,description,category_id,category:categories(coa_account_id,name)`, { headers })
+    // 12-month window of categorized txns. We slice to YTD / last month /
+    // YTLM in JS.
+    fetch(`${base}/transactions?company_id=eq.${cid}&date=gte.${trendStartStr}&is_transfer=eq.false&parent_transaction_id=is.null&select=id,date,amount,merchant_name,description,category_id,category:categories(coa_account_id,name)&limit=20000`, { headers })
       .then((r) => r.ok ? r.json() : []),
-    // Recent activity (last 10 rows regardless of YTD)
     fetch(`${base}/transactions?company_id=eq.${cid}&order=date.desc&limit=10&select=date,merchant_name,description,amount`, { headers })
       .then((r) => r.ok ? r.json() : []),
-    // Uncategorized count via Range header (no rows fetched — count only).
     fetch(`${base}/transactions?company_id=eq.${cid}&category_id=is.null&is_transfer=eq.false&select=id`, {
       headers: { ...headers, Prefer: "count=exact", Range: "0-0" },
     }),
   ]);
+
+  // Filter the 12-month set down to YTD for the legacy KPIs/top-expenses
+  // logic below.
+  const ytdTxns = txns.filter((t) => t.date >= ytdStart);
 
   // Index CoA by id so each transaction's category → CoA type lookup is O(1).
   const coaById = new Map(coa.map((c) => [c.id, c]));
@@ -9965,6 +9975,42 @@ async function _supaDashboard(company) {
     if (m && m[1] !== "*") uncategorizedCount = parseInt(m[1], 10);
   }
 
+  // Period helpers — Last Month, Year-to-Last-Month
+  const lastMonthDate = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+  const lmYear = lastMonthDate.getFullYear();
+  const lmMonth = lastMonthDate.getMonth(); // 0-indexed
+  const lmStart = `${lmYear}-${String(lmMonth + 1).padStart(2, '0')}-01`;
+  const lmEndDay = new Date(lmYear, lmMonth + 1, 0).getDate();
+  const lmEnd = `${lmYear}-${String(lmMonth + 1).padStart(2, '0')}-${String(lmEndDay).padStart(2, '0')}`;
+  const lmLabel = lastMonthDate.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+
+  const sumPL = (rows) => {
+    let rev = 0, exp = 0;
+    for (const t of rows) {
+      const coaId = t.category?.coa_account_id;
+      const coaRow = coaId ? coaById.get(coaId) : null;
+      const raw = parseFloat(t.amount || 0);
+      if (coaRow?.type === "income") rev += -raw;
+      else if (coaRow?.type === "expense") exp += raw;
+    }
+    return { rev, exp, net: rev - exp };
+  };
+  const lmAgg = sumPL(txns.filter((t) => t.date >= lmStart && t.date <= lmEnd));
+  const ytlmAgg = sumPL(txns.filter((t) => t.date >= ytdStart && t.date <= lmEnd));
+
+  // 12-month trend buckets (oldest → newest), each bucket = one calendar month.
+  const monthBuckets = [];
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
+    const y = d.getFullYear(), m = d.getMonth();
+    const start = `${y}-${String(m + 1).padStart(2, '0')}-01`;
+    const lastDay = new Date(y, m + 1, 0).getDate();
+    const end = `${y}-${String(m + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+    const label = d.toLocaleString('en-US', { month: 'short', year: '2-digit' });
+    const agg = sumPL(txns.filter((t) => t.date >= start && t.date <= end));
+    monthBuckets.push({ key: start.slice(0, 7), label, revenue: agg.rev, expenses: agg.exp });
+  }
+
   return {
     company: { id: cid, name: company.name },
     kpi: {
@@ -9972,11 +10018,18 @@ async function _supaDashboard(company) {
       ytd_revenue: ytdRevenue,
       ytd_expense: ytdExpense,
       ytd_net: ytdRevenue - ytdExpense,
+      last_month_revenue: lmAgg.rev,
+      last_month_expense: lmAgg.exp,
+      last_month_net: lmAgg.net,
+      last_month_label: lmLabel,
+      ytlm_revenue: ytlmAgg.rev,
+      ytlm_expense: ytlmAgg.exp,
+      ytlm_net: ytlmAgg.net,
     },
     uncategorized_count: uncategorizedCount,
     top_expenses: topExpenses,
     recent_transactions: recent,
-    trend_months: [], // Railway-only for now; render handles empty.
+    trend_months: monthBuckets,
   };
 }
 
@@ -9996,21 +10049,43 @@ function _renderPerCompanyDashboard(data) {
   const topExp = data.top_expenses || [];
   const recent = data.recent_transactions || [];
 
+  const lmLabel = k.last_month_label || "Last Month";
   wrap.innerHTML = `
     <div class="card mb-4" style="padding:16px;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
         <h2 style="margin:0;font-size:var(--text-lg);">${_escapeHtml(data.company.name)} · Dashboard</h2>
         <span class="badge badge-neutral">Manual + Plaid</span>
       </div>
+
+      <div style="font-size:var(--text-xs);text-transform:uppercase;color:var(--color-text-secondary);letter-spacing:0.05em;margin-bottom:6px;">${_escapeHtml(lmLabel)} · Last Month</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px;">
+        ${_kpiCard("Revenue", k.last_month_revenue)}
+        ${_kpiCard("Expenses", k.last_month_expense)}
+        ${_kpiCard("Net Income", k.last_month_net, k.last_month_net >= 0 ? "var(--color-success)" : "var(--color-error)")}
         ${_kpiCard("Cash on hand", k.cash_on_hand)}
-        ${_kpiCard("YTD Revenue", k.ytd_revenue)}
-        ${_kpiCard("YTD Expenses", k.ytd_expense)}
-        ${_kpiCard("YTD Net Income", k.ytd_net, k.ytd_net >= 0 ? "var(--color-success)" : "var(--color-error)")}
       </div>
+
+      <div style="font-size:var(--text-xs);text-transform:uppercase;color:var(--color-text-secondary);letter-spacing:0.05em;margin-bottom:6px;">Year to ${_escapeHtml(lmLabel)} · YTLM</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px;">
+        ${_kpiCard("Revenue", k.ytlm_revenue)}
+        ${_kpiCard("Expenses", k.ytlm_expense)}
+        ${_kpiCard("Net Income", k.ytlm_net, k.ytlm_net >= 0 ? "var(--color-success)" : "var(--color-error)")}
+      </div>
+
+      <div style="font-size:var(--text-xs);text-transform:uppercase;color:var(--color-text-secondary);letter-spacing:0.05em;margin-bottom:6px;">Year to Date · YTD</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px;">
+        ${_kpiCard("Revenue", k.ytd_revenue)}
+        ${_kpiCard("Expenses", k.ytd_expense)}
+        ${_kpiCard("Net Income", k.ytd_net, k.ytd_net >= 0 ? "var(--color-success)" : "var(--color-error)")}
+      </div>
+
       ${data.uncategorized_count > 0 ? `<div style="background:oklch(0.95 0.08 60);border-radius:var(--radius-md);padding:10px 14px;margin-bottom:16px;font-size:var(--text-sm);">
         ⚠ <strong>${data.uncategorized_count}</strong> transactions are uncategorized. <a href="#transactions" onclick="navigateTo('transactions');document.getElementById('tx-filter-uncat').checked=true;txReload();return false;">Review now →</a>
       </div>` : ""}
+
+      <h3 style="font-size:var(--text-sm);margin:16px 0 8px;">Revenue & Expenses · 12-month trend</h3>
+      <div style="position:relative;height:240px;margin-bottom:16px;"><canvas id="per-company-trend-chart"></canvas></div>
+
       <div>
         <h3 style="font-size:var(--text-sm);margin-bottom:8px;">Top Expenses YTD</h3>
         ${topExp.length ? topExp.map((t) => `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:var(--text-sm);">
@@ -10034,6 +10109,37 @@ function _renderPerCompanyDashboard(data) {
   Array.from(page.children).forEach((el) => {
     if (el.id !== "per-company-dash-wrap") el.style.display = "none";
   });
+
+  // Render the 12-month trend chart now that the canvas is in the DOM.
+  if (months.length && typeof Chart !== "undefined") {
+    const canvas = document.getElementById("per-company-trend-chart");
+    if (canvas) {
+      const dk = document.documentElement.getAttribute("data-theme") === "dark";
+      const tc = dk ? "#cdccca" : "#28251d";
+      const colors = ["#20808D", "#A84B2F"];
+      if (chartInstances && chartInstances.perCompanyTrend) chartInstances.perCompanyTrend.destroy();
+      const inst = new Chart(canvas, {
+        type: "bar",
+        data: {
+          labels: months.map((m) => m.label),
+          datasets: [
+            { label: "Revenue",  data: months.map((m) => m.revenue),  backgroundColor: colors[0] },
+            { label: "Expenses", data: months.map((m) => m.expenses), backgroundColor: colors[1] },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { position: "top", labels: { color: tc } } },
+          scales: {
+            x: { ticks: { color: tc } },
+            y: { ticks: { color: tc, callback: (v) => "$" + v.toLocaleString() } },
+          },
+        },
+      });
+      if (typeof chartInstances === "object") chartInstances.perCompanyTrend = inst;
+    }
+  }
 }
 
 function _kpiCard(label, value, color) {
