@@ -6691,6 +6691,125 @@ async function _supaPatchRow(table, id, patch) {
   if (!r.ok) throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 200)}`);
 }
 
+// =====================================================================
+//  GL auto-emission (writes journal_entries + journal_lines on each event)
+// =====================================================================
+//
+// When a company has any journal_entries rows, we treat it as "on the
+// GL" and auto-emit a balanced JE for every bill / payment / categorized
+// transaction event. Companies without GL data are no-ops here (legacy
+// path remains untouched). Backfill JEs use source='backfill'; live
+// emissions use source='auto' so the two are distinguishable and a
+// rollback by source value is cheap.
+//
+// Idempotency: each auto-emitted JE has memo = `auto:<kind>:<source_id>`.
+// On re-emit (e.g. txn re-categorized, bill updated), we DELETE prior
+// auto JEs with the same memo before inserting.
+
+const _glCompanyEnabledCache = new Map();
+const _apCoaCache = new Map();
+const _arCoaCache = new Map();
+
+async function _glCompanyEnabled(companyId) {
+  if (!companyId) return false;
+  if (_glCompanyEnabledCache.has(companyId)) return _glCompanyEnabledCache.get(companyId);
+  if (!supabaseAccessToken) return false;
+  try {
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/journal_entries?company_id=eq.${companyId}&select=id&limit=1`,
+      { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` } }
+    );
+    if (!r.ok) return false;
+    const rows = await r.json();
+    const enabled = Array.isArray(rows) && rows.length > 0;
+    _glCompanyEnabledCache.set(companyId, enabled);
+    return enabled;
+  } catch { return false; }
+}
+
+async function _glLookupClearingCoa(companyId, kind /* 'ap' | 'ar' */) {
+  const cache = kind === "ar" ? _arCoaCache : _apCoaCache;
+  if (cache.has(companyId)) return cache.get(companyId);
+  const filter = kind === "ar"
+    ? `type=eq.asset&name=ilike.*receivable*`
+    : `type=eq.liability&name=ilike.*payable*`;
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/chart_of_accounts?company_id=eq.${companyId}&${filter}&select=id&limit=1`,
+    { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` } }
+  );
+  const id = r.ok ? ((await r.json())[0]?.id || null) : null;
+  cache.set(companyId, id);
+  return id;
+}
+
+// Insert (or replace) a JE keyed by memo `auto:<kind>:<sourceId>`.
+// `lines` is an array of {coa_account_id, debit, credit, description}.
+// No-op if the company is not on the GL.
+async function _glEmit(kind, sourceId, dateISO, lines, options) {
+  const companyId = (options && options.company_id) || selectedCompanyId;
+  if (!companyId) return;
+  if (!await _glCompanyEnabled(companyId)) return;
+  if (!Array.isArray(lines) || lines.length === 0) return;
+  // Drop zero-amount lines, validate balance.
+  const cleanLines = lines.filter((l) => (parseFloat(l.debit) || 0) > 0.005 || (parseFloat(l.credit) || 0) > 0.005);
+  if (!cleanLines.length) return;
+  const totalDr = cleanLines.reduce((s, l) => s + (parseFloat(l.debit) || 0), 0);
+  const totalCr = cleanLines.reduce((s, l) => s + (parseFloat(l.credit) || 0), 0);
+  if (Math.abs(totalDr - totalCr) > 0.01) {
+    console.warn("[GL] Refusing unbalanced JE", { kind, sourceId, totalDr, totalCr });
+    return;
+  }
+  const memo = `auto:${kind}:${sourceId}`;
+  const headers = {
+    "Content-Type": "application/json",
+    apikey: SUPABASE_ANON_KEY,
+    Authorization: `Bearer ${supabaseAccessToken}`,
+  };
+  // Idempotency: drop any prior auto JE with the same memo.
+  await fetch(
+    `${SUPABASE_URL}/rest/v1/journal_entries?company_id=eq.${companyId}&memo=eq.${encodeURIComponent(memo)}&source=eq.auto`,
+    { method: "DELETE", headers }
+  ).catch(() => {});
+  const jeRes = await fetch(`${SUPABASE_URL}/rest/v1/journal_entries`, {
+    method: "POST",
+    headers: { ...headers, Prefer: "return=representation" },
+    body: JSON.stringify({ company_id: companyId, date: dateISO, memo, source: "auto" }),
+  });
+  if (!jeRes.ok) {
+    console.warn("[GL] JE insert failed", kind, sourceId, jeRes.status);
+    return;
+  }
+  const [je] = await jeRes.json();
+  const linesPayload = cleanLines.map((l) => ({
+    journal_entry_id: je.id,
+    coa_account_id: l.coa_account_id,
+    debit: parseFloat(l.debit) || 0,
+    credit: parseFloat(l.credit) || 0,
+    description: l.description || null,
+  }));
+  const linesRes = await fetch(`${SUPABASE_URL}/rest/v1/journal_lines`, {
+    method: "POST",
+    headers: { ...headers, Prefer: "return=minimal" },
+    body: JSON.stringify(linesPayload),
+  });
+  if (!linesRes.ok) {
+    console.warn("[GL] Lines insert failed; rolling back JE", kind, sourceId);
+    await fetch(`${SUPABASE_URL}/rest/v1/journal_entries?id=eq.${je.id}`, { method: "DELETE", headers }).catch(() => {});
+  }
+}
+
+async function _glEmitDelete(kind, sourceId, options) {
+  const companyId = (options && options.company_id) || selectedCompanyId;
+  if (!companyId) return;
+  if (!await _glCompanyEnabled(companyId)) return;
+  const memo = `auto:${kind}:${sourceId}`;
+  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+  await fetch(
+    `${SUPABASE_URL}/rest/v1/journal_entries?company_id=eq.${companyId}&memo=eq.${encodeURIComponent(memo)}&source=eq.auto`,
+    { method: "DELETE", headers }
+  ).catch(() => {});
+}
+
 // Translate the Railway PATCH /api/transactions/{id} body shape into the
 // Supabase column shape, then apply it.
 async function _supaTxnPatch(txId, body) {
@@ -6717,6 +6836,60 @@ async function _supaTxnPatch(txId, body) {
   }
   if (!Object.keys(patch).length) return;
   await _supaPatchRow("transactions", txId, patch);
+
+  // GL auto-emission: if this patch changed the category, sync the JE.
+  // No-op for companies not on the GL.
+  const changedCategory =
+    Object.prototype.hasOwnProperty.call(patch, "category_id") ||
+    body.clear_category;
+  if (changedCategory) {
+    try { await _glSyncTxnCategorize(txId); }
+    catch (e) { console.warn("[GL] txn categorize emit failed", e); }
+  }
+}
+
+// Look up the txn's date / amount / account-cash-coa / category-coa, then
+// emit (or delete) the auto JE for it. Called after a categorize patch.
+async function _glSyncTxnCategorize(txId) {
+  if (!selectedCompanyId) return;
+  if (!await _glCompanyEnabled(selectedCompanyId)) return;
+  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+  const txArr = await fetch(
+    `${SUPABASE_URL}/rest/v1/transactions?id=eq.${txId}&select=date,amount,account_id,category_id&limit=1`,
+    { headers }
+  ).then((r) => r.ok ? r.json() : []);
+  const tx = txArr[0];
+  if (!tx) return;
+  if (!tx.category_id) {
+    // Category cleared — drop any existing auto JE for this txn.
+    await _glEmitDelete("txn", txId);
+    return;
+  }
+  const [acctArr, catArr] = await Promise.all([
+    fetch(`${SUPABASE_URL}/rest/v1/accounts?id=eq.${tx.account_id}&select=coa_account_id&limit=1`, { headers }).then((r) => r.ok ? r.json() : []),
+    fetch(`${SUPABASE_URL}/rest/v1/categories?id=eq.${tx.category_id}&select=coa_account_id&limit=1`, { headers }).then((r) => r.ok ? r.json() : []),
+  ]);
+  const cashCoa = acctArr[0]?.coa_account_id;
+  const eventCoa = catArr[0]?.coa_account_id;
+  if (!cashCoa || !eventCoa) {
+    // Missing COA mapping — refuse to emit a partial JE.
+    await _glEmitDelete("txn", txId);
+    return;
+  }
+  const amt = parseFloat(tx.amount);
+  const abs = Math.abs(amt);
+  // Universal rule: amount > 0 = outflow on bank → Dr event, Cr cash.
+  //                 amount < 0 = inflow on bank  → Cr event, Dr cash.
+  const lines = amt > 0
+    ? [
+        { coa_account_id: eventCoa, debit: abs, credit: 0, description: "Categorize" },
+        { coa_account_id: cashCoa,  debit: 0,   credit: abs, description: "Cash leg" },
+      ]
+    : [
+        { coa_account_id: eventCoa, debit: 0,   credit: abs, description: "Categorize" },
+        { coa_account_id: cashCoa,  debit: abs, credit: 0,   description: "Cash leg" },
+      ];
+  await _glEmit("txn", txId, tx.date, lines);
 }
 
 // Pull transactions directly from Supabase. Returns { rows, has_more }.
@@ -7162,6 +7335,34 @@ async function _supaApplyMatch(txId, m) {
     // Non-fatal — the match itself succeeded; categorization just falls back
     // to whatever the txn had before. User can re-categorize manually.
     console.warn("[match] post-categorize failed", e);
+  }
+
+  // 5. GL emit: book the payment as Dr A/P (or A/R), Cr cash (bank-account
+  //    coa). No-op when the company isn't on the GL. The categorize step
+  //    above wrote category_id via _supaPatchRow (not _supaTxnPatch), so it
+  //    does NOT trigger the txn-categorize JE — avoiding double-counting.
+  try {
+    const apOrAr = m.kind === "invoice" ? "ar" : "ap";
+    const clearingCoa = await _glLookupClearingCoa(selectedCompanyId, apOrAr);
+    const acctArr = await fetch(
+      `${SUPABASE_URL}/rest/v1/accounts?id=eq.${tx.account_id}&select=coa_account_id&limit=1`,
+      { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` } }
+    ).then((r) => r.ok ? r.json() : []);
+    const cashCoa = acctArr[0]?.coa_account_id;
+    if (clearingCoa && cashCoa) {
+      const lines = m.kind === "invoice"
+        ? [
+            { coa_account_id: cashCoa,    debit: amount, credit: 0,      description: "Customer payment" },
+            { coa_account_id: clearingCoa, debit: 0,      credit: amount, description: "Clear A/R" },
+          ]
+        : [
+            { coa_account_id: clearingCoa, debit: amount, credit: 0,      description: "Clear A/P" },
+            { coa_account_id: cashCoa,    debit: 0,      credit: amount, description: "Cash out" },
+          ];
+      await _glEmit("payment", payment.id, tx.date, lines);
+    }
+  } catch (e) {
+    console.warn("[GL] payment emit failed", e);
   }
 }
 
@@ -11412,6 +11613,31 @@ async function _docCreateViaSupabase(kind, companyId, body) {
       throw new Error(`Supabase ${linesTable} ${linesRes.status}: ${(await linesRes.text()).slice(0, 300)}`);
     }
   }
+
+  // GL emit: book the bill/invoice creation. No-op for companies not on
+  // the GL. Bills are Dr expense (per line), Cr A/P (total). Invoices flip:
+  // Dr A/R (total), Cr revenue (per line).
+  try {
+    const apOrAr = isInvoice ? "ar" : "ap";
+    const clearingCoa = await _glLookupClearingCoa(companyId, apOrAr);
+    if (clearingCoa && lines.length) {
+      const eventLines = lines
+        .filter((l) => l.coa_account_id && Math.abs(parseFloat(l.amount) || 0) > 0.005)
+        .map((l) => isInvoice
+          ? { coa_account_id: l.coa_account_id, debit: 0, credit: parseFloat(l.amount), description: l.description || null }
+          : { coa_account_id: l.coa_account_id, debit: parseFloat(l.amount), credit: 0, description: l.description || null }
+        );
+      const totalAmount = eventLines.reduce((s, l) => s + (parseFloat(l.debit) || 0) + (parseFloat(l.credit) || 0), 0);
+      const clearingLine = isInvoice
+        ? { coa_account_id: clearingCoa, debit: totalAmount, credit: 0, description: "A/R" }
+        : { coa_account_id: clearingCoa, debit: 0, credit: totalAmount, description: "A/P" };
+      const allLines = isInvoice ? [clearingLine, ...eventLines] : [...eventLines, clearingLine];
+      await _glEmit(isInvoice ? "invoice" : "bill", header.id, headerPayload.date, allLines, { company_id: companyId });
+    }
+  } catch (e) {
+    console.warn("[GL] bill/invoice emit failed", e);
+  }
+
   return header;
 }
 
