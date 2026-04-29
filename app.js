@@ -6733,11 +6733,29 @@ async function _glLookupClearingCoa(companyId, kind /* 'ap' | 'ar' */) {
   const filter = kind === "ar"
     ? `type=eq.asset&name=ilike.*receivable*`
     : `type=eq.liability&name=ilike.*payable*`;
+  // Pull all candidates and prefer subtype='operating' — companies often
+  // have multiple A/P-named rows (a default unsubtyped one + the canonical
+  // operating one). Without this, the lookup picks whichever sorts first
+  // by code, which for FT Barrett is the unsubtyped duplicate (code 2000)
+  // while the backfill historically used the subtyped row (code 2901).
+  // Falls back to "loans payable" exclusion + first match.
   const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/chart_of_accounts?company_id=eq.${companyId}&${filter}&select=id&limit=1`,
+    `${SUPABASE_URL}/rest/v1/chart_of_accounts?company_id=eq.${companyId}&is_active=eq.true&${filter}&select=id,code,name,subtype&order=code`,
     { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` } }
   );
-  const id = r.ok ? ((await r.json())[0]?.id || null) : null;
+  let id = null;
+  if (r.ok) {
+    const rows = await r.json();
+    // Filter out "Loans Payable" / "Accounts/Notes Receivable" sub-types we
+    // don't want to land bill-payments on.
+    const candidates = rows.filter((c) => {
+      const n = (c.name || "").toLowerCase();
+      if (kind === "ap") return /payable/.test(n) && !/loan/.test(n);
+      return /receivable/.test(n) && !/note/.test(n);
+    });
+    const operating = candidates.find((c) => c.subtype === "operating");
+    id = (operating || candidates[0])?.id || null;
+  }
   cache.set(companyId, id);
   return id;
 }
