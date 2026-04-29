@@ -7518,7 +7518,7 @@ function _txRender(txs) {
       const jeBadge = '<span class="badge badge-neutral" style="font-size:var(--text-xxs, 0.625rem);margin-left:6px;">journal</span>';
       return `<tr data-tx-id="${t.id}" data-is-journal="1">
         <td></td>
-        <td style="font-size:var(--text-xs);white-space:nowrap;">${formatDate(t.date)}</td>
+        <td style="font-size:var(--text-xs);white-space:nowrap;">${formatDate(t.date, "long")}</td>
         <td><div style="font-weight:500;">${_escapeHtml(jeMerch)}${jeBadge}</div></td>
         <td style="font-size:var(--text-xs);">${acct}</td>
         <td style="text-align:right;font-variant-numeric:tabular-nums;color:var(--color-text);">${spent > 0 ? formatNumber(spent) : ""}</td>
@@ -7566,7 +7566,7 @@ function _txRender(txs) {
 
     return `<tr data-tx-id="${t.id}" data-is-transfer="${t.is_transfer ? "1" : "0"}" data-has-category="${t.category_id ? "1" : "0"}" data-has-vendor="${t.vendor_id ? "1" : "0"}">
       <td><input type="checkbox" class="tx-row-check" value="${t.id}" onchange="txUpdateBulkBar()"></td>
-      <td style="font-size:var(--text-xs);white-space:nowrap;">${formatDate(t.date)}${t.pending ? ' <span class="badge badge-warning" style="font-size:var(--text-xxs, 0.625rem);">pending</span>' : ""}</td>
+      <td style="font-size:var(--text-xs);white-space:nowrap;">${formatDate(t.date, "long")}${t.pending ? ' <span class="badge badge-warning" style="font-size:var(--text-xxs, 0.625rem);">pending</span>' : ""}</td>
       <td><div style="font-weight:500;">${_escapeHtml(merch)}</div>${descLine}</td>
       <td style="font-size:var(--text-xs);">${acct}</td>
       <td style="text-align:right;font-variant-numeric:tabular-nums;color:var(--color-text);">${spent > 0 ? formatNumber(spent) : ""}</td>
