@@ -8806,7 +8806,7 @@ function _coaRender() {
     <td style="text-align:right;font-variant-numeric:tabular-nums;">${a.ytd_activity != null ? formatCurrency(a.ytd_activity) : '<span style="color:var(--color-text-muted);">—</span>'}</td>
     <td style="text-align:right;white-space:nowrap;">
       <button class="btn btn-sm btn-ghost" onclick="openAccountRegister('${a.id}','${a.name.replace(/'/g, "\\'")}')" title="View and edit all transactions for this account">Register</button>
-      <button class="btn btn-sm btn-ghost" onclick='rowActionsMenu(event, [{label:"Edit", onClick:"openCoaEditModal(\u0027${a.id}\u0027)"}, {label:"Merge into…", onClick:"coaMergeOpen(\u0027${a.id}\u0027)"}, null, {label:"Archive", onClick:"coaArchive(\u0027${a.id}\u0027)", danger:true}])' title="More">⋯</button>
+      <button class="btn btn-sm btn-ghost" onclick='rowActionsMenu(event, [{label:"Edit", onClick:"openCoaEditModal(&#39;${a.id}&#39;)"}, {label:"Merge into…", onClick:"coaMergeOpen(&#39;${a.id}&#39;)"}, null, {label:"Archive", onClick:"coaArchive(&#39;${a.id}&#39;)", danger:true}])' title="More">⋯</button>
     </td>
   </tr>`).join("");
 }
