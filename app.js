@@ -1069,8 +1069,11 @@ async function loadBS() {
       // Consolidated across multiple companies — same mixed-source handling
       data = await _supaBalanceSheetConsolidated(candidateIds, endVal);
     } else if (useSupa) {
-      // Single-company path
-      data = await _supaBalanceSheet(manualPlaidIds[0], endVal);
+      // Single-company path. When the user picks By Month/Quarter/Year,
+      // run a snapshot per period end and project a multi-column shape.
+      data = summarize
+        ? await _supaBalanceSheetMulti(manualPlaidIds[0], startVal, endVal, summarize)
+        : await _supaBalanceSheet(manualPlaidIds[0], endVal);
     } else {
       data = await apiPost("/api/reports/balance-sheet", {
         start_date: startVal,
@@ -1249,6 +1252,132 @@ async function _supaBalanceSheet(companyId, endDate) {
     totalLiabilities: liabilities.total,
     totalEquity: equityFromCoa.total,
     notice: "Derived from Supabase — no double-entry GL data, so balances reflect bank/loan accounts, open A/P, open A/R, and a derived equity plug.",
+  };
+}
+
+// Build the period-end dates that span [start, end] stepped by month / quarter
+// / year. Used by _supaBalanceSheetMulti to know which 'as-of' dates to snap.
+function _bsPeriodEnds(startDate, endDate, summarizeBy) {
+  const sb = (summarizeBy || "").toLowerCase();
+  if (!sb || !startDate || !endDate) return [];
+  const start = new Date(startDate + "T00:00:00");
+  const end = new Date(endDate + "T00:00:00");
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) return [];
+  let cursor;
+  if (sb === "month") cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+  else if (sb === "quarter") cursor = new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3, 1);
+  else cursor = new Date(start.getFullYear(), 0, 1);
+  const out = [];
+  while (cursor <= end) {
+    let periodEnd, key, label;
+    if (sb === "month") {
+      periodEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0);
+      key = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}`;
+      label = cursor.toLocaleString("en-US", { month: "short", year: "numeric" });
+    } else if (sb === "quarter") {
+      const q = Math.floor(cursor.getMonth() / 3);
+      periodEnd = new Date(cursor.getFullYear(), q * 3 + 3, 0);
+      key = `${cursor.getFullYear()}-Q${q + 1}`;
+      label = key;
+    } else {
+      periodEnd = new Date(cursor.getFullYear(), 11, 31);
+      key = String(cursor.getFullYear());
+      label = key;
+    }
+    if (periodEnd > end) periodEnd = end;
+    const iso = `${periodEnd.getFullYear()}-${String(periodEnd.getMonth() + 1).padStart(2, "0")}-${String(periodEnd.getDate()).padStart(2, "0")}`;
+    out.push({ key, label, endDate: iso });
+    if (sb === "month") cursor.setMonth(cursor.getMonth() + 1, 1);
+    else if (sb === "quarter") cursor.setMonth(cursor.getMonth() + 3, 1);
+    else cursor.setFullYear(cursor.getFullYear() + 1, 0, 1);
+  }
+  return out;
+}
+
+// Multi-period Balance Sheet for manual+Plaid companies. Runs
+// _supaBalanceSheet for each period-end date in parallel, then merges the
+// snapshots into a per-row byColumn map plus per-column group / subgroup
+// totals. Single-column when summarizeBy is empty (delegates to _supaBalanceSheet).
+//
+// Caveat: bank rows read accounts.current_balance (today's value), so they
+// repeat across columns. Non-bank rows (loans, A/P, A/R, equity, transaction-
+// derived COAs) honor per-period 'as of' filtering and trend correctly.
+async function _supaBalanceSheetMulti(companyId, startDate, endDate, summarizeBy) {
+  const sb = (summarizeBy || "").toLowerCase();
+  if (!sb) return _supaBalanceSheet(companyId, endDate);
+  const periods = _bsPeriodEnds(startDate, endDate, sb);
+  if (!periods.length) return _supaBalanceSheet(companyId, endDate);
+
+  const snapshots = await Promise.all(periods.map((p) => _supaBalanceSheet(companyId, p.endDate)));
+  const columns = periods.map((p) => ({ key: p.key, label: p.label }));
+  const latest = snapshots[snapshots.length - 1];
+
+  // Per-snapshot row lookup. Synthetic rows (id starts with "_", e.g. "_plug",
+  // "_transfers") use group-label + name as a fallback key.
+  const rowKey = (r, groupLabel) => String(r.id || `${groupLabel}::${r.name}`);
+  const lookups = snapshots.map((snap) => {
+    const m = new Map();
+    for (const g of (snap.groups || [])) {
+      for (const r of (g.rows || [])) m.set(rowKey(r, g.label), r.balance);
+      for (const sg of (g.subgroups || [])) {
+        for (const r of (sg.rows || [])) m.set(rowKey(r, g.label), r.balance);
+      }
+      for (const r of (g.untyped || [])) m.set(rowKey(r, g.label), r.balance);
+    }
+    return m;
+  });
+
+  const projectRow = (r, groupLabel) => {
+    const k = rowKey(r, groupLabel);
+    const byColumn = {};
+    for (let i = 0; i < columns.length; i++) byColumn[columns[i].key] = lookups[i].get(k) || 0;
+    return { ...r, byColumn };
+  };
+
+  const groups = (latest.groups || []).map((g) => {
+    const newG = {
+      label: g.label,
+      total: g.total,
+      totalByColumn: {},
+      rows: (g.rows || []).map((r) => projectRow(r, g.label)),
+      subgroups: (g.subgroups || []).map((sg) => {
+        const newSg = {
+          label: sg.label,
+          total: sg.total,
+          totalByColumn: {},
+          rows: (sg.rows || []).map((r) => projectRow(r, g.label)),
+        };
+        for (const c of columns) newSg.totalByColumn[c.key] = newSg.rows.reduce((s, r) => s + (r.byColumn[c.key] || 0), 0);
+        return newSg;
+      }),
+      untyped: (g.untyped || []).map((r) => projectRow(r, g.label)),
+    };
+    for (const c of columns) {
+      let v = newG.rows.reduce((s, r) => s + (r.byColumn[c.key] || 0), 0);
+      v += newG.untyped.reduce((s, r) => s + (r.byColumn[c.key] || 0), 0);
+      v += newG.subgroups.reduce((s, sg) => s + (sg.totalByColumn[c.key] || 0), 0);
+      newG.totalByColumn[c.key] = v;
+    }
+    return newG;
+  });
+
+  const totalLiabilitiesByColumn = {};
+  const totalEquityByColumn = {};
+  for (const c of columns) {
+    totalLiabilitiesByColumn[c.key] = groups.filter((g) => /liab/i.test(g.label)).reduce((s, g) => s + (g.totalByColumn[c.key] || 0), 0);
+    totalEquityByColumn[c.key] = groups.filter((g) => /equity/i.test(g.label)).reduce((s, g) => s + (g.totalByColumn[c.key] || 0), 0);
+  }
+
+  return {
+    asOf: endDate,
+    companyId,
+    groups,
+    columns,
+    totalLiabilities: latest.totalLiabilities,
+    totalEquity: latest.totalEquity,
+    totalLiabilitiesByColumn,
+    totalEquityByColumn,
+    notice: (latest.notice || "") + " Bank balances reflect today's value across all columns; loans, A/P, A/R, and equity trend correctly per period.",
   };
 }
 
@@ -1631,40 +1760,59 @@ async function _supaBalanceSheetFromGL(companyId, asOf) {
 function _renderSupaBSReport(data, wrapperId) {
   const wrap = document.getElementById(wrapperId);
   const fmt = (n) => (n < 0 ? `(${Math.abs(n).toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2})})` : n.toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2}));
+  // Multi-column when _supaBalanceSheetMulti supplied data.columns. Otherwise
+  // single "Balance" column matches the legacy single-period shape.
+  const cols = (data.columns && data.columns.length) ? data.columns : [{ key: "_balance", label: "Balance" }];
+  const isMulti = cols.length > 1;
+  const totalCols = 1 + cols.length;
+  const valOf = (r, col) => isMulti ? (r.byColumn ? (r.byColumn[col.key] || 0) : 0) : r.balance;
+  const sgTotal = (sg, col) => isMulti ? (sg.totalByColumn ? (sg.totalByColumn[col.key] || 0) : 0) : sg.total;
+  const gTotal  = (g, col)  => isMulti ? (g.totalByColumn  ? (g.totalByColumn[col.key]  || 0) : 0) : g.total;
+  const lePlusE = (col) => isMulti
+    ? ((data.totalLiabilitiesByColumn?.[col.key] || 0) + (data.totalEquityByColumn?.[col.key] || 0))
+    : ((data.totalLiabilities || 0) + (data.totalEquity || 0));
+
   let html = `<div style="padding:var(--space-3) var(--space-4);background:var(--color-bg-muted);border-radius:var(--radius-md);margin-bottom:var(--space-3);font-size:var(--text-xs);color:var(--color-text-secondary);">${_escapeHtml(data.notice || "")}</div>`;
   html += `<div style="margin-bottom:var(--space-2);font-weight:600;">Balance Sheet — As of ${data.asOf}</div>`;
   html += `<table class="qbo-report-table" style="width:100%;border-collapse:collapse;">`;
-  html += `<thead><tr><th style="text-align:left;padding:var(--space-2);">Account</th><th style="text-align:right;padding:var(--space-2);">Balance</th></tr></thead><tbody>`;
+  html += `<thead><tr><th style="text-align:left;padding:var(--space-2);">Account</th>`;
+  for (const c of cols) html += `<th style="text-align:right;padding:var(--space-2);">${_escapeHtml(c.label)}</th>`;
+  html += `</tr></thead><tbody>`;
+
+  const valCells = (cellHtmlForVal) => cols.map(cellHtmlForVal).join("");
+
   const renderRow = (r, indentExtra) => {
     const drillable = r.id && !String(r.id).startsWith("_");
     const labelEsc = _escapeHtml((r.code ? r.code + " " : "") + r.name).replace(/'/g, "\\'").replace(/"/g, "&quot;");
-    // Hover background makes it obvious which rows are clickable.
     const trAttrs = drillable
       ? `class="bs-row-clickable" onclick="drillDownAccount('${labelEsc}','${r.id}')" title="View transactions"`
       : "";
     const label = r.code ? `${r.code} ${r.name}` : r.name;
-    return `<tr ${trAttrs}><td style="padding:2px var(--space-2);padding-left:calc(var(--space-5) + ${indentExtra || 0}px);">${_escapeHtml(label)}</td><td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${fmt(r.balance)}</td></tr>`;
+    const cells = valCells((c) => `<td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${fmt(valOf(r, c))}</td>`);
+    return `<tr ${trAttrs}><td style="padding:2px var(--space-2);padding-left:calc(var(--space-5) + ${indentExtra || 0}px);">${_escapeHtml(label)}</td>${cells}</tr>`;
   };
+
   for (const g of data.groups) {
-    html += `<tr><td colspan="2" style="font-weight:600;padding:var(--space-3) var(--space-2) var(--space-1);border-top:1px solid var(--color-border);">${_escapeHtml(g.label)}</td></tr>`;
+    html += `<tr><td colspan="${totalCols}" style="font-weight:600;padding:var(--space-3) var(--space-2) var(--space-1);border-top:1px solid var(--color-border);">${_escapeHtml(g.label)}</td></tr>`;
     if (!g.rows.length) {
-      html += `<tr><td style="padding:0 var(--space-2);color:var(--color-text-muted);">(none)</td><td></td></tr>`;
+      html += `<tr><td style="padding:0 var(--space-2);color:var(--color-text-muted);">(none)</td>${'<td></td>'.repeat(cols.length)}</tr>`;
     } else if (g.subgroups && g.subgroups.length) {
-      // Render each QBO sub-classification as its own indented section
-      // followed by a subtotal. Untyped rows render flat after the subgroups.
       for (const sg of g.subgroups) {
-        html += `<tr><td colspan="2" style="font-weight:500;padding:var(--space-2) var(--space-2) 2px;padding-left:var(--space-4);color:var(--color-text-secondary);font-size:var(--text-sm);">${_escapeHtml(sg.label)}</td></tr>`;
+        html += `<tr><td colspan="${totalCols}" style="font-weight:500;padding:var(--space-2) var(--space-2) 2px;padding-left:var(--space-4);color:var(--color-text-secondary);font-size:var(--text-sm);">${_escapeHtml(sg.label)}</td></tr>`;
         for (const r of sg.rows) html += renderRow(r, 8);
-        html += `<tr><td style="padding:2px var(--space-2);padding-left:var(--space-4);font-style:italic;color:var(--color-text-secondary);">Total ${_escapeHtml(sg.label)}</td><td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;font-style:italic;color:var(--color-text-secondary);">${fmt(sg.total)}</td></tr>`;
+        const sgCells = valCells((c) => `<td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;font-style:italic;color:var(--color-text-secondary);">${fmt(sgTotal(sg, c))}</td>`);
+        html += `<tr><td style="padding:2px var(--space-2);padding-left:var(--space-4);font-style:italic;color:var(--color-text-secondary);">Total ${_escapeHtml(sg.label)}</td>${sgCells}</tr>`;
       }
       for (const r of (g.untyped || [])) html += renderRow(r, 0);
     } else {
       for (const r of g.rows) html += renderRow(r, 0);
     }
-    html += `<tr><td style="padding:var(--space-1) var(--space-2);font-weight:600;border-top:1px dashed var(--color-border);">Total ${_escapeHtml(g.label)}</td><td style="text-align:right;padding:var(--space-1) var(--space-2);font-weight:600;font-variant-numeric:tabular-nums;border-top:1px dashed var(--color-border);">${fmt(g.total)}</td></tr>`;
+    const gCells = valCells((c) => `<td style="text-align:right;padding:var(--space-1) var(--space-2);font-weight:600;font-variant-numeric:tabular-nums;border-top:1px dashed var(--color-border);">${fmt(gTotal(g, c))}</td>`);
+    html += `<tr><td style="padding:var(--space-1) var(--space-2);font-weight:600;border-top:1px dashed var(--color-border);">Total ${_escapeHtml(g.label)}</td>${gCells}</tr>`;
   }
-  const liabPlusEquity = data.totalLiabilities + data.totalEquity;
-  html += `<tr><td style="padding:var(--space-3) var(--space-2);font-weight:700;border-top:2px solid var(--color-border);">Total Liabilities + Equity</td><td style="text-align:right;padding:var(--space-3) var(--space-2);font-weight:700;font-variant-numeric:tabular-nums;border-top:2px solid var(--color-border);">${fmt(liabPlusEquity)}</td></tr>`;
+
+  const leCells = valCells((c) => `<td style="text-align:right;padding:var(--space-3) var(--space-2);font-weight:700;font-variant-numeric:tabular-nums;border-top:2px solid var(--color-border);">${fmt(lePlusE(c))}</td>`);
+  html += `<tr><td style="padding:var(--space-3) var(--space-2);font-weight:700;border-top:2px solid var(--color-border);">Total Liabilities + Equity</td>${leCells}</tr>`;
   html += `</tbody></table>`;
   wrap.innerHTML = html;
 }
