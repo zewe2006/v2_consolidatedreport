@@ -11937,12 +11937,15 @@ async function _openDocEdit(kind, id) {
   const statusSel = document.getElementById("doc-status");
   statusSel.innerHTML = statuses.map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
 
-  // Load for edit
+  // Load for edit. Manual+Plaid bills/invoices live in Supabase only —
+  // Railway's /api/{bills,invoices}/detail returns 404. Mirror the Detail
+  // modal's branching: source='qbo' → Railway, anything else → _supaDocDetail.
   let doc = null, lines = [];
   if (id) {
-    const endpoint = kind === "invoice" ? `/api/invoices/detail/${id}` : `/api/bills/detail/${id}`;
     try {
-      const r = await apiGet(endpoint);
+      const r = _shouldUseRailway()
+        ? await apiGet(kind === "invoice" ? `/api/invoices/detail/${id}` : `/api/bills/detail/${id}`)
+        : await _supaDocDetail(kind, id);
       doc = kind === "invoice" ? r.invoice : r.bill;
       lines = r.lines || [];
     } catch (e) { showToast("Load failed: " + e.message, "error"); return; }
@@ -12758,7 +12761,7 @@ async function _supaDocDetail(kind, id) {
   const party = doc.party || null;
   delete doc.party;
 
-  const linesSel = "id,description,quantity,unit_price,tax_rate,amount,account:chart_of_accounts(id,code,name)";
+  const linesSel = "id,description,quantity,unit_price,tax_rate,amount,coa_account_id,account:chart_of_accounts(id,code,name)";
   const lines = await fetch(`${base}/${linesTable}?${fkField}=eq.${id}&order=id&select=${encodeURIComponent(linesSel)}`, { headers })
     .then((r) => r.ok ? r.json() : []);
   const linesShaped = lines.map((l) => ({
@@ -12768,6 +12771,7 @@ async function _supaDocDetail(kind, id) {
     unit_price: l.unit_price,
     tax_rate: l.tax_rate,
     amount: l.amount,
+    coa_account_id: l.coa_account_id,
     account_name: l.account ? `${l.account.code ? l.account.code + " " : ""}${l.account.name}` : "",
   }));
 
