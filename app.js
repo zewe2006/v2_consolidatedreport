@@ -6272,7 +6272,7 @@ async function _txLoadAccounts() {
     if (!_txState.items.length && supabaseAccessToken) {
       const [items, accts] = await Promise.all([
         _supaFetch("plaid_items", { select: "id,institution_name,status,last_synced_at,created_at", order: "created_at.desc" }),
-        _supaFetch("accounts",    { select: "id,name,mask,type,subtype,plaid_item_id,current_balance,available_balance" }),
+        _supaFetch("accounts",    { select: "id,name,mask,type,subtype,plaid_item_id,current_balance,available_balance,coa_account_id" }),
       ]);
       if (items) _txState.items = items;
       if (accts) _txState.accounts = accts;
@@ -9703,7 +9703,20 @@ async function baInit() {
   if (!company || company.source !== "manual") { list.innerHTML = '<div style="text-align:center;padding:24px;color:var(--color-text-muted);">Bank accounts only apply to manual + Plaid companies.</div>'; return; }
   document.getElementById("ba-page-title").textContent = `Bank Accounts — ${company.name}`;
   if (!_coaState.accounts.length) {
-    try { const r = await apiGet(`/api/coa/${selectedCompanyId}`); _coaState.accounts = r.accounts || []; } catch (e) {}
+    try {
+      // QBO companies fetch via Railway; manual+Plaid have no Railway data,
+      // so fall through to Supabase if Railway returns nothing.
+      const r = await apiGet(`/api/coa/${selectedCompanyId}`);
+      _coaState.accounts = r.accounts || [];
+    } catch (e) { /* fall through */ }
+    if (!_coaState.accounts.length && supabaseAccessToken) {
+      const rows = await _supaFetch("chart_of_accounts", {
+        select: "id,code,name,type,subtype,is_active,parent_id",
+        filters: [{ k: "is_active", v: "eq.true" }],
+        order: "code",
+      });
+      if (rows) _coaState.accounts = rows;
+    }
   }
   await baReload();
 }
@@ -9716,7 +9729,7 @@ async function baReload() {
     if (!_baState.items.length && supabaseAccessToken) {
       const [items, accts] = await Promise.all([
         _supaFetch("plaid_items", { select: "id,institution_name,status,last_synced_at,created_at", order: "created_at.desc" }),
-        _supaFetch("accounts",    { select: "id,name,mask,type,subtype,plaid_item_id,current_balance,available_balance" }),
+        _supaFetch("accounts",    { select: "id,name,mask,type,subtype,plaid_item_id,current_balance,available_balance,coa_account_id" }),
       ]);
       if (items) _baState.items = items;
       if (accts) _baState.accounts = accts;
