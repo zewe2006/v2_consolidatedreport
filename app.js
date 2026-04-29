@@ -1308,20 +1308,23 @@ async function _supaBalanceSheetByCompany(companyIds, endDate) {
     return { id, name: co?.name || id, data, source: "manual" };
   }));
 
-  // Collect every (code, name, type) row from every company. Key by
-  // `${type}|${code}|${name}` so two companies with the same chart can
-  // line up.
-  const rowMap = new Map(); // key → { code, name, type, qbo_account_type, byCo: {coId: amount} }
+  // Match rows across companies by NORMALIZED NAME within type. QBO returns
+  // accounts without our internal codes (codes are Plaid-side conventions),
+  // so a (type, code, name) key fragments the same account into two rows.
+  // Prefer whichever side has a real code/qbo_account_type when filling the
+  // merged record.
+  const norm = (s) => (s || "").toLowerCase().trim().replace(/\s+/g, " ");
+  const rowMap = new Map();
   const groupTypes = ["asset", "liability", "equity"];
-  const totalsByCompany = {}; // {coId: { asset: 0, liability: 0, equity: 0 }}
+  const totalsByCompany = {};
   for (const pc of perCompany) {
     totalsByCompany[pc.id] = { asset: 0, liability: 0, equity: 0 };
     for (const g of (pc.data.groups || [])) {
       for (const r of (g.rows || [])) {
-        const key = `${g.type}|${r.code || "—"}|${r.name}`;
+        const key = `${g.type}|${norm(r.name)}`;
         if (!rowMap.has(key)) {
           rowMap.set(key, {
-            code: r.code,
+            code: r.code || null,
             name: r.name,
             type: g.type,
             qbo_account_type: r.qbo_account_type || null,
@@ -1329,10 +1332,10 @@ async function _supaBalanceSheetByCompany(companyIds, endDate) {
           });
         }
         const slot = rowMap.get(key);
+        // Prefer whichever side carries the code / sub-class.
+        if (!slot.code && r.code) slot.code = r.code;
+        if (!slot.qbo_account_type && r.qbo_account_type) slot.qbo_account_type = r.qbo_account_type;
         slot.byCo[pc.id] = (slot.byCo[pc.id] || 0) + (parseFloat(r.balance) || 0);
-        if (!slot.qbo_account_type && r.qbo_account_type) {
-          slot.qbo_account_type = r.qbo_account_type;
-        }
         totalsByCompany[pc.id][g.type] = (totalsByCompany[pc.id][g.type] || 0) + (parseFloat(r.balance) || 0);
       }
     }
@@ -1455,7 +1458,8 @@ function _renderSupaBSByCompany(data, wrapperId) {
   html += `</tr></thead><tbody>`;
 
   const renderRow = (r, indentExtra) => {
-    let h = `<tr><td style="padding:2px var(--space-2);padding-left:calc(var(--space-5) + ${indentExtra || 0}px);">${_escapeHtml(r.code || "—")} ${_escapeHtml(r.name)}</td>`;
+    const label = r.code ? `${r.code} ${r.name}` : r.name;
+    let h = `<tr><td style="padding:2px var(--space-2);padding-left:calc(var(--space-5) + ${indentExtra || 0}px);">${_escapeHtml(label)}</td>`;
     for (const co of cos) {
       const v = r.byCo?.[co.id] || 0;
       h += `<td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${Math.abs(v) > 0.005 ? fmt(v) : "—"}</td>`;
@@ -1594,7 +1598,8 @@ function _renderSupaBSReport(data, wrapperId) {
     const drillable = r.id && !String(r.id).startsWith("_");
     const labelEsc = _escapeHtml((r.code ? r.code + " " : "") + r.name).replace(/'/g, "\\'");
     const trAttrs = drillable ? `style="cursor:pointer;" onclick="drillDownAccount('${labelEsc}','${r.id}')" title="View transactions"` : "";
-    return `<tr ${trAttrs}><td style="padding:2px var(--space-2);padding-left:calc(var(--space-5) + ${indentExtra || 0}px);">${_escapeHtml(r.code || "—")} ${_escapeHtml(r.name)}</td><td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${fmt(r.balance)}</td></tr>`;
+    const label = r.code ? `${r.code} ${r.name}` : r.name;
+    return `<tr ${trAttrs}><td style="padding:2px var(--space-2);padding-left:calc(var(--space-5) + ${indentExtra || 0}px);">${_escapeHtml(label)}</td><td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${fmt(r.balance)}</td></tr>`;
   };
   for (const g of data.groups) {
     html += `<tr><td colspan="2" style="font-weight:600;padding:var(--space-3) var(--space-2) var(--space-1);border-top:1px solid var(--color-border);">${_escapeHtml(g.label)}</td></tr>`;
