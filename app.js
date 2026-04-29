@@ -9078,6 +9078,8 @@ async function coaMergeConfirm() {
   if (!_coaMergeSrc) return;
   const targetId = document.getElementById("coa-merge-target")?.value;
   const errEl = document.getElementById("coa-merge-error");
+  const overlay = document.getElementById("coa-merge-modal");
+  const mergeBtn = overlay?.querySelector(".btn-primary");
   if (!targetId) {
     if (errEl) { errEl.textContent = "Pick a target account."; errEl.style.display = "block"; }
     return;
@@ -9086,6 +9088,10 @@ async function coaMergeConfirm() {
     if (errEl) { errEl.textContent = "Sign in required."; errEl.style.display = "block"; }
     return;
   }
+  // Visible busy state — without this, the merge silently does ~700ms of
+  // work and looks frozen.
+  if (mergeBtn) { mergeBtn.disabled = true; mergeBtn.textContent = "Merging…"; }
+  if (errEl) { errEl.style.display = "none"; }
   try {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/merge_coa_accounts`, {
       method: "POST",
@@ -9110,6 +9116,7 @@ async function coaMergeConfirm() {
     coaMergeClose();
     await coaReload();
   } catch (e) {
+    if (mergeBtn) { mergeBtn.disabled = false; mergeBtn.textContent = "Merge"; }
     if (errEl) { errEl.textContent = "Merge failed: " + (e.message || e); errEl.style.display = "block"; }
   }
 }
