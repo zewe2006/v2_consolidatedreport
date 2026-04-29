@@ -1063,10 +1063,12 @@ async function loadBS() {
     let data;
     if (useSupa && byCompany) {
       data = await _supaBalanceSheetByCompany(manualPlaidIds, endVal);
+    } else if (useSupa && manualPlaidIds.length > 1) {
+      // Consolidated across multiple manual+Plaid companies
+      data = await _supaBalanceSheetConsolidated(manualPlaidIds, endVal);
     } else if (useSupa) {
       // Single-company path
-      const cid = manualPlaidIds[0];
-      data = await _supaBalanceSheet(cid, endVal);
+      data = await _supaBalanceSheet(manualPlaidIds[0], endVal);
     } else {
       data = await apiPost("/api/reports/balance-sheet", {
         start_date: startVal,
@@ -1311,6 +1313,58 @@ async function _supaBalanceSheetByCompany(companyIds, endDate) {
     groups,
     totalsByCompany,
     notice: "By Company · derived from Supabase — bank/loan accounts, open A/P, open A/R, derived equity per company.",
+  };
+}
+
+// Consolidated mode: sums multiple manual+Plaid companies' Balance Sheets
+// into one column. Reuses _supaBalanceSheetByCompany under the hood for
+// the row-matching logic, then collapses each row's per-company values
+// into a single `balance` so the existing _renderSupaBSReport renderer
+// can display it unchanged. Adds a derived Retained Earnings plug to
+// balance the consolidated sheet (same way the single-company path does).
+async function _supaBalanceSheetConsolidated(companyIds, endDate) {
+  const multi = await _supaBalanceSheetByCompany(companyIds, endDate);
+  const flatten = (arr) => (arr || []).map((r) => ({
+    id: "_consol:" + r.type + ":" + (r.code || r.name),
+    code: r.code,
+    name: r.name,
+    type: r.type,
+    qbo_account_type: r.qbo_account_type || null,
+    balance: r.total,
+  }));
+  const groups = multi.groups.map((g) => ({
+    label: g.label,
+    type: g.type,
+    rows: flatten(g.rows),
+    total: g.total,
+    subgroups: (g.subgroups || []).map((sg) => ({
+      label: sg.label,
+      rows: flatten(sg.rows),
+      total: sg.total,
+    })),
+    untyped: flatten(g.untyped),
+  }));
+  const totalAssets = groups.find((g) => g.type === "asset")?.total || 0;
+  const totalLiabilities = groups.find((g) => g.type === "liability")?.total || 0;
+  let totalEquity = groups.find((g) => g.type === "equity")?.total || 0;
+  const eq = groups.find((g) => g.type === "equity");
+  const plug = totalAssets - totalLiabilities - totalEquity;
+  if (Math.abs(plug) > 0.005 && eq) {
+    const plugRow = { id: "_plug", code: "—", name: "Retained Earnings (derived)", type: "equity", qbo_account_type: null, balance: plug };
+    eq.rows.push(plugRow);
+    eq.untyped = (eq.untyped || []).concat([plugRow]);
+    eq.total += plug;
+    totalEquity += plug;
+  }
+  const coNames = (multi.companies || []).map((c) => c.name).join(" + ");
+  return {
+    asOf: multi.asOf,
+    companyId: "consolidated",
+    groups,
+    totalAssets,
+    totalLiabilities,
+    totalEquity,
+    notice: `Consolidated across ${multi.companies.length} companies (${coNames}) — derived from Supabase. Bank/loan balances + open A/P + open A/R + a derived equity plug.`,
   };
 }
 
