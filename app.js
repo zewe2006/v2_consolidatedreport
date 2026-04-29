@@ -8806,7 +8806,7 @@ function _coaRender() {
     <td style="text-align:right;font-variant-numeric:tabular-nums;">${a.ytd_activity != null ? formatCurrency(a.ytd_activity) : '<span style="color:var(--color-text-muted);">—</span>'}</td>
     <td style="text-align:right;white-space:nowrap;">
       <button class="btn btn-sm btn-ghost" onclick="openAccountRegister('${a.id}','${a.name.replace(/'/g, "\\'")}')" title="View and edit all transactions for this account">Register</button>
-      <button class="btn btn-sm btn-ghost" onclick='rowActionsMenu(event, [{label:"Edit", onClick:"openCoaEditModal(\u0027${a.id}\u0027)"}, null, {label:"Archive", onClick:"coaArchive(\u0027${a.id}\u0027)", danger:true}])' title="More">⋯</button>
+      <button class="btn btn-sm btn-ghost" onclick='rowActionsMenu(event, [{label:"Edit", onClick:"openCoaEditModal(\u0027${a.id}\u0027)"}, {label:"Merge into…", onClick:"coaMergeOpen(\u0027${a.id}\u0027)"}, null, {label:"Archive", onClick:"coaArchive(\u0027${a.id}\u0027)", danger:true}])' title="More">⋯</button>
     </td>
   </tr>`).join("");
 }
@@ -9011,6 +9011,108 @@ async function coaArchive(id) {
   } catch (e) { showToast("Failed: " + e.message, "error"); }
 }
 
+
+// =====================================================================
+//  CoA MERGE
+// =====================================================================
+// Opens a small modal that lets the user pick a target CoA to merge the
+// source row into. The actual repointing of every FK reference happens
+// server-side via the merge_coa_accounts() RPC; the UI just collects the
+// (source, target) pair and shows the resulting per-table counts.
+
+let _coaMergeSrc = null;
+
+function coaMergeOpen(srcId) {
+  const src = _coaState.accounts.find((a) => a.id === srcId);
+  if (!src) return;
+  _coaMergeSrc = src;
+  // Filter target candidates: active CoAs, same type, not the source.
+  const targets = _coaState.accounts
+    .filter((a) => a.is_active && a.type === src.type && a.id !== srcId)
+    .sort((a, b) => (a.code || "").localeCompare(b.code || ""));
+  const typeColor = { asset: "#10b981", liability: "#ef4444", equity: "#8b5cf6", income: "#3b82f6", expense: "#f59e0b" };
+  // Build an ad-hoc modal so we don't conflict with the existing
+  // coa-edit-modal markup.
+  coaMergeClose();
+  const overlay = document.createElement("div");
+  overlay.id = "coa-merge-modal";
+  overlay.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;";
+  overlay.innerHTML = `
+    <div style="background:var(--color-bg);border-radius:var(--radius-lg);box-shadow:0 12px 40px rgba(0,0,0,0.18);max-width:520px;width:90%;">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--color-border);">
+        <h3 style="margin:0;font-size:var(--text-lg);">Merge account</h3>
+        <button onclick="coaMergeClose()" type="button" style="background:none;border:none;font-size:24px;cursor:pointer;line-height:1;color:var(--color-text-secondary);">&times;</button>
+      </div>
+      <div style="padding:var(--space-4);">
+        <div style="font-size:var(--text-sm);color:var(--color-text-secondary);margin-bottom:8px;">Source (will be deleted)</div>
+        <div style="background:var(--color-bg-muted);padding:10px 12px;border-radius:var(--radius-md);margin-bottom:16px;">
+          <code>${_escapeHtml(src.code || "—")}</code> <strong>${_escapeHtml(src.name)}</strong>
+          <span class="badge" style="margin-left:8px;background:${typeColor[src.type] || "#888"}22;color:${typeColor[src.type] || "#888"};">${src.type}</span>
+        </div>
+        <div style="font-size:var(--text-sm);color:var(--color-text-secondary);margin-bottom:8px;">Target — every reference to source will repoint here</div>
+        <select id="coa-merge-target" style="width:100%;padding:8px;border:1px solid var(--color-border);border-radius:var(--radius-md);background:var(--color-bg);">
+          <option value="">— Select target ${_escapeHtml(src.type)} account —</option>
+          ${targets.map((t) => `<option value="${t.id}">${_escapeHtml(t.code || "—")} ${_escapeHtml(t.name)}</option>`).join("")}
+        </select>
+        ${targets.length === 0 ? '<div style="margin-top:8px;color:var(--color-text-muted);font-size:var(--text-sm);">No other active accounts of this type to merge into.</div>' : ""}
+        <div id="coa-merge-error" style="display:none;color:var(--color-error);font-size:var(--text-sm);margin-top:10px;"></div>
+        <div style="font-size:var(--text-xs);color:var(--color-text-secondary);margin-top:14px;line-height:1.4;">
+          This repoints every reference (transactions, bills, journal entries, etc) from the source to the target, then deletes the source row. Reversing it requires re-creating the source manually.
+        </div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding:var(--space-3) var(--space-4);border-top:1px solid var(--color-border);">
+        <button class="btn btn-secondary" onclick="coaMergeClose()" type="button">Cancel</button>
+        <button class="btn btn-primary" onclick="coaMergeConfirm()" type="button" ${targets.length === 0 ? "disabled" : ""}>Merge</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+function coaMergeClose() {
+  const overlay = document.getElementById("coa-merge-modal");
+  if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+  _coaMergeSrc = null;
+}
+
+async function coaMergeConfirm() {
+  if (!_coaMergeSrc) return;
+  const targetId = document.getElementById("coa-merge-target")?.value;
+  const errEl = document.getElementById("coa-merge-error");
+  if (!targetId) {
+    if (errEl) { errEl.textContent = "Pick a target account."; errEl.style.display = "block"; }
+    return;
+  }
+  if (!supabaseAccessToken) {
+    if (errEl) { errEl.textContent = "Sign in required."; errEl.style.display = "block"; }
+    return;
+  }
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/merge_coa_accounts`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${supabaseAccessToken}`,
+      },
+      body: JSON.stringify({ p_source_id: _coaMergeSrc.id, p_target_id: targetId }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const msg = body?.message || body?.hint || `RPC ${r.status}`;
+      throw new Error(msg);
+    }
+    const counts = body?.updates || {};
+    const total = Object.values(counts).reduce((s, n) => s + (Number(n) || 0), 0);
+    showToast(`Merged ${body.source_name} into ${body.target_name} — ${total} reference${total === 1 ? "" : "s"} updated.`, "success");
+    // Invalidate caches that may have pointed at the deleted CoA.
+    if (typeof _apCoaCache !== "undefined") _apCoaCache.clear?.();
+    if (typeof _arCoaCache !== "undefined") _arCoaCache.clear?.();
+    coaMergeClose();
+    await coaReload();
+  } catch (e) {
+    if (errEl) { errEl.textContent = "Merge failed: " + (e.message || e); errEl.style.display = "block"; }
+  }
+}
 
 // =====================================================================
 //  RULES PAGE
@@ -11680,6 +11782,56 @@ async function docPartyChanged() {
   if (party?.default_account_id) {
     for (const l of _docState.lines) { if (!l.coa_account_id) l.coa_account_id = party.default_account_id; }
     _renderDocLines();
+  }
+  // Copy-from-last-bill prefill: when CREATING a new bill/invoice for a vendor
+  // who already has prior docs, fill the line items from the most recent one
+  // (descriptions + COAs + tax rates only — amounts left blank). Skip if:
+  //   - editing an existing doc
+  //   - loan-statement upload already populated lines
+  //   - user already manually entered any line content
+  //   - no party selected
+  if (party && !_docState.editing && !_docState.loanExtraction && supabaseAccessToken) {
+    const linesAreEmpty = !_docState.lines.length || _docState.lines.every(
+      (l) => !l.description && !l.coa_account_id && !parseFloat(l.unit_price || 0)
+    );
+    if (linesAreEmpty) {
+      try { await _docPrefillFromLastDoc(party.id); }
+      catch (e) { console.warn("[doc] copy-from-last failed", e); }
+    }
+  }
+}
+
+// Pull the most recent bill (or invoice) for a vendor/customer, then fill
+// _docState.lines from its line items with unit_price zeroed. Best-effort —
+// silently does nothing if the request fails or there's no prior doc.
+async function _docPrefillFromLastDoc(partyId) {
+  if (!partyId || !selectedCompanyId || !supabaseAccessToken) return;
+  const isInvoice = _docState.kind === "invoice";
+  const headerTable = isInvoice ? "invoices" : "bills";
+  const linesTable = isInvoice ? "invoice_lines" : "bill_lines";
+  const partyField = isInvoice ? "customer_id" : "vendor_id";
+  const fkField = isInvoice ? "invoice_id" : "bill_id";
+  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+  const url = `${SUPABASE_URL}/rest/v1/${headerTable}?company_id=eq.${selectedCompanyId}&${partyField}=eq.${partyId}&order=date.desc&limit=1&select=id,${linesTable}(line_no,description,quantity,unit_price,tax_rate,coa_account_id)`;
+  const r = await fetch(url, { headers });
+  if (!r.ok) return;
+  const rows = await r.json();
+  const last = rows && rows[0];
+  const priorLines = last && last[linesTable] || [];
+  if (!priorLines.length) return;
+  // Sort by line_no for stability and prefill amounts blank.
+  priorLines.sort((a, b) => (a.line_no || 0) - (b.line_no || 0));
+  _docState.lines = priorLines.map((l) => ({
+    description: l.description || "",
+    quantity: parseFloat(l.quantity) || 1,
+    unit_price: 0,
+    tax_rate: parseFloat(l.tax_rate) || 0,
+    coa_account_id: l.coa_account_id || "",
+  }));
+  _renderDocLines();
+  // Subtle, non-blocking hint that lines came from a previous doc.
+  if (typeof showToast === "function") {
+    showToast(`Lines copied from last ${_docState.kind} — fill in amounts.`, "info");
   }
 }
 
