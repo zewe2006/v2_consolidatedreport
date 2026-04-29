@@ -1394,10 +1394,18 @@ async function _supaBalanceSheetMulti(companyId, startDate, endDate, summarizeBy
       }),
       untyped: (g.untyped || []).map((r) => projectRow(r, g.label)),
     };
+    // Source _supaBalanceSheet sometimes returns BOTH a flat g.rows AND
+    // g.subgroups containing the same rows (the rows array is the un-grouped
+    // view, subgroups is the QBO-typed grouping of the same data). The
+    // renderer iterates subgroups when present and ignores g.rows in that
+    // case — so totals must mirror that: sum subgroups + untyped, otherwise
+    // sum rows + untyped. Without this guard the group total double-counts.
+    const useSubgroups = newG.subgroups.length > 0;
     for (const c of columns) {
-      let v = newG.rows.reduce((s, r) => s + (r.byColumn[c.key] || 0), 0);
+      let v = useSubgroups
+        ? newG.subgroups.reduce((s, sg) => s + (sg.totalByColumn[c.key] || 0), 0)
+        : newG.rows.reduce((s, r) => s + (r.byColumn[c.key] || 0), 0);
       v += newG.untyped.reduce((s, r) => s + (r.byColumn[c.key] || 0), 0);
-      v += newG.subgroups.reduce((s, sg) => s + (sg.totalByColumn[c.key] || 0), 0);
       newG.totalByColumn[c.key] = v;
     }
     return newG;
