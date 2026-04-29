@@ -12020,7 +12020,20 @@ async function docSave() {
   try {
     const base = kind === "invoice" ? "/api/invoices" : "/api/bills";
     if (_docState.editing) {
-      await apiPatch(`${base}/${_docState.editing}`, body);
+      // Manual+Plaid bills/invoices live in Supabase only — Railway PATCH
+      // 404s for them. Try Supabase first when we have a session; fall back
+      // to Railway for QBO companies.
+      let updated = false;
+      if (supabaseAccessToken && selectedCompanyId) {
+        const co = (allCompanies || []).find((c) => c.id === selectedCompanyId);
+        if (co && (co.source || "qbo") !== "qbo") {
+          await _docUpdateViaSupabase(kind, _docState.editing, body);
+          updated = true;
+        }
+      }
+      if (!updated) {
+        await apiPatch(`${base}/${_docState.editing}`, body);
+      }
     } else {
       // Railway's POST /api/{bills,invoices}/<id> hits a {bills,invoices}_company_id_fkey
       // violation for manual+Plaid companies whose data lives in Supabase.
@@ -12179,6 +12192,106 @@ async function _docCreateViaSupabase(kind, companyId, body) {
   }
 
   return header;
+}
+
+// Supabase-side update for an existing bill/invoice. Mirrors
+// _docCreateViaSupabase: PATCH the header, replace bill_lines/invoice_lines
+// (delete old + insert new) so a line removal/edit doesn't leave orphans,
+// and re-emit the auto JE so the GL stays in sync. Used for manual+Plaid
+// companies where Railway PATCH 404s.
+async function _docUpdateViaSupabase(kind, docId, body) {
+  const isInvoice = kind === "invoice";
+  const headerTable = isInvoice ? "invoices" : "bills";
+  const linesTable = isInvoice ? "invoice_lines" : "bill_lines";
+  const fkField = isInvoice ? "invoice_id" : "bill_id";
+
+  const supaHeaders = {
+    "Content-Type": "application/json",
+    apikey: SUPABASE_ANON_KEY,
+    Authorization: `Bearer ${supabaseAccessToken}`,
+  };
+
+  const lines = (body.lines || []).map((l, i) => {
+    const qty = parseFloat(l.quantity) || 0;
+    const price = parseFloat(l.unit_price) || 0;
+    const tax_rate = parseFloat(l.tax_rate) || 0;
+    const amount = qty * price;
+    const tax_amount = amount * tax_rate;
+    return {
+      line_no: i + 1,
+      description: l.description || null,
+      quantity: qty,
+      unit_price: price,
+      amount,
+      tax_rate,
+      tax_amount,
+      coa_account_id: l.coa_account_id || null,
+    };
+  });
+  const subtotal = lines.reduce((s, l) => s + l.amount, 0);
+  const tax_total = lines.reduce((s, l) => s + l.tax_amount, 0);
+  const total = subtotal + tax_total;
+  const status = body.status || (isInvoice ? "draft" : "open");
+  const balance = (status === "paid") ? 0 : total;
+
+  // 1. Patch the header row
+  const headerPayload = {
+    number: body.number || (isInvoice ? "" : null),
+    date: body.date,
+    due_date: body.due_date || null,
+    status,
+    memo: body.memo || null,
+    subtotal, tax_total, total, balance,
+  };
+  if (isInvoice) {
+    if (body.customer_id) headerPayload.customer_id = body.customer_id;
+  } else {
+    if (body.vendor_id) headerPayload.vendor_id = body.vendor_id;
+  }
+  const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/${headerTable}?id=eq.${docId}`, {
+    method: "PATCH",
+    headers: { ...supaHeaders, Prefer: "return=minimal" },
+    body: JSON.stringify(headerPayload),
+  });
+  if (!patchRes.ok) throw new Error(`Supabase ${headerTable} ${patchRes.status}: ${(await patchRes.text()).slice(0, 300)}`);
+
+  // 2. Replace lines: delete old, insert new
+  await fetch(`${SUPABASE_URL}/rest/v1/${linesTable}?${fkField}=eq.${docId}`, {
+    method: "DELETE",
+    headers: { ...supaHeaders, Prefer: "return=minimal" },
+  }).catch(() => {});
+  if (lines.length) {
+    const linesRes = await fetch(`${SUPABASE_URL}/rest/v1/${linesTable}`, {
+      method: "POST",
+      headers: { ...supaHeaders, Prefer: "return=minimal" },
+      body: JSON.stringify(lines.map((l) => ({ ...l, [fkField]: docId }))),
+    });
+    if (!linesRes.ok) throw new Error(`Supabase ${linesTable} ${linesRes.status}: ${(await linesRes.text()).slice(0, 300)}`);
+  }
+
+  // 3. Re-emit the auto JE (idempotent — same memo replaces the old JE)
+  try {
+    const apOrAr = isInvoice ? "ar" : "ap";
+    const clearingCoa = await _glLookupClearingCoa(selectedCompanyId, apOrAr);
+    if (clearingCoa && lines.length) {
+      const eventLines = lines
+        .filter((l) => l.coa_account_id && Math.abs(parseFloat(l.amount) || 0) > 0.005)
+        .map((l) => isInvoice
+          ? { coa_account_id: l.coa_account_id, debit: 0, credit: parseFloat(l.amount), description: l.description || null }
+          : { coa_account_id: l.coa_account_id, debit: parseFloat(l.amount), credit: 0, description: l.description || null }
+        );
+      const eventTotal = eventLines.reduce((s, l) => s + (parseFloat(l.debit) || 0) + (parseFloat(l.credit) || 0), 0);
+      const clearingLine = isInvoice
+        ? { coa_account_id: clearingCoa, debit: eventTotal, credit: 0, description: "A/R" }
+        : { coa_account_id: clearingCoa, debit: 0, credit: eventTotal, description: "A/P" };
+      const allLines = isInvoice ? [clearingLine, ...eventLines] : [...eventLines, clearingLine];
+      await _glEmit(isInvoice ? "invoice" : "bill", docId, body.date, allLines, { company_id: selectedCompanyId });
+    }
+  } catch (e) {
+    console.warn("[GL] bill/invoice update emit failed", e);
+  }
+
+  return { id: docId };
 }
 
 // After saving a loan bill, persist the vendor → CoA mapping for next time.
