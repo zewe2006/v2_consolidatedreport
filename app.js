@@ -1062,10 +1062,12 @@ async function loadBS() {
     const useSupa = manualPlaidIds.length > 0 && supabaseAccessToken;
     let data;
     if (useSupa && byCompany) {
-      data = await _supaBalanceSheetByCompany(manualPlaidIds, endVal);
-    } else if (useSupa && manualPlaidIds.length > 1) {
-      // Consolidated across multiple manual+Plaid companies
-      data = await _supaBalanceSheetConsolidated(manualPlaidIds, endVal);
+      // Use ALL selected companies (mixed sources). The aggregator pulls
+      // QBO ones via Railway and manual+Plaid via Supabase.
+      data = await _supaBalanceSheetByCompany(candidateIds, endVal);
+    } else if (useSupa && candidateIds.length > 1) {
+      // Consolidated across multiple companies — same mixed-source handling
+      data = await _supaBalanceSheetConsolidated(candidateIds, endVal);
     } else if (useSupa) {
       // Single-company path
       data = await _supaBalanceSheet(manualPlaidIds[0], endVal);
@@ -1221,23 +1223,89 @@ async function _supaBalanceSheet(companyId, endDate) {
   };
 }
 
-// Multi-company Balance Sheet: runs _supaBalanceSheet per company in
-// parallel and merges the results into one table with one column per
-// company plus a Total. Rows are matched across companies by (code, name)
-// — each company has its own chart_of_accounts ids so we can't merge by
-// id, but codes/names are stable within an org. Subgroups (QBO sub-class)
-// use whichever company has qbo_account_type set on a row.
+// Fetch a QBO company's Balance Sheet via Railway and flatten the nested
+// QBO Rows.Row tree into [{type, name, balance}]. Used to mix a QBO company
+// into the Supabase by-company / consolidated views. Times out fast (6s)
+// because Railway has been unreliable for some QBO companies and we don't
+// want one slow QBO call to hang the whole report — on failure returns []
+// and the company shows as empty in its column.
+async function _railwayBSFlatRows(qboCompanyId, endDate, accountingMethod) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 6000);
+  try {
+    const r = await fetch(`${API}/api/reports/balance-sheet`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` },
+      body: JSON.stringify({ end_date: endDate, accounting_method: accountingMethod || "Cash", company_id: qboCompanyId }),
+      signal: ctrl.signal,
+    });
+    if (!r.ok) return [];
+    const data = await r.json();
+    const flat = [];
+    const walk = (rows, parentType) => {
+      const list = (rows && (rows.Row || rows.row)) || [];
+      for (const row of list) {
+        // Detect type from the Header label of a group row
+        let nextType = parentType;
+        const headerName = (row.Header?.ColData?.[0]?.value || row.group || "").toLowerCase();
+        if (headerName.includes("asset")) nextType = "asset";
+        else if (headerName.includes("liabilit")) nextType = "liability";
+        else if (headerName.includes("equity")) nextType = "equity";
+        // Leaf row (account)
+        if (row.ColData && row.ColData.length >= 2 && (parentType || nextType)) {
+          const name = row.ColData[0]?.value || "";
+          const bal = parseFloat(row.ColData[1]?.value || "0") || 0;
+          if (name) flat.push({ name, code: null, type: nextType || parentType, balance: bal });
+        }
+        // Recurse into nested rows
+        if (row.Rows) walk(row.Rows, nextType);
+      }
+    };
+    walk(data.current?.Rows || data.current?.rows || {}, null);
+    return flat;
+  } catch (e) {
+    console.warn(`[BS] Railway BS fetch failed for ${qboCompanyId}: ${e?.message || e}`);
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Convert a flat list of {type, name, balance} rows (from Railway) into a
+// _supaBalanceSheet-shaped response so the merger downstream can treat
+// QBO companies the same as Supabase ones.
+function _railwayBSFlatToGroupedShape(flatRows, asOf) {
+  const groups = ["asset", "liability", "equity"].map((type) => {
+    const rows = flatRows
+      .filter((r) => r.type === type && Math.abs(r.balance) > 0.005)
+      .map((r) => ({ id: "_qbo:" + type + ":" + r.name, code: null, name: r.name, type, qbo_account_type: null, balance: r.balance }));
+    rows.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    const total = rows.reduce((s, r) => s + r.balance, 0);
+    return { label: type === "asset" ? "Assets" : type === "liability" ? "Liabilities" : "Equity", type, rows, total, subgroups: [], untyped: rows };
+  });
+  return { asOf, groups, totalAssets: groups[0].total, totalLiabilities: groups[1].total, totalEquity: groups[2].total };
+}
+
+// Multi-company Balance Sheet: runs each company's BS in parallel
+// (Supabase for manual+Plaid, Railway for QBO) and merges into one
+// table with one column per company plus a Total. Rows are matched
+// across companies by (type, code, name).
 async function _supaBalanceSheetByCompany(companyIds, endDate) {
   if (!supabaseAccessToken) throw new Error("Supabase session required.");
   const asOf = endDate || new Date().toISOString().slice(0, 10);
   const ids = companyIds.filter(Boolean);
   if (!ids.length) return { asOf, companies: [], rowsByGroup: {}, totals: {} };
 
-  // Run each company's BS in parallel, then merge.
+  // Run each company's BS in parallel, dispatching by source.
   const perCompany = await Promise.all(ids.map(async (id) => {
     const co = (allCompanies || []).find((c) => c.id === id);
+    const isQbo = co && (co.source || "qbo") === "qbo";
+    if (isQbo) {
+      const flat = await _railwayBSFlatRows(id, asOf, "Cash");
+      return { id, name: co?.name || id, data: _railwayBSFlatToGroupedShape(flat, asOf), source: "qbo" };
+    }
     const data = await _supaBalanceSheet(id, asOf);
-    return { id, name: co?.name || id, data };
+    return { id, name: co?.name || id, data, source: "manual" };
   }));
 
   // Collect every (code, name, type) row from every company. Key by
