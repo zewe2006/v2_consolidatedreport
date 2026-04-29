@@ -1111,7 +1111,11 @@ async function loadBS() {
 // open bills, A/R from open invoices, equity is a single derived plug.
 // Period activity (P&L / CF) is intentionally not folded in here — that
 // would need a Supabase-side P&L which lives in a separate function.
-async function _supaBalanceSheet(companyId, endDate) {
+//
+// options.bankBalanceOverrides: optional Map<account_id, balanceAsOf> letting
+// the multi-column caller walk bank balances back per period. When present,
+// each bank account's balance is read from the map instead of current_balance.
+async function _supaBalanceSheet(companyId, endDate, options) {
   if (!supabaseAccessToken) throw new Error("Supabase session required.");
   const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
   const asOf = endDate || new Date().toISOString().slice(0, 10);
@@ -1141,8 +1145,11 @@ async function _supaBalanceSheet(companyId, endDate) {
   const bankByCoa = new Map();
   const bankLinkedCoas = new Set();
   const unlinkedBankRows = [];
+  const bankOverrides = (options && options.bankBalanceOverrides) || null;
   for (const a of accounts) {
-    const bal = parseFloat(a.current_balance || 0);
+    const bal = bankOverrides && bankOverrides.has(a.id)
+      ? parseFloat(bankOverrides.get(a.id) || 0)
+      : parseFloat(a.current_balance || 0);
     if (a.coa_account_id) {
       bankByCoa.set(a.coa_account_id, (bankByCoa.get(a.coa_account_id) || 0) + bal);
       bankLinkedCoas.add(a.coa_account_id);
@@ -1312,7 +1319,38 @@ async function _supaBalanceSheetMulti(companyId, startDate, endDate, summarizeBy
   const periods = _bsPeriodEnds(startDate, endDate, sb);
   if (!periods.length) return _supaBalanceSheet(companyId, endDate);
 
-  const snapshots = await Promise.all(periods.map((p) => _supaBalanceSheet(companyId, p.endDate)));
+  // Pre-fetch bank accounts + all their transactions so we can walk balances
+  // back per period — same logic the Account Register uses. Without this, every
+  // column repeats today's accounts.current_balance and the BS reads as flat.
+  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+  const [bankAccounts, bankTxns] = await Promise.all([
+    fetch(`${SUPABASE_URL}/rest/v1/accounts?company_id=eq.${companyId}&select=id,type,current_balance`, { headers }).then((r) => r.ok ? r.json() : []),
+    fetch(`${SUPABASE_URL}/rest/v1/transactions?company_id=eq.${companyId}&parent_transaction_id=is.null&select=date,amount,account_id&limit=50000`, { headers }).then((r) => r.ok ? r.json() : []),
+  ]);
+  // Plaid sign convention: amount > 0 = outflow that LOWERED a depository
+  // current_balance; for credit/loan accounts the same +amount RAISED the
+  // owed-balance. Walking back from current_balance therefore ADDS the
+  // future activity for depository and SUBTRACTS it for credit/loan.
+  const overridesPerPeriod = periods.map((p) => {
+    const asOf = p.endDate;
+    const m = new Map();
+    for (const a of bankAccounts) m.set(a.id, parseFloat(a.current_balance || 0));
+    const signByType = new Map(bankAccounts.map((a) => {
+      const t = (a.type || "").toLowerCase();
+      return [a.id, (t === "credit" || t === "loan") ? -1 : 1];
+    }));
+    for (const t of bankTxns) {
+      if (!t.account_id || !(t.date > asOf)) continue;
+      const sign = signByType.get(t.account_id);
+      if (sign == null) continue;
+      m.set(t.account_id, (m.get(t.account_id) || 0) + sign * parseFloat(t.amount || 0));
+    }
+    return m;
+  });
+
+  const snapshots = await Promise.all(periods.map((p, i) =>
+    _supaBalanceSheet(companyId, p.endDate, { bankBalanceOverrides: overridesPerPeriod[i] })
+  ));
   const columns = periods.map((p) => ({ key: p.key, label: p.label }));
   const latest = snapshots[snapshots.length - 1];
 
@@ -1381,7 +1419,7 @@ async function _supaBalanceSheetMulti(companyId, startDate, endDate, summarizeBy
     totalEquity: latest.totalEquity,
     totalLiabilitiesByColumn,
     totalEquityByColumn,
-    notice: (latest.notice || "") + " Bank balances reflect today's value across all columns; loans, A/P, A/R, and equity trend correctly per period.",
+    notice: latest.notice || "",
   };
 }
 
