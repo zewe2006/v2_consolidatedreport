@@ -633,7 +633,7 @@ function initDefaultDates() {
   const today = `${y}-${m}-${d}`;
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
   set("pl-start-date", first); set("pl-end-date", today);
-  set("bs-end-date", today);
+  set("bs-start-date", `${y}-01-01`); set("bs-end-date", today);
   set("cf-start-date", first); set("cf-end-date", today);
   set("ic-date", today);
 }
@@ -1033,12 +1033,16 @@ async function loadBS() {
     const viewEl = document.getElementById("bs-view-mode");
     const byCompany = viewEl ? viewEl.value === "by_company" : false;
     const summarize = (document.getElementById("bs-summarize")?.value || "") || null;
-    const endVal = document.getElementById("bs-end-date").value || null;
+    let endVal = document.getElementById("bs-end-date").value || null;
     // When user picks By Month/Quarter/Year, QBO needs a start_date to know
     // where to begin the first column. Default to start of same calendar year
-    // as the end date. User can still override by entering bs-start-date
-    // (if that input exists on the page).
+    // as the end date. User can still override by entering bs-start-date.
     let startVal = document.getElementById("bs-start-date")?.value || null;
+    // Multi-column mode requires both start AND end dates. If the user picked
+    // a Quick Range macro that cleared the date inputs, or simply left them
+    // empty, fill in sensible defaults so multi-column doesn't silently fall
+    // back to a single-column "as of today" report.
+    if (summarize && !endVal) endVal = new Date().toISOString().slice(0, 10);
     if (summarize && endVal && !startVal) {
       startVal = endVal.slice(0, 4) + "-01-01";
     }

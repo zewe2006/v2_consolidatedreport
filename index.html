@@ -460,8 +460,12 @@
           </div>
         </div>
         <div class="filter-group">
+          <label>From</label>
+          <input type="date" id="bs-start-date" onchange="_autoRunReport('bs')">
+        </div>
+        <div class="filter-group">
           <label>As of Date</label>
-          <input type="date" id="bs-end-date">
+          <input type="date" id="bs-end-date" onchange="_autoRunReport('bs')">
         </div>
         <div class="filter-group">
           <label>Quick Range</label>
@@ -2730,6 +2734,6 @@
   </div>
 </div>
 
-<script src="./app.js?v=20260429f"></script>
+<script src="./app.js?v=20260429g"></script>
 </body>
 </html>
