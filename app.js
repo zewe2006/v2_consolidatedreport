@@ -2279,14 +2279,26 @@ async function _supaProfitLossByCompany(companyIds, startDate, endDate) {
   const norm = (s) => (s || "").toLowerCase().trim().replace(/\s+/g, " ");
   const rowMap = new Map();
   const totalsByCompany = {}; // companyId -> { income, expense }
+  // _supaProfitLoss returns groups with `label` but no `type`. _railwayPLFlatToGroupedShape
+  // sets `type`. Derive consistently from row.type or the group label.
+  const groupType = (g) => {
+    if (g && g.type) return g.type;
+    const lbl = (g && g.label || "").toLowerCase();
+    if (lbl === "income" || lbl === "revenue") return "income";
+    if (lbl === "expense") return "expense";
+    return null;
+  };
   for (const pc of perCompany) {
     totalsByCompany[pc.id] = { income: 0, expense: 0 };
     for (const g of (pc.data.groups || [])) {
+      const gt = groupType(g);
       for (const r of (g.rows || [])) {
-        const key = `${g.type}|${norm(r.name)}`;
+        const t = r.type || gt;
+        if (!t) continue;
+        const key = `${t}|${norm(r.name)}`;
         if (!rowMap.has(key)) {
           rowMap.set(key, {
-            code: r.code || null, name: r.name, type: g.type,
+            code: r.code || null, name: r.name, type: t,
             byCo: {}, byCoCoaId: {},
           });
         }
@@ -2294,7 +2306,7 @@ async function _supaProfitLossByCompany(companyIds, startDate, endDate) {
         const v = parseFloat(r.balance) || 0;
         slot.byCo[pc.id] = (slot.byCo[pc.id] || 0) + v;
         if (r.id && !String(r.id).startsWith("_")) slot.byCoCoaId[pc.id] = r.id;
-        totalsByCompany[pc.id][g.type] = (totalsByCompany[pc.id][g.type] || 0) + v;
+        totalsByCompany[pc.id][t] = (totalsByCompany[pc.id][t] || 0) + v;
         if (!slot.code && r.code) slot.code = r.code;
       }
     }
