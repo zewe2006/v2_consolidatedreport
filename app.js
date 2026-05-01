@@ -9333,10 +9333,6 @@ async function _supaAccountRegister(coaId, accountName, startDate, endDate) {
   const categoryIds = (catRows || []).map((c) => c.id);
   const bankAccountIds = (acctRows || []).map((a) => a.id);
 
-  if (!categoryIds.length && !bankAccountIds.length) {
-    return { account_name: accountName, transactions: [] };
-  }
-
   const sel = "id,date,amount,description,merchant_name,is_transfer,split_parent_id,categorized_by,plaid_txn_id,account:accounts(name,mask),vendor:vendors(display_name),category:categories(name,coa_account_id)";
   const dateClause = `${startDate ? `&date=gte.${startDate}` : ""}${endDate ? `&date=lte.${endDate}` : ""}`;
   const queries = [];
@@ -9347,7 +9343,9 @@ async function _supaAccountRegister(coaId, accountName, startDate, endDate) {
     queries.push(`${base}/transactions?company_id=eq.${selectedCompanyId}&account_id=in.(${bankAccountIds.join(",")})${dateClause}&order=date.desc&limit=500&select=${encodeURIComponent(sel)}`);
   }
 
-  const results = await Promise.all(queries.map((u) => fetch(u, { headers }).then((r) => r.ok ? r.json() : [])));
+  const results = queries.length
+    ? await Promise.all(queries.map((u) => fetch(u, { headers }).then((r) => r.ok ? r.json() : [])))
+    : [];
   const seen = new Set();
   const merged = [];
   for (const arr of results) {
@@ -9357,13 +9355,10 @@ async function _supaAccountRegister(coaId, accountName, startDate, endDate) {
       merged.push(t);
     }
   }
-  merged.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
 
-  // Shape into the columns renderTransactionDetail expects.
+  // Shape txn rows into the columns renderTransactionDetail expects.
   const transactions = merged.map((t) => {
     const amt = Number(t.amount || 0);
-    // Plaid: positive = outflow (debit on bank). Mirror QBO's debit/credit
-    // pair so the totals row balances against the Net column.
     const debit = amt > 0 ? amt : 0;
     const credit = amt < 0 ? -amt : 0;
     const acctLabel = t.account ? `${t.account.name}${t.account.mask ? " ···" + t.account.mask : ""}` : "";
@@ -9385,6 +9380,39 @@ async function _supaAccountRegister(coaId, accountName, startDate, endDate) {
       Balance: "",
     };
   });
+
+  // Pull journal_lines posted to this CoA. QBO→Manual import + opening
+  // balance entries + manual JEs all land here. Auto-emitted JEs (memo
+  // begins with 'auto:txn:<id>') would duplicate a txn already in the
+  // list, so suppress those.
+  const seenAutoMemos = new Set(merged.map((t) => `auto:txn:${t.id}`));
+  const jeDateClause = `${startDate ? `&journal_entry.date=gte.${startDate}` : ""}${endDate ? `&journal_entry.date=lte.${endDate}` : ""}`;
+  const jeUrl = `${base}/journal_lines?coa_account_id=eq.${coaId}&select=id,debit,credit,description,journal_entry:journal_entries!inner(id,date,memo,company_id)&journal_entry.company_id=eq.${selectedCompanyId}${jeDateClause}&order=journal_entry(date).desc&limit=2000`;
+  const jeLines = await fetch(jeUrl, { headers }).then((r) => r.ok ? r.json() : []);
+
+  for (const l of jeLines) {
+    const je = l.journal_entry || {};
+    const memo = (je.memo || "").trim();
+    if (memo && seenAutoMemos.has(memo)) continue;
+    const debit = parseFloat(l.debit) || 0;
+    const credit = parseFloat(l.credit) || 0;
+    transactions.push({
+      id: `je:${l.id}`,
+      editable: false,
+      Date: je.date || "",
+      "Transaction Type": "Journal",
+      Num: "",
+      Name: l.description || memo || "(journal entry)",
+      "Memo/Description": l.description && memo && l.description !== memo ? memo : "",
+      Account: accountName,
+      Debit: debit ? debit.toFixed(2) : "",
+      Credit: credit ? credit.toFixed(2) : "",
+      Amount: (debit - credit).toFixed(2),
+      Balance: "",
+    });
+  }
+
+  transactions.sort((a, b) => (b.Date || "").localeCompare(a.Date || ""));
 
   return { account_name: accountName, transactions };
 }
