@@ -986,13 +986,27 @@ async function loadPL() {
     const startVal = document.getElementById("pl-start-date").value || null;
     const endVal = document.getElementById("pl-end-date").value || null;
     // Source-based routing: QBO → Railway; Plaid/Manual → Supabase direct.
-    // byCompany on a manual company is degenerate (single company), but the
-    // user might land here from a saved view — still route to Supabase so
-    // they see real numbers instead of Railway's empty response.
+    // For By Company on a mixed-source selection, dispatch each company to
+    // its natural source and merge into one column-per-company P&L.
+    const candidateIds = (() => {
+      if (sel.company_ids && sel.company_ids.length) return sel.company_ids;
+      if (sel.company_id && sel.company_id !== "all") return [sel.company_id];
+      if (selectedCompanyId) return [selectedCompanyId];
+      return (allCompanies || []).map((c) => c.id);
+    })();
+    const manualPlaidIds = candidateIds.filter((id) => {
+      const c = (allCompanies || []).find((co) => co.id === id);
+      return c && (c.source || "qbo") !== "qbo";
+    });
+    const useByCompanyMixed = byCompany && supabaseAccessToken && candidateIds.length > 1
+      && (manualPlaidIds.length > 0);
+
     const __useRailway = _shouldUseRailway();
     const useSupa = !__useRailway;
     let data;
-    if (useSupa) {
+    if (useByCompanyMixed) {
+      data = await _supaProfitLossByCompany(candidateIds, startVal, endVal);
+    } else if (useSupa) {
       const cid = (sel.company_id && sel.company_id !== "all") ? sel.company_id : selectedCompanyId;
       data = await _supaProfitLoss(cid, startVal, endVal, summarize);
     } else {
@@ -1010,7 +1024,9 @@ async function loadPL() {
       });
     }
     currentReportData.pl = data;
-    if (useSupa) {
+    if (useByCompanyMixed) {
+      _renderSupaPLByCompany(data, "pl-table-wrapper");
+    } else if (useSupa) {
       _renderSupaPLReport(data, "pl-table-wrapper");
     } else if (byCompany && data.company_breakdowns) {
       renderByCompanyReport(data, "pl-table-wrapper");
@@ -1119,6 +1135,12 @@ async function loadBS() {
 // options.accountingMethod: 'Accrual' (default) includes A/R from open
 // invoices and A/P from open bills. 'Cash' hides them — those balances
 // represent unrealized cash flow that doesn't belong on a cash-basis BS.
+// options.preferLegacyHybrid: when true, suppresses the GL auto-route
+// (below) and forces the hybrid path. The by-company aggregator passes
+// this so per-company calls return rows in a consistent shape — without
+// it, companies with imported journal_entries flip to the GL output
+// (bare account names, no code prefix), and the merge-by-name in
+// _supaBalanceSheetByCompany splits one logical row across two columns.
 async function _supaBalanceSheet(companyId, endDate, options) {
   if (!supabaseAccessToken) throw new Error("Supabase session required.");
   const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
@@ -1128,9 +1150,11 @@ async function _supaBalanceSheet(companyId, endDate, options) {
   // Auto-route to GL when journal_entries exist for this company (same pattern
   // as _supaProfitLoss). QBO→Manual import populates journal_entries, so the
   // imported balances would otherwise be invisible to the hybrid path.
-  // Skip the GL probe when bankBalanceOverrides is present — that signals
-  // the multi-column caller, which has its own GL handling upstream.
-  if (!options || !options.bankBalanceOverrides) {
+  // Skip when bankBalanceOverrides is present (multi-column walkback handles
+  // its own bank logic) or preferLegacyHybrid is set (by-company merge needs
+  // a stable hybrid shape across all companies).
+  const skipGlProbe = options && (options.bankBalanceOverrides || options.preferLegacyHybrid);
+  if (!skipGlProbe) {
     try {
       const probe = await fetch(
         `${SUPABASE_URL}/rest/v1/journal_entries?company_id=eq.${companyId}&select=id&limit=1`,
@@ -1545,7 +1569,11 @@ async function _supaBalanceSheetByCompany(companyIds, endDate) {
       const flat = await _railwayBSFlatRows(id, asOf, "Cash");
       return { id, name: co?.name || id, data: _railwayBSFlatToGroupedShape(flat, asOf), source: "qbo" };
     }
-    const data = await _supaBalanceSheet(id, asOf);
+    // preferLegacyHybrid keeps every per-company response on the same hybrid
+    // shape (with code-prefixed names) so the merge-by-name below lines up.
+    // Without this, companies with imported journal_entries flip to the GL
+    // builder and their rows fail to merge with QBO/Railway rows.
+    const data = await _supaBalanceSheet(id, asOf, { preferLegacyHybrid: true });
     return { id, name: co?.name || id, data, source: "manual" };
   }));
 
@@ -2157,6 +2185,226 @@ async function _supaProfitLossFromGL(companyId, startDate, endDate, summarizeBy)
     netByColumn,
     notice: "Cash basis · derived from the General Ledger. Single source of truth.",
   };
+}
+
+// Fetch a QBO company's P&L via Railway and flatten the nested QBO Rows.Row
+// tree into [{type, name, balance}]. Mirrors _railwayBSFlatRows. Used to mix
+// a QBO company into the Supabase by-company P&L view. Times out fast on
+// Railway flakes; on failure returns [] so the column shows empty.
+async function _railwayPLFlatRows(qboCompanyId, startDate, endDate, accountingMethod) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 6000);
+  try {
+    const r = await fetch(`${API}/api/reports/profit-loss`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` },
+      body: JSON.stringify({
+        start_date: startDate, end_date: endDate,
+        accounting_method: accountingMethod || "Cash",
+        company_id: qboCompanyId,
+      }),
+      signal: ctrl.signal,
+    });
+    if (!r.ok) return [];
+    const data = await r.json();
+    const flat = [];
+    const walk = (rows, parentType) => {
+      const list = (rows && (rows.Row || rows.row)) || [];
+      for (const row of list) {
+        let nextType = parentType;
+        const headerName = (row.Header?.ColData?.[0]?.value || row.group || "").toLowerCase();
+        if (headerName.includes("income") || headerName.includes("revenue")) nextType = "income";
+        else if (headerName.includes("expense") || headerName.includes("cost of goods")) nextType = "expense";
+        if (row.ColData && row.ColData.length >= 2 && (parentType || nextType)) {
+          const name = row.ColData[0]?.value || "";
+          const bal = parseFloat(row.ColData[1]?.value || "0") || 0;
+          if (name) flat.push({ name, code: null, type: nextType || parentType, balance: bal });
+        }
+        if (row.Rows) walk(row.Rows, nextType);
+      }
+    };
+    walk(data.current?.Rows || data.current?.rows || {}, null);
+    return flat;
+  } catch (e) {
+    console.warn(`[PL] Railway PL fetch failed for ${qboCompanyId}: ${e?.message || e}`);
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Convert flat Railway P&L rows into the grouped shape _supaProfitLoss
+// returns, so the by-company aggregator can merge QBO and Supabase rows
+// uniformly.
+function _railwayPLFlatToGroupedShape(flatRows, start, end) {
+  const buildGroup = (label, type) => {
+    const rows = flatRows
+      .filter((r) => r.type === type && Math.abs(r.balance) > 0.005)
+      .map((r) => ({ id: null, code: null, name: r.name, type, balance: r.balance }));
+    rows.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    const total = rows.reduce((s, r) => s + r.balance, 0);
+    return { label, type, rows, total };
+  };
+  const income = buildGroup("Income", "income");
+  const expense = buildGroup("Expense", "expense");
+  return {
+    start, end,
+    groups: [income, expense],
+    totalIncome: income.total,
+    totalExpense: expense.total,
+    netIncome: income.total - expense.total,
+  };
+}
+
+// Build a P&L with one column per company. Each company is dispatched to its
+// natural source (QBO → Railway, manual+Plaid → Supabase), then rows are
+// merged across sources by (type, normalized name). Mirrors
+// _supaBalanceSheetByCompany. The single-period shape only — no per-month
+// summarization in by-company mode (analogous to BS).
+async function _supaProfitLossByCompany(companyIds, startDate, endDate) {
+  const ids = (companyIds || []).filter(Boolean);
+  if (!ids.length) return { start: startDate, end: endDate, companies: [], groups: [{label: "Income", type: "income", rows: []}, {label: "Expense", type: "expense", rows: []}], totalsByCompany: {} };
+
+  const perCompany = await Promise.all(ids.map(async (id) => {
+    const co = (allCompanies || []).find((c) => c.id === id);
+    const isQbo = co && (co.source || "qbo") === "qbo";
+    if (isQbo) {
+      const flat = await _railwayPLFlatRows(id, startDate, endDate, "Cash");
+      return { id, name: co?.name || id, data: _railwayPLFlatToGroupedShape(flat, startDate, endDate), source: "qbo" };
+    }
+    const data = await _supaProfitLoss(id, startDate, endDate, null);
+    return { id, name: co?.name || id, data, source: "manual" };
+  }));
+
+  const norm = (s) => (s || "").toLowerCase().trim().replace(/\s+/g, " ");
+  const rowMap = new Map();
+  const totalsByCompany = {}; // companyId -> { income, expense }
+  for (const pc of perCompany) {
+    totalsByCompany[pc.id] = { income: 0, expense: 0 };
+    for (const g of (pc.data.groups || [])) {
+      for (const r of (g.rows || [])) {
+        const key = `${g.type}|${norm(r.name)}`;
+        if (!rowMap.has(key)) {
+          rowMap.set(key, {
+            code: r.code || null, name: r.name, type: g.type,
+            byCo: {}, byCoCoaId: {},
+          });
+        }
+        const slot = rowMap.get(key);
+        const v = parseFloat(r.balance) || 0;
+        slot.byCo[pc.id] = (slot.byCo[pc.id] || 0) + v;
+        if (r.id && !String(r.id).startsWith("_")) slot.byCoCoaId[pc.id] = r.id;
+        totalsByCompany[pc.id][g.type] = (totalsByCompany[pc.id][g.type] || 0) + v;
+        if (!slot.code && r.code) slot.code = r.code;
+      }
+    }
+  }
+
+  // Bucket rows by type into groups, attach per-row total across companies.
+  const finalize = (label, type) => {
+    const rows = [];
+    for (const slot of rowMap.values()) {
+      if (slot.type !== type) continue;
+      let total = 0;
+      for (const pc of perCompany) total += (slot.byCo[pc.id] || 0);
+      if (Math.abs(total) < 0.005 && Object.values(slot.byCo).every((v) => Math.abs(v) < 0.005)) continue;
+      rows.push({ ...slot, total });
+    }
+    rows.sort((a, b) => (a.code || "").localeCompare(b.code || "") || (a.name || "").localeCompare(b.name || ""));
+    const total = rows.reduce((s, r) => s + r.total, 0);
+    return { label, type, rows, total };
+  };
+
+  const income = finalize("Income", "income");
+  const expense = finalize("Expense", "expense");
+
+  const coNames = perCompany.map((pc) => pc.name).join(", ");
+  return {
+    start: startDate, end: endDate,
+    companies: perCompany.map((pc) => ({ id: pc.id, name: pc.name, source: pc.source })),
+    groups: [income, expense],
+    totalsByCompany,
+    totalIncome: income.total,
+    totalExpense: expense.total,
+    netIncome: income.total - expense.total,
+    notice: `By Company across ${perCompany.length} companies (${coNames}). QBO companies fetched from Railway, manual+Plaid from Supabase. Cash basis.`,
+  };
+}
+
+// Renderer for the multi-company P&L. Mirrors _renderSupaBSByCompany but for
+// Income / Expense / Net Income groups. Per-company column + Total column.
+function _renderSupaPLByCompany(data, wrapperId) {
+  const wrap = document.getElementById(wrapperId);
+  const fmt = (n) => (n < 0 ? `(${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})` : n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  const cos = data.companies || [];
+  const colCount = 2 + cos.length;
+
+  let html = `<div style="padding:var(--space-3) var(--space-4);background:var(--color-bg-muted);border-radius:var(--radius-md);margin-bottom:var(--space-3);font-size:var(--text-xs);color:var(--color-text-secondary);">${_escapeHtml(data.notice || "")}</div>`;
+  html += `<div style="margin-bottom:var(--space-2);font-weight:600;">Profit &amp; Loss · By Company — ${data.start || ""} → ${data.end || ""}</div>`;
+  html += `<table class="qbo-report-table by-company-table" style="width:100%;border-collapse:collapse;">`;
+  html += `<thead><tr><th style="text-align:left;padding:var(--space-2);">Account</th>`;
+  for (const co of cos) {
+    html += `<th style="text-align:right;padding:var(--space-2);" title="${_escapeHtml(co.name)}">${_escapeHtml(co.name.replace(/^Food Terminal /, "FT ").replace(/^FT Barrett /, "FTB "))}</th>`;
+  }
+  html += `<th style="text-align:right;padding:var(--space-2);font-weight:700;">Total</th>`;
+  html += `</tr></thead><tbody>`;
+
+  const renderRow = (r, indentExtra) => {
+    const label = r.code ? `${r.code} ${r.name}` : r.name;
+    const labelEsc = _escapeHtml(label).replace(/'/g, "\\'").replace(/"/g, "&quot;");
+    let h = `<tr><td style="padding:2px var(--space-2);padding-left:calc(var(--space-5) + ${indentExtra || 0}px);">${_escapeHtml(label)}</td>`;
+    for (const co of cos) {
+      const v = r.byCo?.[co.id] || 0;
+      const coaId = r.byCoCoaId?.[co.id];
+      const drillable = !!coaId && Math.abs(v) > 0.005;
+      const cellAttrs = drillable
+        ? ` class="bs-cell-clickable" onclick="setSelectedCompany('${co.id}'); drillDownAccount('${labelEsc}','${coaId}')" title="View ${_escapeHtml(co.name).replace(/"/g, '&quot;')} register"`
+        : "";
+      h += `<td${cellAttrs} style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;">${Math.abs(v) > 0.005 ? fmt(v) : "—"}</td>`;
+    }
+    h += `<td style="text-align:right;padding:2px var(--space-2);font-variant-numeric:tabular-nums;font-weight:600;">${fmt(r.total)}</td>`;
+    h += `</tr>`;
+    return h;
+  };
+  const groupTotalRow = (label, sumByCo, total) => {
+    let h = `<tr><td style="padding:var(--space-1) var(--space-2);font-weight:600;border-top:1px dashed var(--color-border);">Total ${_escapeHtml(label)}</td>`;
+    for (const co of cos) {
+      const v = sumByCo[co.id] || 0;
+      h += `<td style="text-align:right;padding:var(--space-1) var(--space-2);font-weight:600;font-variant-numeric:tabular-nums;border-top:1px dashed var(--color-border);">${fmt(v)}</td>`;
+    }
+    h += `<td style="text-align:right;padding:var(--space-1) var(--space-2);font-weight:600;font-variant-numeric:tabular-nums;border-top:1px dashed var(--color-border);">${fmt(total)}</td></tr>`;
+    return h;
+  };
+
+  for (const g of data.groups) {
+    html += `<tr><td colspan="${colCount}" style="font-weight:600;padding:var(--space-3) var(--space-2) var(--space-1);border-top:1px solid var(--color-border);">${_escapeHtml(g.label)}</td></tr>`;
+    if (!g.rows.length) {
+      html += `<tr><td colspan="${colCount}" style="padding:0 var(--space-2);color:var(--color-text-muted);">(none)</td></tr>`;
+    } else {
+      for (const r of g.rows) html += renderRow(r, 0);
+    }
+    const gByCo = {};
+    for (const co of cos) gByCo[co.id] = data.totalsByCompany?.[co.id]?.[g.type] || 0;
+    html += groupTotalRow(g.label, gByCo, g.total);
+  }
+
+  // Net Income row
+  const netByCo = {};
+  for (const co of cos) {
+    const inc = data.totalsByCompany?.[co.id]?.income || 0;
+    const exp = data.totalsByCompany?.[co.id]?.expense || 0;
+    netByCo[co.id] = inc - exp;
+  }
+  let h = `<tr><td style="padding:var(--space-3) var(--space-2);font-weight:700;border-top:2px solid var(--color-border);">Net Income</td>`;
+  for (const co of cos) {
+    const v = netByCo[co.id] || 0;
+    h += `<td style="text-align:right;padding:var(--space-3) var(--space-2);font-weight:700;font-variant-numeric:tabular-nums;border-top:2px solid var(--color-border);">${fmt(v)}</td>`;
+  }
+  h += `<td style="text-align:right;padding:var(--space-3) var(--space-2);font-weight:700;font-variant-numeric:tabular-nums;border-top:2px solid var(--color-border);">${fmt(data.netIncome || 0)}</td></tr>`;
+  html += h;
+
+  html += `</tbody></table>`;
+  wrap.innerHTML = html;
 }
 
 function _renderSupaPLReport(data, wrapperId) {
