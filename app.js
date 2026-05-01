@@ -11316,6 +11316,19 @@ async function runQboImportConfirm() {
   backBtn.disabled = true;
 
   try {
+    // Pre-flight: make sure Supabase has a companies row + member entry for
+    // the destination at this exact id. Without it, Railway sometimes writes
+    // imported data under a separate Supabase company that the browser can't
+    // see (RLS blocks; selectedCompanyId points at a phantom shell).
+    try {
+      const destName = (allCompanies || []).find((c) => c.id === form.dest_manual_company_id)?.name
+                    || _getSelectedCompany()?.name
+                    || "Imported Company";
+      await _qboImportEnsureSupabaseCompany(form.dest_manual_company_id, destName);
+    } catch (e) {
+      console.warn("[QBO import] Supabase company pre-flight failed", e);
+    }
+
     const r = await apiPost("/api/import/qbo-to-manual", { ...form, preview: false });
     progEl.style.display = "none";
     confirmBtn.style.display = "none";
@@ -11390,6 +11403,60 @@ async function runQboImportConfirm() {
   }
 }
 
+
+// Pre-flight: ensure the destination company exists in Supabase under the
+// SAME id Railway uses, with the current user as an owner. Otherwise the
+// Railway-side import sometimes creates a fresh Supabase company row with
+// a different id, leaving the browser's selectedCompanyId pointing at an
+// empty shell while the imported data lives at an unrelated id.
+//
+// RLS policies allow this from a logged-in browser:
+//   companies_insert:        with_check = (auth.uid() = created_by)
+//   company_members_insert:  with_check covers self-as-owner
+async function _qboImportEnsureSupabaseCompany(companyId, companyName) {
+  if (!supabaseAccessToken || !companyId) return;
+  const writeHeaders = {
+    "Content-Type": "application/json",
+    apikey: SUPABASE_ANON_KEY,
+    Authorization: `Bearer ${supabaseAccessToken}`,
+    Prefer: "return=minimal",
+  };
+  const readHeaders = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+
+  // Resolve the auth user id (needed for created_by + member rows).
+  let userId = null;
+  try {
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers: readHeaders });
+    if (r.ok) userId = (await r.json()).id || null;
+  } catch {}
+  if (!userId) return;
+
+  // Companies row.
+  try {
+    const exists = await fetch(`${SUPABASE_URL}/rest/v1/companies?id=eq.${companyId}&select=id`, { headers: readHeaders })
+      .then((r) => r.ok ? r.json() : []).then((rows) => rows.length > 0);
+    if (!exists) {
+      await fetch(`${SUPABASE_URL}/rest/v1/companies`, {
+        method: "POST",
+        headers: writeHeaders,
+        body: JSON.stringify({ id: companyId, name: companyName || "Imported Company", created_by: userId }),
+      }).catch(() => {});
+    }
+  } catch {}
+
+  // Membership.
+  try {
+    const isMember = await fetch(`${SUPABASE_URL}/rest/v1/company_members?company_id=eq.${companyId}&user_id=eq.${userId}&select=user_id`, { headers: readHeaders })
+      .then((r) => r.ok ? r.json() : []).then((rows) => rows.length > 0);
+    if (!isMember) {
+      await fetch(`${SUPABASE_URL}/rest/v1/company_members`, {
+        method: "POST",
+        headers: writeHeaders,
+        body: JSON.stringify({ company_id: companyId, user_id: userId, role: "owner" }),
+      }).catch(() => {});
+    }
+  } catch {}
+}
 
 // Pull the just-imported transactions from Railway and replay them into
 // Supabase as journal_entries / journal_lines so the rest of the app
