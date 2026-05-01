@@ -12043,7 +12043,11 @@ async function _qboImportPersistToSupabaseGL(destCompanyId, placeholderAccountId
       const jeRes = await fetch(`${SUPABASE_URL}/rest/v1/journal_entries`, {
         method: "POST",
         headers: { ...headers, Prefer: "return=representation" },
-        body: JSON.stringify({ company_id: destCompanyId, date: tx.date, memo, source: "qbo_import" }),
+        // 'backfill' is one of the allowed source values per the
+        // journal_entries_source_check constraint (manual, adjustment,
+        // opening_balance, backfill, auto). QBO imports are historical
+        // backfill, so this is the correct semantic match.
+        body: JSON.stringify({ company_id: destCompanyId, date: tx.date, memo, source: "backfill" }),
       });
       if (!jeRes.ok) { skipped++; continue; }
       [je] = await jeRes.json();
