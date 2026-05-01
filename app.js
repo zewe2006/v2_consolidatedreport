@@ -354,6 +354,23 @@ async function apiDelete(path) {
 async function loadCompanyList() {
   try {
     allCompanies = await apiGet("/api/companies");
+    // Filter out companies the user has marked inactive in Supabase. The
+    // Backup-QBO flow uses this to hide a source QBO company once a Supabase
+    // backup has been created. Best-effort — failure to fetch leaves all
+    // companies visible (no false-hides).
+    if (supabaseAccessToken && allCompanies && allCompanies.length) {
+      try {
+        const r = await fetch(
+          `${SUPABASE_URL}/rest/v1/companies?is_active=eq.false&select=id`,
+          { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` } }
+        );
+        if (r.ok) {
+          const rows = await r.json();
+          const hiddenIds = new Set((rows || []).map((c) => c.id));
+          if (hiddenIds.size) allCompanies = allCompanies.filter((c) => !hiddenIds.has(c.id));
+        }
+      } catch (e) { console.warn("[loadCompanyList] inactive filter failed", e); }
+    }
     // Railway sometimes returns plaid_items: [] for manual+Plaid companies
     // even when Supabase has the items. That makes the company switcher
     // and Companies page display "No bank linked" and downstream UIs gate
@@ -11423,17 +11440,14 @@ async function _qboImportLoadPrevious() {
 }
 
 function openQboImportModal() {
-  // Populate source (QBO) + dest (manual) dropdowns
+  // Populate source (QBO) + dest (manual) dropdowns. Manual destinations are
+  // optional — backup mode auto-creates one — so don't gate on their existence.
   const srcSel = document.getElementById("qbo-import-src");
   const destSel = document.getElementById("qbo-import-dest");
   const qboCompanies = (allCompanies || []).filter((c) => (c.source || "qbo") === "qbo");
   const manualCompanies = (allCompanies || []).filter((c) => c.source === "manual");
   if (!qboCompanies.length) {
     showToast("No QuickBooks companies connected to import from.", "error");
-    return;
-  }
-  if (!manualCompanies.length) {
-    showToast("No manual companies to import into. Create one first.", "error");
     return;
   }
   srcSel.innerHTML = '<option value="">Select...</option>' +
@@ -11445,6 +11459,12 @@ function openQboImportModal() {
 
   _qboImportPlan = null;
   _qboImportResetUi();
+
+  // Reset mode to standard import every time the modal opens.
+  const modeSel = document.getElementById("qbo-import-mode");
+  if (modeSel) { modeSel.value = "import"; _qboImportSetMode("import"); }
+  const hideChk = document.getElementById("qbo-import-hide-source");
+  if (hideChk) hideChk.checked = false;
 
   const modal = document.getElementById("qbo-import-modal");
   modal.classList.add("active");
@@ -11482,6 +11502,217 @@ function _qboImportSetFormEnabled(enabled) {
 function qboImportBackToForm() {
   _qboImportPlan = null;
   _qboImportResetUi();
+}
+
+// Toggle the modal between "import into existing manual company" mode and
+// "full backup → create a new <Name>_Backup company" mode. Shows/hides the
+// destination dropdown, the auto-generated backup name preview, the
+// hide-source checkbox, and the right-side action button.
+function _qboImportSetMode(mode) {
+  const isBackup = mode === "backup";
+  const destGroup = document.getElementById("qbo-import-dest-group");
+  const backupNameRow = document.getElementById("qbo-import-backup-name-row");
+  const hideSourceRow = document.getElementById("qbo-import-hide-source-row");
+  const previewBtn = document.getElementById("qbo-import-preview-btn");
+  const confirmBtn = document.getElementById("qbo-import-confirm-btn");
+  const backupBtn = document.getElementById("qbo-import-backup-btn");
+  if (destGroup)      destGroup.style.display      = isBackup ? "none" : "";
+  if (backupNameRow)  backupNameRow.style.display  = isBackup ? "block" : "none";
+  if (hideSourceRow)  hideSourceRow.style.display  = isBackup ? "block" : "none";
+  if (previewBtn)     previewBtn.style.display     = isBackup ? "none" : "inline-flex";
+  // Hide the confirm button regardless of mode — it only re-shows after Preview in import mode.
+  if (confirmBtn)     confirmBtn.style.display     = "none";
+  if (backupBtn)      backupBtn.style.display      = isBackup ? "inline-flex" : "none";
+  // In backup mode, recompute the auto-name from the currently-selected source.
+  if (isBackup) _qboImportSrcChanged();
+}
+
+// Recompute the auto-generated backup name when the source dropdown changes.
+function _qboImportSrcChanged() {
+  const isBackup = (document.getElementById("qbo-import-mode")?.value || "import") === "backup";
+  if (!isBackup) return;
+  const srcId = document.getElementById("qbo-import-src").value;
+  const src = (allCompanies || []).find((c) => c.id === srcId);
+  const name = src ? _qboImportNextBackupName(src.name) : "—";
+  const el = document.getElementById("qbo-import-backup-name");
+  if (el) el.value = name;
+}
+
+// Compute the next available "<Source>_Backup" / "<Source>_Backup_2" name
+// by inspecting allCompanies for collisions.
+function _qboImportNextBackupName(srcName) {
+  const base = `${srcName}_Backup`;
+  const taken = new Set((allCompanies || []).map((c) => (c.name || "").trim()));
+  if (!taken.has(base)) return base;
+  for (let i = 2; i < 100; i++) {
+    const candidate = `${base}_${i}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+  return `${base}_${Date.now()}`;
+}
+
+// Backup orchestrator. Called when the user clicks "Run Backup" in the
+// QBO Import modal's backup mode.
+//
+// Steps:
+//   1. Validate the source picker.
+//   2. Compute the backup name + a fresh UUID for the new Supabase company.
+//   3. Pre-create the Supabase companies row + member entry (RLS-safe).
+//   4. Run /api/import/qbo-to-manual targeting the new company id, so the
+//      Railway-side import populates Supabase chart_of_accounts, accounts,
+//      categories, and transactions.
+//   5. Replay the just-imported transactions as journal_entries via
+//      _qboImportPersistToSupabaseGL.
+//   6. If the user ticked "Hide source", mark the source company is_active=false
+//      in Supabase. Sidebar filter (loadCompanyList) hides it.
+//   7. Refresh allCompanies + sidebar.
+async function runQboBackup() {
+  const errEl = document.getElementById("qbo-import-error");
+  const progEl = document.getElementById("qbo-import-progress");
+  const progTextEl = document.getElementById("qbo-import-progress-text");
+  const previewEl = document.getElementById("qbo-import-preview");
+  const resultEl = document.getElementById("qbo-import-result");
+  const backupBtn = document.getElementById("qbo-import-backup-btn");
+  const cancelBtn = document.querySelector("#qbo-import-actions .btn-secondary");
+
+  errEl.style.display = "none";
+  resultEl.style.display = "none";
+  previewEl.style.display = "none";
+
+  const srcId = document.getElementById("qbo-import-src").value;
+  const start = document.getElementById("qbo-import-start").value;
+  const end = document.getElementById("qbo-import-end").value;
+  const method = document.getElementById("qbo-import-method").value;
+  const hideSource = document.getElementById("qbo-import-hide-source").checked;
+  if (!srcId || !start || !end) {
+    errEl.textContent = "Source, start date, and end date are required.";
+    errEl.style.display = "block";
+    return;
+  }
+  const src = (allCompanies || []).find((c) => c.id === srcId);
+  if (!src) {
+    errEl.textContent = "Source company not found.";
+    errEl.style.display = "block";
+    return;
+  }
+  const backupName = _qboImportNextBackupName(src.name);
+
+  if (progTextEl) progTextEl.textContent = `Creating "${backupName}" and pulling QBO history...`;
+  progEl.style.display = "block";
+  if (backupBtn) backupBtn.disabled = true;
+  if (cancelBtn) cancelBtn.disabled = true;
+  _qboImportSetFormEnabled(false);
+
+  try {
+    const newCompanyId = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    // Pre-create Supabase company + membership so the Railway import lands at this id.
+    await _qboImportEnsureSupabaseCompany(newCompanyId, backupName);
+
+    // Run the existing Railway import targeting the freshly-created company.
+    const r = await apiPost("/api/import/qbo-to-manual", {
+      source_qbo_company_id: srcId,
+      dest_manual_company_id: newCompanyId,
+      start_date: start,
+      end_date: end,
+      method,
+      preview: false,
+    });
+
+    // Tag the newly-created CoA with QBO AccountTypes (sub-grouping on BS).
+    try { await _qboImportTagAccountTypes(newCompanyId, r.created_accounts || []); }
+    catch (e) { console.warn("[QBO backup] tagging qbo_account_type failed", e); }
+
+    // Replay imported transactions as journal_entries so BS / P&L / Register
+    // see the data via the GL path.
+    let glSync = null;
+    try {
+      glSync = await _qboImportPersistToSupabaseGL(newCompanyId, r.placeholder_account_id);
+    } catch (e) {
+      console.warn("[QBO backup] Supabase GL persist failed", e);
+    }
+
+    // Optionally hide the source company from the sidebar.
+    let sourceHidden = false;
+    if (hideSource) {
+      try {
+        sourceHidden = await _qboImportMarkCompanyInactive(srcId, src.name);
+      } catch (e) {
+        console.warn("[QBO backup] mark source inactive failed", e);
+      }
+    }
+
+    // Render result panel.
+    progEl.style.display = "none";
+    resultEl.innerHTML = `
+      <div><strong>Backup created:</strong> ${_escapeHtml(backupName)}</div>
+      <div style="margin-top:4px;">${(r.imported || 0).toLocaleString()} transactions imported · ${r.created_accounts_count || 0} new CoA accounts.</div>
+      ${glSync && glSync.written > 0
+        ? `<div style="margin-top:4px;color:var(--color-success);">Wrote ${glSync.written.toLocaleString()} journal entries to Supabase${glSync.skipped ? ` (${glSync.skipped} skipped)` : ""}.</div>`
+        : (glSync && glSync.error ? `<div style="margin-top:4px;color:var(--color-warning);">GL sync skipped: ${_escapeHtml(glSync.error)}</div>` : "")}
+      ${sourceHidden ? `<div style="margin-top:4px;">Source <strong>${_escapeHtml(src.name)}</strong> is now hidden from the sidebar.</div>` : ""}
+      <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px;">
+        <button class="btn btn-sm btn-primary" onclick="setSelectedCompany('${newCompanyId}');navigateTo('balance-sheet');closeQboImportModal();" type="button">Open Balance Sheet</button>
+        <button class="btn btn-sm btn-secondary" onclick="setSelectedCompany('${newCompanyId}');navigateTo('transactions');closeQboImportModal();" type="button">Open Transactions</button>
+      </div>`;
+    resultEl.style.display = "block";
+
+    showToast(`Backup created: ${backupName}`, "success");
+    if (typeof loadCompanyList === "function") await loadCompanyList();
+  } catch (e) {
+    progEl.style.display = "none";
+    if (backupBtn) backupBtn.disabled = false;
+    if (cancelBtn) cancelBtn.disabled = false;
+    _qboImportSetFormEnabled(true);
+    errEl.innerHTML = `<div>Backup failed: ${_escapeHtml(e.message || "unknown error")}</div>
+      <div style="font-size:var(--text-xs);margin-top:4px;color:var(--color-text-secondary);">
+        Click <strong>Run Backup</strong> again to retry — partial writes are deduped by import id.
+      </div>`;
+    errEl.style.display = "block";
+  }
+}
+
+// Mark a company is_active=false so the sidebar / pickers hide it. Returns
+// true on success. RLS allows companies_update for members; for QBO companies
+// that have no Supabase row yet, INSERT a stub first (auth.uid() = created_by).
+async function _qboImportMarkCompanyInactive(companyId, companyName) {
+  if (!supabaseAccessToken || !companyId) return false;
+  const writeHeaders = {
+    "Content-Type": "application/json",
+    apikey: SUPABASE_ANON_KEY,
+    Authorization: `Bearer ${supabaseAccessToken}`,
+    Prefer: "return=minimal",
+  };
+  const readHeaders = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+  // Auth user id (for created_by + member self-add).
+  let userId = null;
+  try {
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers: readHeaders });
+    if (r.ok) userId = (await r.json()).id || null;
+  } catch {}
+  if (!userId) return false;
+  // Ensure company row exists; insert a stub if not.
+  try {
+    const exists = await fetch(`${SUPABASE_URL}/rest/v1/companies?id=eq.${companyId}&select=id`, { headers: readHeaders })
+      .then((r) => r.ok ? r.json() : []).then((rows) => rows.length > 0);
+    if (!exists) {
+      await fetch(`${SUPABASE_URL}/rest/v1/companies`, {
+        method: "POST", headers: writeHeaders,
+        body: JSON.stringify({ id: companyId, name: companyName || "Hidden Company", created_by: userId, is_active: false }),
+      });
+      // Add membership so we can read it back.
+      await fetch(`${SUPABASE_URL}/rest/v1/company_members`, {
+        method: "POST", headers: writeHeaders,
+        body: JSON.stringify({ company_id: companyId, user_id: userId, role: "owner" }),
+      }).catch(() => {});
+      return true;
+    }
+    // Existing row → PATCH is_active.
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/companies?id=eq.${companyId}`, {
+      method: "PATCH", headers: writeHeaders,
+      body: JSON.stringify({ is_active: false }),
+    });
+    return r.ok;
+  } catch { return false; }
 }
 
 function _qboImportCollect() {

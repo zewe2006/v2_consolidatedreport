@@ -2455,15 +2455,32 @@
       them into a manual company under a synthetic <strong>QBO Import</strong> account.
       Safe to rerun — rows with the same import id are merged, not duplicated.
     </div>
+    <div class="form-group">
+      <label class="form-label">Mode</label>
+      <select class="form-select" id="qbo-import-mode" onchange="_qboImportSetMode(this.value)">
+        <option value="import">Import into an existing manual company</option>
+        <option value="backup">Full backup (create new "&lt;Name&gt;_Backup" company)</option>
+      </select>
+    </div>
     <div class="form-row">
       <div class="form-group">
         <label class="form-label">Source (QuickBooks company)</label>
-        <select class="form-select" id="qbo-import-src"><option value="">Select...</option></select>
+        <select class="form-select" id="qbo-import-src" onchange="_qboImportSrcChanged()"><option value="">Select...</option></select>
       </div>
-      <div class="form-group">
+      <div class="form-group" id="qbo-import-dest-group">
         <label class="form-label">Destination (Manual company)</label>
         <select class="form-select" id="qbo-import-dest" onchange="_qboImportLoadPrevious()"><option value="">Select...</option></select>
       </div>
+    </div>
+    <div class="form-group" id="qbo-import-backup-name-row" style="display:none;">
+      <label class="form-label">Backup will be created as</label>
+      <input class="form-input" id="qbo-import-backup-name" type="text" readonly style="font-weight:600;background:var(--color-bg-muted);">
+    </div>
+    <div id="qbo-import-hide-source-row" style="display:none;margin-bottom:12px;">
+      <label style="font-size:var(--text-sm);display:flex;align-items:center;gap:6px;cursor:pointer;">
+        <input type="checkbox" id="qbo-import-hide-source">
+        Hide source QBO from sidebar after backup (mark inactive)
+      </label>
     </div>
     <div id="qbo-import-previous" style="display:none;padding:10px 12px;border-radius:var(--radius-md);background:oklch(0.97 0.02 40);color:#3d2a05;border:1px solid oklch(0.9 0.05 60);margin-bottom:12px;"></div>
     <div class="form-row">
@@ -2498,6 +2515,10 @@
       <button class="btn btn-primary" id="qbo-import-confirm-btn" onclick="runQboImportConfirm()" type="button" style="display:none;background:var(--color-success);">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
         Confirm &amp; Run Import
+      </button>
+      <button class="btn btn-primary" id="qbo-import-backup-btn" onclick="runQboBackup()" type="button" style="display:none;background:var(--color-success);">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Run Backup
       </button>
       <button class="btn btn-ghost btn-sm" id="qbo-import-back-btn" onclick="qboImportBackToForm()" type="button" style="display:none;">&larr; Change options</button>
       <button class="btn btn-secondary" onclick="closeQboImportModal()" type="button">Cancel</button>
@@ -2734,6 +2755,6 @@
   </div>
 </div>
 
-<script src="./app.js?v=20260501f"></script>
+<script src="./app.js?v=20260501g"></script>
 </body>
 </html>
