@@ -11604,11 +11604,25 @@ async function runQboBackup() {
   _qboImportSetFormEnabled(false);
 
   try {
-    const newCompanyId = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    // Pre-create Supabase company + membership so the Railway import lands at this id.
+    // 1. Create the manual company on Railway first — Railway needs to know
+    //    about it before /api/import/qbo-to-manual can target it.
+    const created = await apiPost("/api/companies/manual", {
+      name: backupName,
+      legal_name: src.legal_name || null,
+      ein: src.ein || null,
+      industry: src.industry || null,
+      fiscal_year_start: src.fiscal_year_start || 1,
+      base_currency: src.base_currency || "USD",
+    });
+    const newCompanyId = created?.id || created?.company_id || created?.company?.id;
+    if (!newCompanyId) {
+      throw new Error("Railway did not return a new company id (response: " + JSON.stringify(created).slice(0, 200) + ")");
+    }
+    // 2. Pre-flight Supabase: ensure companies row + member entry exist at
+    //    this id. Railway may already have created the row; this is idempotent.
     await _qboImportEnsureSupabaseCompany(newCompanyId, backupName);
 
-    // Run the existing Railway import targeting the freshly-created company.
+    // 3. Run the QBO→Manual import targeting the freshly-created company.
     const r = await apiPost("/api/import/qbo-to-manual", {
       source_qbo_company_id: srcId,
       dest_manual_company_id: newCompanyId,
