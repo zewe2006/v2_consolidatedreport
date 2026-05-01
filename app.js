@@ -11352,6 +11352,30 @@ async function runQboImportConfirm() {
     try { await _qboImportTagAccountTypes(form.dest_manual_company_id, r.created_accounts || []); }
     catch (e) { console.warn("[QBO import] tagging qbo_account_type failed", e); }
 
+    // Persist as Supabase journal entries so the BS, P&L, Register, and
+    // Transactions all see the imported data. Without this step Railway
+    // has the data but nothing reading from Supabase can find it.
+    let glSync = null;
+    try {
+      glSync = await _qboImportPersistToSupabaseGL(
+        form.dest_manual_company_id,
+        r.placeholder_account_id,
+      );
+    } catch (e) {
+      console.warn("[QBO import] Supabase GL persist failed", e);
+    }
+    if (glSync && glSync.written > 0) {
+      const note = document.createElement("div");
+      note.style.cssText = "margin-top:8px;font-size:var(--text-xs);color:var(--color-success);";
+      note.textContent = `Wrote ${glSync.written.toLocaleString()} journal entries to Supabase${glSync.skipped ? ` (${glSync.skipped} skipped — no category mapping)` : ""}.`;
+      resultEl.appendChild(note);
+    } else if (glSync && glSync.error) {
+      const note = document.createElement("div");
+      note.style.cssText = "margin-top:8px;font-size:var(--text-xs);color:var(--color-warning);";
+      note.textContent = `Supabase GL sync skipped: ${glSync.error}`;
+      resultEl.appendChild(note);
+    }
+
     showToast(`Imported ${r.imported.toLocaleString()} transactions`, "success");
     if (typeof loadCompanyList === "function") await loadCompanyList();
   } catch (e) {
@@ -11366,6 +11390,113 @@ async function runQboImportConfirm() {
   }
 }
 
+
+// Pull the just-imported transactions from Railway and replay them into
+// Supabase as journal_entries / journal_lines so the rest of the app
+// (BS, P&L, Register, Transactions) can see the data. Railway is the
+// only source that has the imported transactions; this function is
+// idempotent (memo `qbo:import:<txId>` is replaced on re-run).
+//
+// Returns { written, skipped, total, error } — failures are surfaced to
+// the caller (not thrown) so the result modal can show a friendly message.
+async function _qboImportPersistToSupabaseGL(destCompanyId, placeholderAccountId) {
+  if (!supabaseAccessToken || !destCompanyId || !placeholderAccountId) {
+    return { written: 0, skipped: 0, total: 0, error: "missing credentials or import context" };
+  }
+  const headers = {
+    "Content-Type": "application/json",
+    apikey: SUPABASE_ANON_KEY,
+    Authorization: `Bearer ${supabaseAccessToken}`,
+  };
+  const readHeaders = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` };
+
+  // 1. Pull the imported transactions from Railway.
+  let txns = [];
+  try {
+    const resp = await apiGet(`/api/transactions/${destCompanyId}?account_id=${encodeURIComponent(placeholderAccountId)}&limit=20000`);
+    txns = resp.transactions || [];
+  } catch (e) {
+    return { written: 0, skipped: 0, total: 0, error: `Railway fetch failed: ${e.message || e}` };
+  }
+  if (!txns.length) {
+    return { written: 0, skipped: 0, total: 0, error: "no imported transactions returned from Railway" };
+  }
+
+  // 2. Resolve the cash leg's COA from the placeholder account.
+  let cashCoa = null;
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/accounts?id=eq.${placeholderAccountId}&select=coa_account_id`, { headers: readHeaders });
+    if (r.ok) cashCoa = (await r.json())[0]?.coa_account_id || null;
+  } catch {}
+  if (!cashCoa) {
+    return { written: 0, skipped: txns.length, total: txns.length, error: "placeholder account has no coa_account_id" };
+  }
+
+  // 3. Build category_id → coa_account_id map for the destination company.
+  let catToCoa = new Map();
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/categories?company_id=eq.${destCompanyId}&select=id,coa_account_id`, { headers: readHeaders });
+    if (r.ok) {
+      const rows = await r.json();
+      catToCoa = new Map(rows.filter((c) => c.coa_account_id).map((c) => [c.id, c.coa_account_id]));
+    }
+  } catch {}
+
+  // 4. Walk the txns, write a balanced JE for each.
+  let written = 0;
+  let skipped = 0;
+  for (const tx of txns) {
+    const eventCoa = tx.category_id ? catToCoa.get(tx.category_id) : null;
+    const amt = parseFloat(tx.amount || 0);
+    if (!eventCoa || Math.abs(amt) < 0.005 || !tx.date) { skipped++; continue; }
+    const abs = Math.abs(amt);
+    // Plaid sign: amount > 0 = outflow → Dr event, Cr cash; amount < 0 → Cr event, Dr cash.
+    const lines = amt > 0
+      ? [
+          { coa_account_id: eventCoa, debit: abs, credit: 0, description: tx.description || tx.merchant_name || null },
+          { coa_account_id: cashCoa,  debit: 0,   credit: abs, description: null },
+        ]
+      : [
+          { coa_account_id: cashCoa,  debit: abs, credit: 0,   description: null },
+          { coa_account_id: eventCoa, debit: 0,   credit: abs, description: tx.description || tx.merchant_name || null },
+        ];
+    const memo = `qbo:import:${tx.id}`;
+    // Idempotency: drop any prior JE with this memo before inserting fresh.
+    await fetch(
+      `${SUPABASE_URL}/rest/v1/journal_entries?company_id=eq.${destCompanyId}&memo=eq.${encodeURIComponent(memo)}`,
+      { method: "DELETE", headers }
+    ).catch(() => {});
+    let je;
+    try {
+      const jeRes = await fetch(`${SUPABASE_URL}/rest/v1/journal_entries`, {
+        method: "POST",
+        headers: { ...headers, Prefer: "return=representation" },
+        body: JSON.stringify({ company_id: destCompanyId, date: tx.date, memo, source: "qbo_import" }),
+      });
+      if (!jeRes.ok) { skipped++; continue; }
+      [je] = await jeRes.json();
+    } catch { skipped++; continue; }
+    const linesPayload = lines.map((l) => ({ ...l, journal_entry_id: je.id }));
+    try {
+      const linesRes = await fetch(`${SUPABASE_URL}/rest/v1/journal_lines`, {
+        method: "POST",
+        headers: { ...headers, Prefer: "return=minimal" },
+        body: JSON.stringify(linesPayload),
+      });
+      if (linesRes.ok) {
+        written++;
+      } else {
+        await fetch(`${SUPABASE_URL}/rest/v1/journal_entries?id=eq.${je.id}`, { method: "DELETE", headers }).catch(() => {});
+        skipped++;
+      }
+    } catch {
+      await fetch(`${SUPABASE_URL}/rest/v1/journal_entries?id=eq.${je.id}`, { method: "DELETE", headers }).catch(() => {});
+      skipped++;
+    }
+  }
+
+  return { written, skipped, total: txns.length };
+}
 
 // After a QBO→Manual import, walk the created_accounts list and write
 // each row's QBO AccountType (e.g. 'Other Current Liability') back onto
