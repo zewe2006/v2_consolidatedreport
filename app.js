@@ -1125,6 +1125,26 @@ async function _supaBalanceSheet(companyId, endDate, options) {
   const asOf = endDate || new Date().toISOString().slice(0, 10);
   const isCash = ((options && options.accountingMethod) || "").toLowerCase() === "cash";
 
+  // Auto-route to GL when journal_entries exist for this company (same pattern
+  // as _supaProfitLoss). QBO→Manual import populates journal_entries, so the
+  // imported balances would otherwise be invisible to the hybrid path.
+  // Skip the GL probe when bankBalanceOverrides is present — that signals
+  // the multi-column caller, which has its own GL handling upstream.
+  if (!options || !options.bankBalanceOverrides) {
+    try {
+      const probe = await fetch(
+        `${SUPABASE_URL}/rest/v1/journal_entries?company_id=eq.${companyId}&select=id&limit=1`,
+        { headers }
+      );
+      if (probe.ok) {
+        const rows = await probe.json();
+        if (Array.isArray(rows) && rows.length > 0) {
+          return _supaBalanceSheetFromGL(companyId, asOf);
+        }
+      }
+    } catch { /* fall through to legacy path */ }
+  }
+
   // NOTE: A GL-based Balance Sheet exists at _supaBalanceSheetFromGL but it
   // requires opening-balance journal entries to be accurate (otherwise bank
   // accounts compute from cash-leg activity only and net negative). Until
