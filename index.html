@@ -228,6 +228,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
           <span>UberEats / DoorDash</span>
         </a></li>
+        <li class="business-only"><a href="#daily-sales" data-page="daily-sales">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 13l3-3 3 3 4-5"/></svg>
+          <span>Daily Sales</span>
+        </a></li>
         <li><a href="#receipts" data-page="receipts">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6"/><path d="M9 13h7M9 17h5"/></svg>
           <span>Receipts (OCR)</span>
@@ -1023,6 +1027,21 @@
           <div class="loading-placeholder" style="padding:40px; text-align:center; color:var(--color-text-muted);">Loading knowledge base...</div>
         </div>
       </div>
+    </section>
+
+    <!-- ======== DAILY SALES (ORDYX/TONIC POS) IMPORT PAGE ======== -->
+    <section id="page-daily-sales" class="page-content">
+      <div class="card mb-6">
+        <div class="card-header">
+          <span class="card-title">Daily Sales Import — Ordyx / Tonic POS</span>
+        </div>
+        <p style="font-size:var(--text-sm); color:var(--color-text-muted); margin-bottom:8px;">
+          Pull each closed business day from Ordyx / Tonic POS and post it as one balanced
+          journal entry — revenue by category, sales tax, tips, and money owed by each payment
+          channel. Preview any day before it touches your books.
+        </p>
+      </div>
+      <div id="ds-root"></div>
     </section>
 
     <!-- ======== DELIVERY IMPORT PAGE ======== -->

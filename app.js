@@ -590,6 +590,7 @@ function navigateTo(page) {
     users: "User Management",
     "knowledge-base": "AI Knowledge Base",
     "delivery-import": "UberEats / DoorDash Import",
+    "daily-sales": "Daily Sales Import",
     receipts: "Receipts — OCR & Matching",
   };
   // Block non-admin from users page
@@ -618,6 +619,7 @@ function navigateTo(page) {
   if (page === "users") loadUsers();
   if (page === "knowledge-base") loadKnowledgeBase();
   if (page === "delivery-import") diInit();
+  if (page === "daily-sales") dsInit();
   if (page === "receipts") rcptInit();
   // Per-company pages
   if (page === "transactions") txInit();
@@ -4908,6 +4910,202 @@ async function deleteKBEntry(id) {
 /* ============================================
    DELIVERY IMPORT (Uber Eats / DoorDash)
    ============================================ */
+
+// ============================================================
+//   DAILY SALES IMPORT (Ordyx / Tonic POS)
+//   UI lives here; server logic is the FIN_API route /api/pos/sync
+//   (Next.js Financials app), called with the Supabase JWT via finFetch.
+// ============================================================
+let _dsResult = null;
+
+async function dsInit() {
+  const root = document.getElementById("ds-root");
+  if (!root) return;
+  const co = _getSelectedCompany();
+  if (!selectedCompanyId || !co) {
+    root.innerHTML = `<div class="card"><p style="color:var(--color-text-muted);margin:0;">Pick a single company in the sidebar (not “All Companies”) to import its daily sales.</p></div>`;
+    return;
+  }
+  root.innerHTML = `<div class="card"><p style="color:var(--color-text-muted);margin:0;">Loading connection…</p></div>`;
+  _dsResult = null;
+  const conn = await _dsLoadConnection(selectedCompanyId);
+  _dsRender(conn);
+}
+
+// Read the connection straight from Supabase (RLS lets a member SELECT it).
+async function _dsLoadConnection(cid) {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/pos_connections?company_id=eq.${cid}&provider=eq.ordyx&select=store_id,status,last_acked_batch,last_synced_at&limit=1`, {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${supabaseAccessToken}` },
+    });
+    if (!r.ok) return null;
+    const rows = await r.json();
+    return Array.isArray(rows) && rows.length ? rows[0] : null;
+  } catch { return null; }
+}
+
+function _dsConnectFormHtml(conn) {
+  return `<div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;">
+    <label style="font-size:var(--text-sm);">Store ID<br>
+      <input id="ds-store" type="text" value="${conn ? conn.store_id : ''}" placeholder="653" style="margin-top:4px;width:110px;"></label>
+    <label style="font-size:var(--text-sm);flex:1;min-width:240px;">API key ${conn ? '<span style="color:var(--color-text-muted);">(leave blank to keep current)</span>' : ''}<br>
+      <input id="ds-key" type="password" placeholder="Bearer token from Ordyx" style="margin-top:4px;width:100%;"></label>
+    <button class="btn btn-primary" onclick="_dsConnect()">${conn ? 'Save' : 'Connect'}</button>
+  </div>`;
+}
+
+function _dsShowConnectForm() {
+  const el = document.getElementById("ds-connect-form");
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function _dsConnect() {
+  const storeId = parseInt(((document.getElementById("ds-store") || {}).value || "").replace(/[^0-9]/g, ''), 10);
+  const apiKey = ((document.getElementById("ds-key") || {}).value || "").trim();
+  if (!storeId) { showToast("Enter a store ID", "error"); return; }
+  try {
+    const r = await finFetch("/api/pos/connect", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ companyId: selectedCompanyId, storeId, apiKey: apiKey || undefined }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { showToast(j.error || ("Error " + r.status), "error"); return; }
+    showToast(j.created ? "Connected" : "Updated", "success");
+    dsInit();
+  } catch (e) { showToast(String(e), "error"); }
+}
+
+function _dsRender(conn) {
+  const root = document.getElementById("ds-root");
+  const connHtml = conn
+    ? `<div class="card mb-6">
+        <div class="card-header"><span class="card-title">Connection</span>
+          <span class="source-badge ${conn.status === 'connected' ? 'manual' : 'qbo'}">${escapeHtml(conn.status)} · Store ${conn.store_id}</span></div>
+        <div style="font-size:var(--text-sm);color:var(--color-text-muted);">
+          Last batch ${conn.last_acked_batch ? '#' + conn.last_acked_batch : '—'} ·
+          Last sync ${conn.last_synced_at ? new Date(conn.last_synced_at).toLocaleString() : '—'} ·
+          <a href="#" onclick="_dsShowConnectForm();return false;">Update key</a></div>
+        <div id="ds-connect-form" style="display:none;margin-top:12px;">${_dsConnectFormHtml(conn)}</div>
+      </div>`
+    : `<div class="card mb-6">
+        <div class="card-header"><span class="card-title">Connect Ordyx / Tonic</span></div>
+        ${_dsConnectFormHtml(null)}</div>`;
+
+  const importHtml = conn
+    ? `<div class="card mb-6">
+        <div class="card-header"><span class="card-title">Import a day</span></div>
+        <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;">
+          <label style="font-size:var(--text-sm);">Mode<br>
+            <select id="ds-mode" onchange="_dsModeChange(this.value)" style="margin-top:4px;">
+              <option value="next">Next day</option>
+              <option value="backlog">Catch up backlog</option>
+              <option value="from-date">Start from a date</option></select></label>
+          <label id="ds-max-wrap" style="font-size:var(--text-sm);display:none;">Max days<br>
+            <input id="ds-max" type="number" value="20" style="margin-top:4px;width:90px;"></label>
+          <label id="ds-from-wrap" style="font-size:var(--text-sm);display:none;">From date<br>
+            <input id="ds-from" type="date" style="margin-top:4px;"></label>
+          <button class="btn btn-primary" onclick="_dsRun(true)">Preview</button>
+        </div>
+        <p style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:8px;">Preview is read-only — nothing is written and no batch is acknowledged.</p>
+        <div id="ds-result" style="margin-top:16px;"></div>
+      </div>`
+    : "";
+
+  root.innerHTML = connHtml + importHtml;
+}
+
+function _dsModeChange(v) {
+  const mw = document.getElementById("ds-max-wrap");
+  const fw = document.getElementById("ds-from-wrap");
+  if (mw) mw.style.display = v === 'backlog' ? 'inline-block' : 'none';
+  if (fw) fw.style.display = v === 'from-date' ? 'inline-block' : 'none';
+}
+
+async function _dsRun(dryRun) {
+  const mode = (document.getElementById("ds-mode") || {}).value || "next";
+  const body = { companyId: selectedCompanyId, mode, dryRun };
+  if (mode === 'backlog') body.maxBatches = parseInt((document.getElementById("ds-max") || {}).value, 10) || 20;
+  if (mode === 'from-date') {
+    const fd = (document.getElementById("ds-from") || {}).value;
+    if (!fd) { showToast("Pick a from date", "error"); return; }
+    body.fromDate = fd;
+  }
+  if (!dryRun) {
+    const ack = document.getElementById("ds-ack");
+    body.acknowledge = !!(ack && ack.checked);
+  }
+  const resEl = document.getElementById("ds-result");
+  if (resEl) resEl.innerHTML = `<p style="color:var(--color-text-muted);">${dryRun ? 'Previewing' : 'Posting'}…</p>`;
+  try {
+    const r = await finFetch("/api/pos/sync", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { if (resEl) resEl.innerHTML = `<p style="color:var(--color-danger);">${escapeHtml(j.error || ('Error ' + r.status))}</p>`; return; }
+    _dsResult = j;
+    _dsRenderResult(j, dryRun);
+  } catch (e) { if (resEl) resEl.innerHTML = `<p style="color:var(--color-danger);">${escapeHtml(String(e))}</p>`; }
+}
+
+function _dsLineRow(l, side) {
+  const amt = formatCurrency(side === 'd' ? l.debit : l.credit);
+  const tag = l.isNew ? ' <span class="source-badge manual" style="font-size:10px;">new</span>' : '';
+  return `<div style="display:flex;justify-content:space-between;padding:2px 0;"><span>${escapeHtml(l.account)}${tag}</span><span>${amt}</span></div>`;
+}
+
+function _dsGroup(title, lines, side) {
+  if (!lines.length) return '';
+  return `<div style="margin:6px 0;"><div style="font-size:var(--text-xs);text-transform:uppercase;color:var(--color-text-muted);margin-bottom:2px;">${title}</div>${lines.map(l => _dsLineRow(l, side)).join('')}</div>`;
+}
+
+function _dsDayHtml(b) {
+  if (b.error) {
+    return `<div class="card" style="margin-bottom:10px;"><strong>${b.businessDate}</strong> · batch #${b.batchId}<br><span style="color:var(--color-danger);">${escapeHtml(b.error)}</span></div>`;
+  }
+  const lines = b.lines || [];
+  const drs = lines.filter(l => l.debit > 0);
+  const rev = lines.filter(l => l.credit > 0 && String(l.bucketKey).indexOf('rev_') === 0);
+  const oth = lines.filter(l => l.credit > 0 && String(l.bucketKey).indexOf('rev_') !== 0);
+  let badges = `<span class="source-badge ${b.balanced ? 'manual' : 'qbo'}">${b.balanced ? 'Balanced' : 'Unbalanced'}</span>`;
+  if (b.posted) badges += ` <span class="source-badge manual">Posted</span>`;
+  if (b.acknowledged) badges += ` <span class="source-badge manual">Advanced</span>`;
+  return `<div class="card" style="margin-bottom:10px;">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:6px;">
+      <span><strong>${b.businessDate}</strong> <span style="font-size:var(--text-xs);color:var(--color-text-muted);">batch #${b.batchId}</span></span>
+      <span style="font-size:var(--text-sm);color:var(--color-text-muted);">Net ${formatCurrency(b.totals.netSalesCents / 100)} · Tax ${formatCurrency(b.totals.salesTaxCents / 100)} · Tips ${formatCurrency(b.totals.tipsCents / 100)}</span>
+      <span>${badges}</span></div>
+    ${_dsGroup('Money received', drs, 'd')}
+    ${_dsGroup('Sales revenue', rev, 'c')}
+    ${_dsGroup('Tax & tips', oth, 'c')}
+    ${b.createdAccounts && b.createdAccounts.length ? `<div style="font-size:var(--text-xs);color:var(--color-accent);margin-top:4px;">New accounts: ${b.createdAccounts.join(', ')}</div>` : ''}
+    ${b.warnings && b.warnings.length ? `<div style="font-size:var(--text-xs);color:var(--color-warning);margin-top:4px;">${b.warnings.map(escapeHtml).join(' · ')}</div>` : ''}
+  </div>`;
+}
+
+function _dsRenderResult(j, dryRun) {
+  const resEl = document.getElementById("ds-result");
+  if (!resEl) return;
+  if (!j.processed || !j.processed.length) {
+    resEl.innerHTML = `<p style="color:var(--color-text-muted);">No batch to process — you're caught up.</p>`;
+    return;
+  }
+  let allBalanced = true;
+  let days = "";
+  for (const b of j.processed) {
+    days += _dsDayHtml(b);
+    if (!b.balanced || b.error) allBalanced = false;
+  }
+  let html = `<div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-bottom:8px;">${dryRun ? 'Preview' : 'Imported'} · store ${j.storeId} · ${j.processed.length} day(s)</div>` + days;
+  if (dryRun && allBalanced) {
+    const plural = j.processed.length > 1 ? 'ies' : 'y';
+    html += `<div class="card" style="border:1px solid var(--color-warning);margin-top:12px;">
+      <p style="font-weight:600;margin:0 0 4px;">Ready to post</p>
+      <p style="font-size:var(--text-sm);color:var(--color-text-muted);margin:0 0 8px;">Creates any new accounts and posts the entr${plural} above to your books.</p>
+      <label style="font-size:var(--text-sm);"><input type="checkbox" id="ds-ack" checked> Advance to the next day after posting</label><br>
+      <button class="btn btn-primary" style="margin-top:8px;" onclick="_dsRun(false)">Post to books</button></div>`;
+  }
+  resEl.innerHTML = html;
+}
 
 let diParsedData = null;   // holds parsed response from /api/delivery-import/parse
 let diCsvContent = "";     // the raw CSV string for download
