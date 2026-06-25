@@ -4964,15 +4964,10 @@ async function _dsConnect() {
   const apiKey = ((document.getElementById("ds-key") || {}).value || "").trim();
   if (!storeId) { showToast("Enter a store ID", "error"); return; }
   try {
-    const r = await finFetch("/api/pos/connect", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ companyId: selectedCompanyId, storeId, apiKey: apiKey || undefined }),
-    });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) { showToast(j.error || ("Error " + r.status), "error"); return; }
+    const j = await apiPost("/api/pos/connect", { company_id: selectedCompanyId, store_id: storeId, api_key: apiKey || undefined });
     showToast(j.created ? "Connected" : "Updated", "success");
     dsInit();
-  } catch (e) { showToast(String(e), "error"); }
+  } catch (e) { showToast(e.message || String(e), "error"); }
 }
 
 function _dsRender(conn) {
@@ -5023,12 +5018,12 @@ function _dsModeChange(v) {
 
 async function _dsRun(dryRun) {
   const mode = (document.getElementById("ds-mode") || {}).value || "next";
-  const body = { companyId: selectedCompanyId, mode, dryRun };
-  if (mode === 'backlog') body.maxBatches = parseInt((document.getElementById("ds-max") || {}).value, 10) || 20;
+  const body = { company_id: selectedCompanyId, mode, dry_run: dryRun };
+  if (mode === 'backlog') body.max_batches = parseInt((document.getElementById("ds-max") || {}).value, 10) || 20;
   if (mode === 'from-date') {
     const fd = (document.getElementById("ds-from") || {}).value;
     if (!fd) { showToast("Pick a from date", "error"); return; }
-    body.fromDate = fd;
+    body.from_date = fd;
   }
   if (!dryRun) {
     const ack = document.getElementById("ds-ack");
@@ -5037,14 +5032,10 @@ async function _dsRun(dryRun) {
   const resEl = document.getElementById("ds-result");
   if (resEl) resEl.innerHTML = `<p style="color:var(--color-text-muted);">${dryRun ? 'Previewing' : 'Posting'}…</p>`;
   try {
-    const r = await finFetch("/api/pos/sync", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) { if (resEl) resEl.innerHTML = `<p style="color:var(--color-danger);">${escapeHtml(j.error || ('Error ' + r.status))}</p>`; return; }
+    const j = await apiPost("/api/pos/sync", body);
     _dsResult = j;
     _dsRenderResult(j, dryRun);
-  } catch (e) { if (resEl) resEl.innerHTML = `<p style="color:var(--color-danger);">${escapeHtml(String(e))}</p>`; }
+  } catch (e) { if (resEl) resEl.innerHTML = `<p style="color:var(--color-danger);">${escapeHtml(e.message || String(e))}</p>`; }
 }
 
 function _dsLineRow(l, side) {
