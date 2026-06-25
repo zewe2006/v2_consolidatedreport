@@ -11713,11 +11713,16 @@ async function _qboImportMarkCompanyInactive(companyId, companyName) {
         method: "POST", headers: writeHeaders,
         body: JSON.stringify({ id: companyId, name: companyName || "Hidden Company", created_by: userId, is_active: false }),
       });
-      // Add membership so we can read it back.
-      await fetch(`${SUPABASE_URL}/rest/v1/company_members`, {
+      // Add membership so we can read it back. A DB trigger
+      // (companies_ensure_owner) also backstops this, but don't swallow a
+      // failure here silently — surface it so an orphan can't slip by unseen.
+      const memRes = await fetch(`${SUPABASE_URL}/rest/v1/company_members`, {
         method: "POST", headers: writeHeaders,
         body: JSON.stringify({ company_id: companyId, user_id: userId, role: "owner" }),
-      }).catch(() => {});
+      }).catch((e) => ({ ok: false, statusText: String(e) }));
+      if (!memRes.ok) {
+        console.error(`Failed to add owner membership for company ${companyId}: ${memRes.status || ""} ${memRes.statusText || ""}`);
+      }
       return true;
     }
     // Existing row → PATCH is_active.
@@ -11954,11 +11959,16 @@ async function _qboImportEnsureSupabaseCompany(companyId, companyName) {
     const isMember = await fetch(`${SUPABASE_URL}/rest/v1/company_members?company_id=eq.${companyId}&user_id=eq.${userId}&select=user_id`, { headers: readHeaders })
       .then((r) => r.ok ? r.json() : []).then((rows) => rows.length > 0);
     if (!isMember) {
-      await fetch(`${SUPABASE_URL}/rest/v1/company_members`, {
+      // DB trigger companies_ensure_owner backstops this; surface failures
+      // rather than swallowing them so orphaned companies are never silent.
+      const memRes = await fetch(`${SUPABASE_URL}/rest/v1/company_members`, {
         method: "POST",
         headers: writeHeaders,
         body: JSON.stringify({ company_id: companyId, user_id: userId, role: "owner" }),
-      }).catch(() => {});
+      }).catch((e) => ({ ok: false, statusText: String(e) }));
+      if (!memRes.ok) {
+        console.error(`Failed to add owner membership for company ${companyId}: ${memRes.status || ""} ${memRes.statusText || ""}`);
+      }
     }
   } catch {}
 }
